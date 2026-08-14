@@ -1,0 +1,130 @@
+"""Download videos from YouTube (and other yt-dlp supported sites).
+
+Wraps ``yt-dlp`` so the rest of the pipeline can treat the result as a
+plain local video file. Progress is reported via an optional callback.
+
+YouTube sometimes rejects the default player client with HTTP 403
+(bot detection). When that happens we retry once with alternate player
+clients (android/tv/ios), which are generally allowed.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import shutil
+from typing import Callable
+
+try:
+    import yt_dlp
+except ImportError:  # pragma: no cover - defensive
+    yt_dlp = None
+
+URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+FALLBACK_CLIENTS = ["android_vr", "tv", "ios"]
+
+
+class DownloadError(Exception):
+    """Raised when a remote video cannot be downloaded."""
+
+
+def is_url(value: str) -> bool:
+    """Return True if ``value`` looks like a remote (http/https) URL."""
+    return bool(URL_RE.match(value.strip()))
+
+
+def _strip_ansi(text: str) -> str:
+    return ANSI_RE.sub("", text)
+
+
+def _build_opts(out_dir: str, hook: Callable[[dict], None], player_clients) -> dict:
+    opts = {
+        "format": "bv*[height<=1080]+ba/b[height<=1080]/b",
+        "outtmpl": os.path.join(out_dir, "%(id)s.%(ext)s"),
+        "merge_output_format": "mp4",
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        "progress_hooks": [hook],
+        "retries": 5,
+        "fragment_retries": 5,
+        "extractor_retries": 5,
+        "socket_timeout": 30,
+    }
+    cookiefile = os.environ.get("YTDLP_COOKIEFILE", "").strip()
+    if cookiefile:
+        opts["cookiefile"] = cookiefile
+    if player_clients:
+        opts["extractor_args"] = {"youtube": {"player_client": player_clients}}
+    return opts
+
+
+def download(
+    url: str,
+    out_dir: str,
+    progress: Callable[[float], None] | None = None,
+) -> str:
+    """Download ``url`` into ``out_dir`` and return the local file path.
+
+    Downloads the best available quality and merges audio/video to MP4.
+    On a download-stage failure it retries once with alternate YouTube
+    player clients. Raises DownloadError when yt-dlp is missing, the URL
+    cannot be fetched, or the output file is not produced.
+    """
+    if yt_dlp is None:
+        raise DownloadError("yt-dlp is not installed. Run: poetry install")
+
+    os.makedirs(out_dir, exist_ok=True)
+
+    def _hook(data: dict) -> None:
+        if progress is None:
+            return
+        status = data.get("status")
+        if status == "downloading":
+            total = data.get("total_bytes") or data.get("total_bytes_estimate") or 0
+            done = data.get("downloaded_bytes") or 0
+            if total:
+                progress(0.05 + 0.25 * done / total)
+        elif status == "finished":
+            progress(0.3)
+
+    info = None
+    last_error: Exception | None = None
+
+    for player_clients in (None, FALLBACK_CLIENTS):
+        try:
+            with yt_dlp.YoutubeDL(_build_opts(out_dir, _hook, player_clients)) as ydl:
+                info = ydl.extract_info(url, download=True)
+            break
+        except yt_dlp.utils.DownloadError as exc:
+            last_error = exc
+            _clean_out_dir(out_dir)
+
+    if info is None:
+        detail = _strip_ansi(str(last_error or "unknown error"))
+        raise DownloadError(f"Download failed: {detail}")
+
+    video_id = (info or {}).get("id")
+    if video_id:
+        path = os.path.join(out_dir, f"{video_id}.mp4")
+        if os.path.isfile(path):
+            return path
+
+        for name in os.listdir(out_dir):
+            if name.startswith(str(video_id)):
+                return os.path.join(out_dir, name)
+
+    raise DownloadError("Download finished but no output file was found.")
+
+
+def _clean_out_dir(out_dir: str) -> None:
+    for name in os.listdir(out_dir):
+        try:
+            path = os.path.join(out_dir, name)
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                os.remove(path)
+        except OSError:
+            pass
