@@ -11,13 +11,14 @@ import re
 
 SYSTEM_PROMPT = """You are a short-form video analyst. Read the transcript and identify the most
 viral-worthy moments that would perform well as short vertical clips (TikTok, Reels,
-Shorts). For each clip provide a catchy title and the start/end timestamps in seconds,
-measured from the beginning of the source video. Return ONLY a JSON object matching this
-exact schema and nothing else:
+Shorts). For each clip provide a catchy title, a short one-line viral hook caption,
+and the start/end timestamps in seconds measured from the beginning of the source
+video. Return ONLY a JSON object matching this exact schema and nothing else:
 
-{"clips": [{"title": "string", "start": 12.5, "end": 38.0}]}
+{"clips": [{"title": "string", "hook": "string", "start": 12.5, "end": 38.0}]}
 
 Rules:
+- hook is a punchy attention-grabbing line (max ~15 words), separate from the title.
 - start and end must be numbers in seconds.
 - end must be strictly greater than start.
 - Clip length should be between 15 and 90 seconds.
@@ -147,7 +148,11 @@ def _coerce_clip(item: dict) -> dict | None:
     if start > 100000 or end > 100000:
         return None
 
-    return {"title": title, "start": round(start, 2), "end": round(end, 2)}
+    clip = {"title": title, "start": round(start, 2), "end": round(end, 2)}
+    hook = str(item.get("hook", "")).strip()
+    if hook:
+        clip["hook"] = hook
+    return clip
 
 
 def _clip_key(clip: dict) -> tuple:

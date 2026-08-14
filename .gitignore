@@ -3,6 +3,17 @@ venv/
 __pycache__/
 *.pyc
 .pytest_cache/
-config.json
 outputs/
+
+# environment / secrets
 .env
+backend/.env
+web/.env
+
+# node
+node_modules/
+.next/
+npm-debug.log*
+
+# prisma
+web/prisma/dev.db

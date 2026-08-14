@@ -1,5 +1,4 @@
-"""Upload extracted audio to S3 (or an S3-compatible service) so AssemblyAI
-can fetch it.
+"""S3 / R2 helpers: upload, download, presigned URLs, delete.
 
 Supports Amazon S3 and Cloudflare R2. Credentials come from the standard
 env variables (``AWS_ACCESS_KEY_ID``, ``AWS_SECRET_ACCESS_KEY``,
@@ -25,11 +24,11 @@ BUCKET_ENV = "S3_BUCKET"
 ENDPOINT_ENV = "S3_ENDPOINT_URL"
 REGION_ENV = "AWS_REGION"
 DEFAULT_REGION_ENV = "AWS_DEFAULT_REGION"
-PRESIGNED_EXPIRY = 3600  # seconds; AssemblyAI fetches right at submission
+PRESIGNED_EXPIRY = 3600  # seconds
 
 
 class S3Error(Exception):
-    """Raised when the S3 upload cannot be completed."""
+    """Raised when an S3 operation cannot be completed."""
 
 
 @dataclass
@@ -53,39 +52,52 @@ def _client_kwargs() -> dict:
     return kwargs
 
 
-def upload_audio(
-    file_path: str,
-    progress: Callable[[float], None] | None = None,
-) -> S3Upload:
-    """Upload ``file_path`` to S3 and return an ``S3Upload`` (bucket/key/URL).
-
-    Raises S3Error when ``S3_BUCKET`` is unset, credentials are missing,
-    or the upload/URL generation fails.
-    """
+def _get_bucket() -> str:
     bucket = os.environ.get(BUCKET_ENV, "").strip()
     if not bucket:
         raise S3Error(
             f"{BUCKET_ENV} environment variable is required for S3 uploads."
         )
+    return bucket
 
+
+def _client():
     if boto3 is None:
         raise S3Error("boto3 is not installed. Run: poetry install")
+    return boto3.client("s3", **_client_kwargs())
 
-    key = f"clipforge/{uuid.uuid4().hex}.mp3"
+
+def _ext_for(path: str) -> str:
+    ext = os.path.splitext(path)[1].lstrip(".") or "bin"
+    return ext.lower()
+
+
+def upload_file(
+    file_path: str,
+    key_prefix: str = "clipforge",
+    content_type: str | None = None,
+    progress: Callable[[float], None] | None = None,
+) -> S3Upload:
+    """Upload ``file_path`` under ``key_prefix`` and return an ``S3Upload``.
+
+    ``progress`` (optional) receives a fraction in [0, 1].
+    """
+    bucket = _get_bucket()
+    key = f"{key_prefix.rstrip('/')}/{uuid.uuid4().hex}.{_ext_for(file_path)}"
 
     try:
-        client = boto3.client("s3", **_client_kwargs())
+        client = _client()
         total = os.path.getsize(file_path)
 
         def callback(transferred: int, total_size: int | None = None) -> None:
             if progress is not None:
-                progress(0.06 + 0.09 * transferred / max(total, 1))
+                progress(transferred / max(total, 1))
 
         client.upload_file(
             file_path,
             bucket,
             key,
-            ExtraArgs={"ContentType": "audio/mpeg"},
+            ExtraArgs={"ContentType": content_type} if content_type else None,
             Callback=callback,
         )
 
@@ -102,17 +114,43 @@ def upload_audio(
     return S3Upload(bucket=bucket, key=key, url=url)
 
 
-def delete_object(bucket: str, key: str) -> None:
-    """Delete an object from the bucket. Best effort; failures are ignored.
+def upload_audio(
+    file_path: str,
+    progress: Callable[[float], None] | None = None,
+) -> S3Upload:
+    """Upload an MP3 and report progress mapped to the transcription range."""
+    def _cb(fraction: float) -> None:
+        if progress is not None:
+            progress(0.06 + 0.09 * fraction)
 
-    Called after transcription so the uploaded audio does not linger in
-    R2/S3.
-    """
+    return upload_file(file_path, "clipforge", "audio/mpeg", _cb)
+
+
+def presigned_get_url(bucket: str, key: str, expires: int = PRESIGNED_EXPIRY) -> str:
+    """Return a presigned GET URL for an object (default bucket if empty)."""
+    return _client().generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket, "Key": key},
+        ExpiresIn=expires,
+    )
+
+
+def download_object(key: str, dest: str) -> str:
+    """Download ``key`` from the default bucket to ``dest``."""
+    client = _client()
+    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+    try:
+        client.download_file(_get_bucket(), key, dest)
+    except Exception as exc:
+        raise S3Error(f"S3 download failed for {key!r}: {exc}") from exc
+    return dest
+
+
+def delete_object(bucket: str, key: str) -> None:
+    """Delete an object from the bucket. Best effort; failures are ignored."""
     if boto3 is None:
         return
     try:
-        boto3.client("s3", **_client_kwargs()).delete_object(
-            Bucket=bucket, Key=key
-        )
+        _client().delete_object(Bucket=bucket, Key=key)
     except Exception:
         pass

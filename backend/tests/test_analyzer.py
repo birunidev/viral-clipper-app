@@ -84,6 +84,18 @@ def test_rounds_to_two_decimals():
     assert clips[0]["end"] == 30.68
 
 
+def test_keeps_viral_hook():
+    raw = '[{"title": "Hook", "hook": "You won\'t believe this", "start": 1, "end": 30}]'
+    clips = parse_clips(raw)
+    assert clips[0]["hook"] == "You won't believe this"
+
+
+def test_missing_hook_is_omitted():
+    raw = '[{"title": "NoHook", "start": 1, "end": 30}]'
+    clips = parse_clips(raw)
+    assert "hook" not in clips[0]
+
+
 @pytest.mark.parametrize("bad", ["null", "42", '"just a string"', "[1, 2, 3]"])
 def test_non_object_responses(bad):
     assert parse_clips(bad) == []

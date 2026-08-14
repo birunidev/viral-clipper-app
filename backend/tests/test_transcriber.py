@@ -58,6 +58,12 @@ def session(monkeypatch):
     return fake
 
 
+@pytest.fixture(autouse=True)
+def _clear_s3_env(monkeypatch):
+    """S3 may be configured via .env (loaded by test_api); isolate these tests."""
+    monkeypatch.delenv("S3_BUCKET", raising=False)
+
+
 @pytest.fixture
 def fake_audio(monkeypatch, tmp_path):
     """Skip real FFmpeg extraction; point transcribe() at a fake audio file."""
