@@ -1,0 +1,60 @@
+# Local development stack.
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up -d --build
+#   docker compose -f docker-compose.dev.yml up -d postgres   # only the DB
+#
+# After the first start, create the schema:
+#   cd web && npx prisma db push
+#
+# Default local dev DB: postgresql://clipforge:clipforge@localhost:5433/clipforge
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: clipforge-dev-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: clipforge
+      POSTGRES_PASSWORD: clipforge
+      POSTGRES_DB: clipforge
+    ports:
+      - "5433:5432"
+    volumes:
+      - clipforge_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clipforge"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file: ./backend/.env
+    environment:
+      DATABASE_URL: postgresql://clipforge:clipforge@postgres:5432/clipforge
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build: ./web
+    restart: unless-stopped
+    env_file: ./web/.env
+    environment:
+      DATABASE_URL: postgresql://clipforge:clipforge@postgres:5432/clipforge
+      BACKEND_URL: http://backend:8000
+      BETTER_AUTH_URL: http://localhost:3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_started
+
+volumes:
+  clipforge_pgdata:
