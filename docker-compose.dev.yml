@@ -7,7 +7,7 @@
 # After the first start, create the schema:
 #   cd web && npx prisma db push
 #
-# Default local dev DB: postgresql://clipforge:clipforge@localhost:5433/clipforge
+# Default local dev DB: postgresql://clipforge:clipforge@localhost:5438/clipforge
 
 services:
   postgres:
@@ -19,7 +19,7 @@ services:
       POSTGRES_PASSWORD: clipforge
       POSTGRES_DB: clipforge
     ports:
-      - "5433:5432"
+      - "5438:5432"
     volumes:
       - clipforge_pgdata:/var/lib/postgresql/data
     healthcheck:
