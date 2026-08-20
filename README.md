@@ -4,13 +4,17 @@ Find viral moments in long videos and cut short clips (9:16, 16:9, or original).
 
 A web app where:
 
-- **Next.js** (App Router, TypeScript) is the fullstack framework — auth via
-  [Better Auth](https://better-auth.com) (email/password), data via
-  [Prisma](https://prisma.io) on **NeonDB** (PostgreSQL).
-- **Python** is the viral clipping engine — a **FastAPI** job service runs the
-  pipeline in the background: download → transcribe → analyze → cut.
-- **Cloudflare R2** (S3-compatible) stores source videos, rendered clips, and
-  thumbnails.
+- **Next.js** (App Router, TypeScript) serves the SSR marketing pages (no
+  server-side data access) and the client-rendered app under `/app/*`.
+  Every API call runs in the browser via **React Query** against the
+  Python backend — there is no server-side code, no Prisma, no Better Auth
+  in the web app anymore.
+- **Python FastAPI** owns everything else: auth (email/password + httpOnly
+  session cookies), the REST API (`/api/v1/*`), the database
+  (**SQLAlchemy + Alembic** on PostgreSQL), the background pipeline
+  (download → transcribe → analyze → cut), and S3/R2 presigning.
+- **Cloudflare R2** (S3-compatible) stores source videos, rendered clips,
+  and thumbnails.
 
 One user has many projects; each project has many clips. Each clip stores its
 title, viral hook, start/end timestamps, and video URL.
@@ -18,35 +22,39 @@ title, viral hook, start/end timestamps, and video URL.
 ## Architecture
 
 ```
-┌─────────────────────────────┐      ┌─────────────────────────────────┐
-│  Next.js (web)              │      │  Python FastAPI (backend)      │
-│  Better Auth · Prisma       │ HTTP │  yt-dlp · ffmpeg · AssemblyAI  │
-│  pages + API routes         │─────▶│  /jobs, /jobs/{id}             │
-└─────────────┬───────────────┘      └──────────────┬──────────────────┘
-              │                                     │
-              ▼                                     ▼
-        ┌────────────────────────────────────────────────┐
-        │  Postgres (NeonDB)  — single source of truth   │
-        │  User · Project · Job · Clip                    │
-        └────────────────────────────────────────────────┘
+┌─────────────────────────────┐   /api/*   ┌──────────────────────────────────┐
+│  Next.js (web)              │───────────▶│  Python FastAPI (backend)       │
+│  SSR marketing pages (/)    │  session   │  auth (cookies) · REST API       │
+│  client app (/app/*, React  │  cookie    │  SQLAlchemy + Alembic models     │
+│  Query)                     │            │  yt-dlp · ffmpeg · whisper/AAI   │
+└─────────────┬───────────────┘            └──────────────┬───────────────────┘
+              │ Caddy reverse proxy (auto-HTTPS)          │
+              ▼                                            ▼
+        ┌────────────────────────────────────────────────────────┐
+        │  Postgres  — single source of truth                     │
+        │  User · Session · Project · Job · Clip                  │
+        └────────────────────────────────────────────────────────┘
 ```
 
-Next.js creates project/job rows and polls job progress (Prisma). The Python
-service picks up the job, updates progress/stage on the `Job` row as it works,
-uploads clips to R2, and inserts `Clip` rows.
+Caddy routes `/api/*` to the FastAPI backend and everything else to
+Next.js, so the browser and API share one origin and the httpOnly session
+cookie "just works". Starting a job is an in-process call (`pool.submit`)
+inside the backend — there is no separate job HTTP service anymore.
 
 ## Layout
 
 ```
-backend/   Python FastAPI job service + core engine (ffmpeg, yt-dlp, AssemblyAI, LLM)
-web/       Next.js app (auth, dashboard, project page, API routes)
-Caddyfile  reverse proxy (auto-HTTPS)
+backend/   FastAPI: auth, REST API, SQLAlchemy models, Alembic migrations,
+           worker pool, pipeline engine (ffmpeg, yt-dlp, whisper/AssemblyAI, Ollama/LLM)
+web/       Next.js: SSR marketing pages at /, client-only app at /app/* (React Query)
+Caddyfile  reverse proxy (auto-HTTPS, /api/* → backend)
+alembic/   (under backend/) versioned DB migrations
 ```
 
 ## Prerequisites
 
 - Docker + Docker Compose (recommended deployment)
-- A Neon Postgres database
+- A Postgres database (Neon or any Postgres 14+)
 - Cloudflare R2 (or S3) bucket + credentials
 - Either a cloud transcription/LLM key, or local models (see below) —
   ClipForge supports both, chosen per deployment via env vars.
@@ -60,7 +68,7 @@ local models, and detects an NVIDIA GPU automatically:
 ```bash
 ./run.sh up              # dev stack, cloud providers (AssemblyAI + hosted LLM)
 ./run.sh up --local       # dev stack, fully local models (whisper.cpp + Ollama)
-./run.sh prisma           # first time only: create the DB schema
+./run.sh migrate          # first time only: create the DB schema (alembic upgrade head)
 ./run.sh up --prod --local   # production stack, fully local models
 ./run.sh logs             # tail logs
 ./run.sh down             # stop everything
@@ -142,31 +150,29 @@ See `docker-compose.local.yml` for details on both paths.
 ```bash
 # Backend
 cd backend
-cp .env.example .env          # fill in DATABASE_URL, ASSEMBLYAI_KEY, LLM_*, S3_*, INTERNAL_API_KEY
+cp .env.example .env          # fill in DATABASE_URL, ASSEMBLYAI_KEY, LLM_*, S3_*, FRONTEND_URLS
 poetry install
+poetry run alembic upgrade head   # create the schema
 poetry run uvicorn app.main:app --port 8000
 
 # Web
 cd ../web
-cp .env.example .env          # fill in DATABASE_URL, BETTER_AUTH_SECRET, S3_*, BACKEND_URL, INTERNAL_API_KEY
-npx prisma generate
-npx prisma db push            # create the schema in Neon
+cp .env.example .env          # fill in NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
 npm install
 npm run dev                   # http://localhost:3000
 ```
 
-For local dev set `BACKEND_URL=http://localhost:8000`.
+For local dev, CORS must include `http://localhost:3000` (set
+`FRONTEND_URLS` in `backend/.env`).
 
 ## Deploy to a VPS
 
 1. Set your domain in `Caddyfile`.
-2. Fill `backend/.env` and `web/.env` (all values, including matching
-   `INTERNAL_API_KEY` and the same `DATABASE_URL`).
-3. Create the schema in Neon:
+2. Fill `backend/.env` and `web/.env`.
+3. Create the schema:
 
    ```bash
-   cd web
-   npx prisma db push
+   ./run.sh migrate --prod   # runs alembic upgrade head in the backend container
    ```
 
 4. Run (cloud providers):
@@ -184,22 +190,43 @@ For local dev set `BACKEND_URL=http://localhost:8000`.
    #              -f docker-compose.gpu.yml up -d --build   (add the gpu overlay on NVIDIA hosts)
    ```
 
-Caddy terminates TLS and proxies to the Next.js container. The backend is only
-reachable inside the Docker network.
+Caddy terminates TLS, proxies `/api/*` to the backend and everything else
+to the Next.js container. The backend is only reachable inside the Docker
+network (and via `/api/*` through Caddy).
+
+## API overview
+
+The backend owns all data and auth. Routes under `/api/v1`:
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/auth/register` | create user + session cookie |
+| POST | `/auth/login` | verify password + session cookie |
+| POST | `/auth/logout` | revoke session |
+| GET | `/auth/me` | current user |
+| GET/POST | `/projects` | list / create projects |
+| GET | `/projects/{id}` | project + clips + jobs (with signed R2 URLs) |
+| POST | `/projects/{id}/start` | create Job and enqueue the pipeline |
+| GET | `/jobs/{id}` | poll job status |
+| POST | `/uploads/presign` | presigned PUT URL for direct browser uploads |
+
+Migrations live in `backend/alembic/`; the backend image runs
+`alembic upgrade head` on boot.
 
 ## How it works
 
 1. **Source** — paste a YouTube URL (downloaded with yt-dlp, capped at 1080p,
    403 retry fallback) or upload a video (presigned PUT straight to R2).
-2. **Transcribe** — the backend extracts audio with ffmpeg, uploads it to R2,
-   transcribes with AssemblyAI, then deletes the temporary audio.
-3. **Analyze** — an OpenAI-compatible LLM returns viral moments as JSON
-   (title, hook, start, end).
+2. **Transcribe** — the backend extracts audio with ffmpeg and transcribes
+   with whisper.cpp (local) or AssemblyAI (cloud), then deletes the temporary
+   audio.
+3. **Analyze** — an OpenAI-compatible LLM (Ollama local, or any hosted
+   endpoint) returns viral moments as JSON (title, hook, start, end).
 4. **Cut** — ffmpeg trims each moment, crops to the chosen ratio, and the clip
    is uploaded to R2. Thumbnails are extracted and stored too.
 
-Jobs run in the background; the UI polls progress (stage + %) every couple of
-seconds.
+Jobs run in the background via a bounded worker pool (`WORKERS`, default 1);
+the UI polls progress (stage + %) every couple of seconds with React Query.
 
 ## Tests
 

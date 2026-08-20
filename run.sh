@@ -9,7 +9,7 @@
 #   ./run.sh up --prod --local     # production stack, fully local models
 #   ./run.sh down [--prod]         # stop the stack
 #   ./run.sh logs [--prod]         # tail logs
-#   ./run.sh prisma [--prod]       # create/update the DB schema (prisma db push)
+#   ./run.sh migrate [--prod]      # create/update the DB schema (alembic upgrade head)
 #   ./run.sh pull-model [--prod]   # pre-pull the Ollama model without starting jobs
 #
 # GPU: when --local runs on Linux with an NVIDIA GPU and
@@ -97,11 +97,11 @@ cmd_up() {
     echo ">> Backend: http://localhost:8000"
     [ "$LOCAL_MODELS" = "yes" ] && echo ">> Ollama:  http://localhost:11434"
     echo ""
-    echo "First time on this database? Run: ./run.sh prisma"
+    echo "First time on this database? Run: ./run.sh migrate"
   else
     echo ">> Production stack started. Caddy serves :80/:443 — set your"
     echo ">> domain in Caddyfile first."
-    echo "First time on this database? Run: ./run.sh prisma --prod"
+    echo "First time on this database? Run: ./run.sh migrate --prod"
   fi
 }
 
@@ -117,10 +117,10 @@ cmd_logs() {
   docker compose "${COMPOSE_ARGS[@]}" logs -f --tail=100
 }
 
-cmd_prisma() {
+cmd_migrate() {
   parse_flags "$@"
   build_compose_args "$MODE" "$LOCAL_MODELS"
-  docker compose "${COMPOSE_ARGS[@]}" run --rm web npx prisma db push
+  docker compose "${COMPOSE_ARGS[@]}" run --rm backend alembic upgrade head
 }
 
 cmd_pull_model() {
@@ -143,7 +143,7 @@ main() {
     up)         cmd_up "$@" ;;
     down)       cmd_down "$@" ;;
     logs)       cmd_logs "$@" ;;
-    prisma|migrate) cmd_prisma "$@" ;;
+    migrate)    cmd_migrate "$@" ;;
     pull-model) cmd_pull_model "$@" ;;
     help|-h|--help) usage ;;
     *) usage; exit 1 ;;

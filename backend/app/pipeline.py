@@ -84,7 +84,7 @@ def run_job(job_id: str) -> None:
             db.update_job(job_id, status="failed", stage=None, error=str(exc))
             job = db.get_job(job_id)
             if job:
-                db.update_project(job["projectId"], status="failed")
+                db.update_project(job["project_id"], status="failed")
         except Exception:
             pass
 
@@ -93,7 +93,7 @@ def _run(job_id: str) -> None:
     job = db.get_job(job_id)
     if not job:
         return
-    project_id = job["projectId"]
+    project_id = job["project_id"]
     project = db.get_project(project_id)
     if not project:
         raise RuntimeError(f"Project {project_id} not found")
@@ -102,7 +102,7 @@ def _run(job_id: str) -> None:
     orientation = options.get("orientation", "portrait")
     max_clips = int(options.get("max_clips", 10))
     source = project["source"]
-    source_type = project.get("sourceType", "youtube")
+    source_type = project.get("source_type", "youtube")
 
     settings = _settings()
     assemblyai_key = settings["assemblyai_key"]

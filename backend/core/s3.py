@@ -135,6 +135,27 @@ def presigned_get_url(bucket: str, key: str, expires: int = PRESIGNED_EXPIRY) ->
     )
 
 
+def presign_put_url(key: str, content_type: str, expires: int = 3600) -> str:
+    """Return a presigned PUT URL for direct browser uploads of ``key``."""
+    from botocore.exceptions import ClientError
+
+    bucket = _get_bucket()
+    params: dict = {
+        "Bucket": bucket,
+        "Key": key,
+    }
+    if content_type:
+        params["ContentType"] = content_type
+    try:
+        return _client().generate_presigned_url(
+            "put_object",
+            Params=params,
+            ExpiresIn=expires,
+        )
+    except ClientError as exc:
+        raise S3Error(f"S3 presign failed: {exc}") from exc
+
+
 def download_object(key: str, dest: str) -> str:
     """Download ``key`` from the default bucket to ``dest``."""
     client = _client()

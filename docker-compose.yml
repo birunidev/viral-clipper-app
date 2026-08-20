@@ -3,13 +3,22 @@ services:
     build: ./backend
     restart: unless-stopped
     env_file: ./backend/.env
+    environment:
+      # CORS allow-list for the browser app. With Caddy proxying /api/*
+      # on the same domain as the web app this is same-origin, but FastAPI
+      # still needs to see an explicit allowed origin (cookies + Origin).
+      FRONTEND_URLS: ${FRONTEND_URLS:-https://example.com}
     expose:
       - "8000"
 
   web:
-    build: ./web
+    build:
+      context: ./web
+      args:
+        # Browser-facing API origin. With Caddy proxying /api/* on the
+        # same domain as the web app, this can be a same-origin path.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://example.com/api/v1}
     restart: unless-stopped
-    env_file: ./web/.env
     depends_on:
       - backend
     expose:

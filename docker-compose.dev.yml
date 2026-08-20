@@ -5,7 +5,7 @@
 #   docker compose -f docker-compose.dev.yml up -d postgres   # only the DB
 #
 # After the first start, create the schema:
-#   cd web && npx prisma db push
+#   docker compose -f docker-compose.dev.yml run --rm backend alembic upgrade head
 #
 # Default local dev DB: postgresql://clipforge:clipforge@localhost:5438/clipforge
 
@@ -34,6 +34,7 @@ services:
     env_file: ./backend/.env
     environment:
       DATABASE_URL: postgresql://clipforge:clipforge@postgres:5432/clipforge
+      FRONTEND_URLS: http://localhost:3000
     ports:
       - "8000:8000"
     depends_on:
@@ -41,18 +42,14 @@ services:
         condition: service_healthy
 
   web:
-    build: ./web
+    build:
+      context: ./web
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
     restart: unless-stopped
-    env_file: ./web/.env
-    environment:
-      DATABASE_URL: postgresql://clipforge:clipforge@postgres:5432/clipforge
-      BACKEND_URL: http://backend:8000
-      BETTER_AUTH_URL: http://localhost:3000
     ports:
       - "3000:3000"
     depends_on:
-      postgres:
-        condition: service_healthy
       backend:
         condition: service_started
 

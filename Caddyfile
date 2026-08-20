@@ -1,4 +1,19 @@
 # Replace with your domain, e.g.  clipforge.example.com
 example.com {
-	reverse_proxy web:3000
+	# The browser calls the FastAPI backend directly for auth/CRUD/upload
+	# (same-site so the httpOnly session cookie works across both origins).
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
+
+	# Everything else (SSR marketing site + /app/* client app) goes to Next.js.
+	handle {
+		reverse_proxy web:3000
+	}
+
+	# Reasonable default headers.
+	header {
+		-X-Server
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
 }
