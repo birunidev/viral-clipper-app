@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import uuid
 from typing import Callable
 
 from core import analyzer, cutter, s3, transcriber, youtube
@@ -65,7 +66,12 @@ def _make_progress(job_id: str, lo: float, hi: float) -> Callable[[float], None]
 
 
 def _extract_thumbnail(src: str, at: float, dest: str) -> bool:
-    """Best-effort frame grab for a clip thumbnail."""
+    """Best-effort frame grab for a clip thumbnail (JPEG, fast).
+
+    Extracts a single frame at ``at`` seconds using ffmpeg's fast seek.
+    A single frame can land on a scene cut or black frame, so callers
+    should try a few offsets (midpoint, start+1s, end-1s) before giving up.
+    """
     try:
         result = subprocess.run(
             [
@@ -81,16 +87,52 @@ def _extract_thumbnail(src: str, at: float, dest: str) -> bool:
                 "-frames:v",
                 "1",
                 "-q:v",
-                "2",
+                "3",
                 dest,
             ],
             capture_output=True,
             text=True,
             timeout=120,
         )
-        return result.returncode == 0 and os.path.isfile(dest)
+        return result.returncode == 0 and os.path.isfile(dest) and os.path.getsize(dest) > 0
     except Exception:
         return False
+
+
+def _extract_thumbnail_offsets(src: str, start: float, end: float, dest: str) -> bool:
+    """Try a few offsets inside the clip and write the first frame that
+    succeeds to ``dest``. Prefers the midpoint, then just after the start,
+    then just before the end — cheap insurance against landing on a scene
+    cut or a black frame."""
+    duration = max(end - start, 0.1)
+    candidates = [
+        start + duration / 2.0,        # midpoint
+        start + min(1.0, duration / 4.0),  # near the start
+        max(start, end - 1.0),         # near the end
+    ]
+    for i, ts in enumerate(candidates):
+        attempt = dest if i == 0 else f"{dest}.{i}"
+        if _extract_thumbnail(src, ts, attempt):
+            if i > 0:
+                shutil.move(attempt, dest)
+            return True
+        if os.path.exists(attempt):
+            os.remove(attempt)
+    return False
+
+
+def _upload_thumbnail(project_id: str, thumb_path: str) -> str | None:
+    """Upload a thumbnail to S3 (JPEG, unique key). Returns the S3 key, or
+    None if upload fails (the clip just won't have a thumbnail)."""
+    try:
+        upload = s3.upload_file_as(
+            thumb_path,
+            f"projects/{project_id}/thumbs/{uuid.uuid4().hex}.jpg",
+            "image/jpeg",
+        )
+        return upload.key
+    except Exception:
+        return None
 
 
 def run_job(job_id: str) -> None:
@@ -207,18 +249,13 @@ def _run_analyze(job_id: str) -> None:
         os.makedirs(thumb_dir, exist_ok=True)
         total = max(len(clips), 1)
         for i, clip in enumerate(clips, start=1):
+            # Capture a thumbnail from the source video now that we know
+            # the timestamps. Try a few offsets inside the clip so a scene
+            # cut at the exact midpoint doesn't leave the clip thumbnailless.
             thumbnail_key = None
-            thumb_png = os.path.join(thumb_dir, f"thumb_{i:02d}.png")
-            mid = clip["start"] + (clip["end"] - clip["start"]) / 2.0
-            if _extract_thumbnail(local_video, mid, thumb_png):
-                try:
-                    thumbnail_key = s3.upload_file(
-                        thumb_png,
-                        f"projects/{project_id}/thumbs",
-                        "image/png",
-                    ).key
-                except Exception:
-                    thumbnail_key = None
+            thumb_jpg = os.path.join(thumb_dir, f"thumb_{i:02d}.jpg")
+            if _extract_thumbnail_offsets(local_video, clip["start"], clip["end"], thumb_jpg):
+                thumbnail_key = _upload_thumbnail(project_id, thumb_jpg)
 
             # video_url is intentionally left unset — clips preview by
             # seeking the source video, and only get their own rendered
@@ -298,6 +335,16 @@ def _run_render(job_id: str) -> None:
             orientation,
         )
         db.update_job(job_id, stage="cutting", progress=90)
+
+        # If the clip never got a thumbnail during analysis (scene cut at
+        # the midpoint, transient failure, or an older clip), backfill one
+        # now that we have the source video locally — it's nearly free.
+        if not clip.get("thumbnail_url"):
+            thumb_jpg = os.path.join(out_dir, "thumb.jpg")
+            if _extract_thumbnail_offsets(local_video, clip["start_time"], clip["end_time"], thumb_jpg):
+                thumb_key = _upload_thumbnail(project_id, thumb_jpg)
+                if thumb_key:
+                    db.set_clip_thumbnail_url(clip_id, thumb_key)
 
         upload = s3.upload_file(mp4, f"projects/{project_id}/clips", "video/mp4")
         db.set_clip_video_url(clip_id, upload.key)

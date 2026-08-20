@@ -166,6 +166,13 @@ def set_clip_video_url(clip_id: str, video_url: str) -> None:
             clip.video_url = video_url
 
 
+def set_clip_thumbnail_url(clip_id: str, thumbnail_url: str) -> None:
+    with session_scope() as db:
+        clip = db.get(Clip, clip_id)
+        if clip is not None:
+            clip.thumbnail_url = thumbnail_url
+
+
 def update_job(job_id: str, **fields: Any) -> None:
     if not fields:
         return
