@@ -1,0 +1,65 @@
+# Local-model (fully private) override.
+#
+# Switches transcription to whisper.cpp and analysis to a local Ollama
+# server so no video/audio/transcript ever leaves the machine.
+#
+# Ollama runs as a Docker container on every OS. On macOS/Windows it runs
+# on CPU (Docker Desktop cannot pass the Apple GPU/Metal or Windows GPU
+# into containers); on Linux it runs on the NVIDIA GPU automatically when
+# nvidia-container-toolkit is installed, otherwise CPU.
+#
+# Usage:
+#
+#   docker compose -f docker-compose.dev.yml -f docker-compose.local.yml up -d --build
+#
+# macOS/Windows users can optionally run Ollama natively to get GPU
+# acceleration, then point the backend at it (the `extra_hosts` entry
+# below already lets the backend reach host services):
+#
+#   brew install ollama && ollama serve          # macOS
+#   ollama pull qwen2.5:7b-instruct-q4_K_M
+#   # backend/.env: LLM_BASE_URL=http://host.docker.internal:11434/v1
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.local
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      TRANSCRIPTION_PROVIDER: local
+      WHISPER_MODEL: ${WHISPER_MODEL:-base}
+      WHISPER_THREADS: ${WHISPER_THREADS:-4}
+      WORKERS: "1"
+      # Local Ollama ignores the API key but the OpenAI client needs a
+      # non-empty string; use 'ollama' as a dummy.
+      LLM_API_KEY: ollama
+      LLM_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434/v1}
+      LLM_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct-q4_K_M}
+    extra_hosts:
+      # Lets the backend reach an optional native host Ollama.
+      - "host.docker.internal:host-gateway"
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+      - ./ollama-entrypoint.sh:/usr/local/bin/ollama-entrypoint.sh:ro
+    entrypoint: ["/usr/local/bin/ollama-entrypoint.sh"]
+    environment:
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-300} # unload model 5 min after last use
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct-q4_K_M}
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # GPU passthrough (Linux only). Apply docker-compose.gpu.yml if you
+    # have an NVIDIA GPU; base Compose stays CPU-compatible so the 16GB-RAM
+    # baseline works on every OS without extra tooling.
+
+volumes:
+  ollama_models:

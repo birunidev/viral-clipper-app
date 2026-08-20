@@ -1,0 +1,18 @@
+# NVIDIA GPU passthrough for the local-model Ollama service (Linux only).
+# Requires the NVIDIA driver + nvidia-container-toolkit installed on the host.
+#
+# Usage (stack on with local models + GPU acceleration):
+#   docker compose -f docker-compose.dev.yml -f docker-compose.local.yml -f docker-compose.gpu.yml up -d --build
+#
+# Without this file, docker-compose.local.yml runs Ollama on CPU, which
+# works fine for the 16GB-RAM baseline on any OS, just slower.
+
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

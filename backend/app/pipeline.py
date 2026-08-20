@@ -23,6 +23,7 @@ def _settings() -> dict:
     after this module is imported)."""
     return {
         "assemblyai_key": os.environ.get("ASSEMBLYAI_KEY", ""),
+        "transcription_provider": os.environ.get("TRANSCRIPTION_PROVIDER", "assemblyai"),
         "llm_api_key": os.environ.get("LLM_API_KEY", ""),
         "llm_base_url": os.environ.get("LLM_BASE_URL", "https://ai.sumopod.com/v1"),
         "llm_model": os.environ.get("LLM_MODEL", "deepseek-v4-flash"),
@@ -105,14 +106,24 @@ def _run(job_id: str) -> None:
 
     settings = _settings()
     assemblyai_key = settings["assemblyai_key"]
+    transcription_provider = settings["transcription_provider"]
     llm_api_key = settings["llm_api_key"]
     llm_base_url = settings["llm_base_url"]
     llm_model = settings["llm_model"]
 
-    if not assemblyai_key:
+    # AssemblyAI key is only required for the cloud transcription provider;
+    # the local (whisper.cpp) provider needs no network credentials.
+    if transcription_provider == "assemblyai" and not assemblyai_key:
         raise RuntimeError("ASSEMBLYAI_KEY environment variable is not set.")
+    # A local Ollama/OpenAI-compatible server generally ignores the API key,
+    # but the OpenAI SDK still requires a non-empty string to construct the
+    # client, so LLM_API_KEY may be a dummy value (e.g. "ollama") when
+    # LLM_BASE_URL points at a local endpoint.
     if not llm_api_key:
-        raise RuntimeError("LLM_API_KEY environment variable is not set.")
+        raise RuntimeError(
+            "LLM_API_KEY environment variable is not set (use any non-empty "
+            "value, e.g. 'ollama', when LLM_BASE_URL points at a local server)."
+        )
 
     db.update_project(project_id, status="running")
     db.update_job(job_id, status="running", stage="downloading", progress=2)
@@ -140,6 +151,7 @@ def _run(job_id: str) -> None:
             local_video,
             assemblyai_key,
             progress=_make_progress(job_id, *STAGE_RANGES["transcribing"]),
+            provider=transcription_provider,
         )
         db.update_job(job_id, stage="transcribing", progress=50)
 

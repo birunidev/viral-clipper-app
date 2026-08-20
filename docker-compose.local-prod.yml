@@ -1,0 +1,53 @@
+# Production local-model (fully private) override.
+#
+# Switches the production stack (docker-compose.yml) to whisper.cpp + a
+# local Ollama so no video/audio/transcript ever leaves the machine.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.local-prod.yml up -d --build
+#
+# Add GPU acceleration on Linux NVIDIA hosts:
+#   docker compose -f docker-compose.yml -f docker-compose.local-prod.yml -f docker-compose.gpu-prod.yml up -d --build
+#
+# Ollama runs as a container on every OS. On macOS/Windows it uses the CPU
+# (Docker Desktop cannot pass the Apple/Windows GPU into containers); a
+# native Ollama install is faster there but the containerized one still
+# works.
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.local
+    environment:
+      TRANSCRIPTION_PROVIDER: local
+      WHISPER_MODEL: ${WHISPER_MODEL:-base}
+      WHISPER_THREADS: ${WHISPER_THREADS:-4}
+      WORKERS: "1"
+      LLM_API_KEY: ollama
+      LLM_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434/v1}
+      LLM_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct-q4_K_M}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+      - ./ollama-entrypoint.sh:/usr/local/bin/ollama-entrypoint.sh:ro
+    entrypoint: ["/usr/local/bin/ollama-entrypoint.sh"]
+    environment:
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-300}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct-q4_K_M}
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  ollama_models:

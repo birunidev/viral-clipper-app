@@ -1,4 +1,7 @@
-"""Tests for the AssemblyAI REST transcription wrapper in core.transcriber."""
+"""Tests for the transcription wrappers in core.transcriber.
+
+Covers the cloud AssemblyAI REST path and the local whisper.cpp path.
+"""
 
 import json
 
@@ -290,3 +293,119 @@ def test_extract_audio_failure_raises(monkeypatch, tmp_path):
     with pytest.raises(TranscriptionError, match="Could not extract audio"):
         from core.transcriber import _extract_audio
         _extract_audio(video, None)
+
+
+def test_build_extract_command_wav_uses_pcm():
+    cmd = build_extract_command("/vids/src.mp4", "/tmp/audio.wav", fmt="wav")
+    assert cmd[cmd.index("-c:a") + 1] == "pcm_s16le"
+    assert cmd[cmd.index("-ar") + 1] == "16000"
+    assert cmd[-1] == "/tmp/audio.wav"
+
+
+# --------------------------------------------------------------- provider dispatch
+
+
+def test_transcribe_defaults_to_assemblyai(session, fake_audio):
+    session.script = [
+        ("post", BASE_URL + "/v2/upload", 200, {"upload_url": "https://cdn.example/u"}),
+        ("post", BASE_URL + "/v2/transcript", 200, {"id": "abc123"}),
+        ("get", BASE_URL + "/v2/transcript/abc123", 200, {"status": "completed", "text": "Hello"}),
+    ]
+    text = transcribe("video.mp4", "test-key")
+    assert text == "Hello"
+
+
+def test_transcribe_unknown_provider_raises(session, fake_audio):
+    with pytest.raises(TranscriptionError, match="Unknown TRANSCRIPTION_PROVIDER"):
+        transcribe("video.mp4", "test-key", provider="bogus")
+
+
+def _install_fake_whisper(monkeypatch, model_class):
+    """Inject a fake ``pywhispercpp`` package into sys.modules so the local
+    path can be tested without the native binding installed."""
+    import sys
+
+    package = type("pywhispercpp", (), {})
+    model_module = type("model", (), {"Model": model_class})
+    monkeypatch.setitem(sys.modules, "pywhispercpp", package)
+    monkeypatch.setitem(sys.modules, "pywhispercpp.model", model_module)
+
+
+def test_transcribe_local_missing_file(tmp_path):
+    with pytest.raises(TranscriptionError, match="File not found"):
+        transcribe(str(tmp_path / "nope.mp4"), "", provider="local")
+
+
+def test_transcribe_local_success(monkeypatch, tmp_path):
+    """The local (whisper.cpp) path never touches the network."""
+    video = make_file(tmp_path)
+
+    monkeypatch.setattr(
+        "core.transcriber._extract_audio",
+        lambda video_path, progress=None, fmt="mp3": video_path,
+    )
+
+    class FakeSegment:
+        def __init__(self, text):
+            self.text = text
+
+    class FakeModel:
+        def __init__(self, model_name, n_threads=4):
+            self.model_name = model_name
+            self.n_threads = n_threads
+
+        def transcribe(self, audio_path):
+            return [FakeSegment(" Hello"), FakeSegment(" world ")]
+
+    _install_fake_whisper(monkeypatch, FakeModel)
+
+    steps = []
+    text = transcribe(video, "", progress=steps.append, provider="local")
+
+    assert text == "Hello world"
+    assert steps[-1] == 1.0
+
+
+def test_transcribe_local_missing_dependency(monkeypatch, tmp_path):
+    import builtins
+    import sys
+
+    video = make_file(tmp_path)
+    monkeypatch.setattr(
+        "core.transcriber._extract_audio",
+        lambda video_path, progress=None, fmt="mp3": video_path,
+    )
+
+    monkeypatch.setitem(sys.modules, "pywhispercpp", None)
+    monkeypatch.setitem(sys.modules, "pywhispercpp.model", None)
+    monkeypatch.delitem(sys.modules, "pywhispercpp.model", raising=False)
+    monkeypatch.delitem(sys.modules, "pywhispercpp", raising=False)
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name.startswith("pywhispercpp"):
+            raise ImportError("no module named pywhispercpp")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with pytest.raises(TranscriptionError, match="pywhispercpp is not installed"):
+        transcribe(video, "", provider="local")
+
+
+def test_transcribe_local_model_load_failure(monkeypatch, tmp_path):
+    video = make_file(tmp_path)
+    monkeypatch.setattr(
+        "core.transcriber._extract_audio",
+        lambda video_path, progress=None, fmt="mp3": video_path,
+    )
+
+    class FakeModel:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("model file not found")
+
+    _install_fake_whisper(monkeypatch, FakeModel)
+
+    with pytest.raises(TranscriptionError, match="Could not load whisper.cpp model"):
+        transcribe(video, "", provider="local")

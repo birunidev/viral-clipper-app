@@ -1,13 +1,23 @@
-"""AssemblyAI transcription wrapper using the REST API directly.
+"""Transcription: AssemblyAI (cloud) or whisper.cpp (local), picked per job.
 
-Extracts a compressed audio track from the local video with FFmpeg, then
-uploads that audio, submits a transcript job, and polls until it
-completes. Talks to the plain HTTP API through ``requests`` so the
-``assemblyai`` SDK is not required.
+Two interchangeable providers behind one ``transcribe()`` entry point,
+selected via the ``provider`` argument or the ``TRANSCRIPTION_PROVIDER``
+env var (``assemblyai`` default, or ``local``):
 
-The audio is uploaded to Amazon S3 when ``S3_BUCKET`` is set in the
-environment (credentials come from the standard AWS env vars); otherwise
-it falls back to AssemblyAI's own upload endpoint.
+- ``assemblyai`` — extracts a compressed audio track from the local video
+  with FFmpeg, uploads that audio, submits a transcript job, and polls
+  until it completes. Talks to the plain HTTP API through ``requests`` so
+  the ``assemblyai`` SDK is not required. The audio is uploaded to Amazon
+  S3 when ``S3_BUCKET`` is set (credentials come from the standard AWS env
+  vars); otherwise it falls back to AssemblyAI's own upload endpoint.
+- ``local`` — runs whisper.cpp in-process via ``pywhispercpp``. Works on
+  CPU everywhere, and picks up Metal (Apple Silicon) or CUDA acceleration
+  automatically if the installed wheel/build supports it. No network
+  calls, no S3 round-trip. The model is loaded fresh per call and dropped
+  immediately after so it does not stay resident in RAM while the next
+  pipeline stage (LLM analysis) loads its own model — important on
+  RAM-constrained boxes (e.g. 16GB laptops) where whisper and the LLM
+  should not be resident at the same time.
 
 The transcription progress is reported via an optional callback that
 receives floats in [0, 1]. Because AssemblyAI exposes statuses rather than
@@ -33,6 +43,13 @@ POLL_INTERVAL = 3.0
 MAX_WAIT = 600  # seconds before giving up on a transcript
 UPLOAD_CHUNK = 1 << 20  # 1 MiB
 
+PROVIDER_ASSEMBLYAI = "assemblyai"
+PROVIDER_LOCAL = "local"
+PROVIDERS = (PROVIDER_ASSEMBLYAI, PROVIDER_LOCAL)
+DEFAULT_PROVIDER = os.environ.get("TRANSCRIPTION_PROVIDER", PROVIDER_ASSEMBLYAI)
+DEFAULT_WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "base")
+DEFAULT_WHISPER_THREADS = int(os.environ.get("WHISPER_THREADS", "4"))
+
 
 class TranscriptionError(Exception):
     """Raised when transcription fails for any reason."""
@@ -42,14 +59,34 @@ def transcribe(
     file_path: str,
     api_key: str,
     progress: Callable[[float], None] | None = None,
+    provider: str | None = None,
 ) -> str:
     """Extract audio from ``file_path`` and return the transcript text.
 
+    ``provider`` selects ``assemblyai`` (cloud, default) or ``local``
+    (whisper.cpp, no network). Falls back to the ``TRANSCRIPTION_PROVIDER``
+    env var, then to ``assemblyai``, if not passed explicitly.
+
     ``progress`` (optional) receives a float in [0, 1] estimating how far
     along the transcription is. Raises TranscriptionError on missing file,
-    invalid key, network failures, or API errors. This is synchronous
+    invalid key/model, or provider failures. This is synchronous
     (blocking), so call it from a worker thread, never the UI thread.
     """
+    provider = (provider or DEFAULT_PROVIDER or PROVIDER_ASSEMBLYAI).strip().lower()
+    if provider == PROVIDER_LOCAL:
+        return _transcribe_local(file_path, progress)
+    if provider != PROVIDER_ASSEMBLYAI:
+        raise TranscriptionError(
+            f"Unknown TRANSCRIPTION_PROVIDER: {provider!r} (expected one of {PROVIDERS})"
+        )
+    return _transcribe_assemblyai(file_path, api_key, progress)
+
+
+def _transcribe_assemblyai(
+    file_path: str,
+    api_key: str,
+    progress: Callable[[float], None] | None,
+) -> str:
     if not api_key:
         raise TranscriptionError("AssemblyAI API key is required.")
 
@@ -68,11 +105,72 @@ def transcribe(
             delete_object(uploaded.bucket, uploaded.key)
 
 
+# --------------------------------------------------------------- local (whisper.cpp)
+
+
+def _transcribe_local(
+    file_path: str,
+    progress: Callable[[float], None] | None,
+) -> str:
+    """Transcribe fully offline with whisper.cpp via ``pywhispercpp``.
+
+    Loads the model fresh for this call and lets it go out of scope
+    immediately after, so it does not stay resident in memory once the
+    pipeline moves on to LLM analysis. That matters on RAM-constrained
+    machines (e.g. 16GB laptops) where whisper and the LLM should never
+    both be loaded at once.
+    """
+    if not os.path.isfile(file_path):
+        raise TranscriptionError(f"File not found: {file_path}")
+
+    try:
+        from pywhispercpp.model import Model
+    except ImportError as exc:  # pragma: no cover - defensive
+        raise TranscriptionError(
+            "pywhispercpp is not installed. Run: pip install pywhispercpp "
+            "(or poetry install with the 'local' extra)."
+        ) from exc
+
+    audio_path = _extract_audio(file_path, progress, fmt="wav")
+    try:
+        _report(progress, 0.2)
+        try:
+            model = Model(DEFAULT_WHISPER_MODEL, n_threads=DEFAULT_WHISPER_THREADS)
+        except Exception as exc:
+            raise TranscriptionError(
+                f"Could not load whisper.cpp model {DEFAULT_WHISPER_MODEL!r}: {exc}"
+            ) from exc
+
+        try:
+            segments = model.transcribe(audio_path)
+        except Exception as exc:
+            raise TranscriptionError(f"whisper.cpp transcription failed: {exc}") from exc
+        finally:
+            # Drop the model reference explicitly so the (potentially
+            # multi-GB) weights are freed before analysis loads the LLM.
+            del model
+
+        _report(progress, 1.0)
+        return " ".join(segment.text.strip() for segment in segments).strip()
+    finally:
+        _quiet_remove(audio_path)
+
+
 # ------------------------------------------------------------------ audio
 
 
-def build_extract_command(video_path: str, out_path: str) -> list[str]:
-    """Build the FFmpeg command that pulls a mono MP3 out of a video."""
+def build_extract_command(video_path: str, out_path: str, fmt: str = "mp3", sample_rate: int = 16000) -> list[str]:
+    """Build the FFmpeg command that pulls mono audio out of a video.
+
+    ``fmt`` selects the output container/codec: ``wav`` produces a lossless
+    16-bit PCM WAV (best quality for local whisper.cpp transcription),
+    ``mp3`` produces a 64kbps MP3 (smaller upload for the cloud AssemblyAI
+    path). ``sample_rate`` defaults to 16kHz, which whisper expects.
+    """
+    if fmt == "wav":
+        codec_flags = ["-c:a", "pcm_s16le"]
+    else:
+        codec_flags = ["-c:a", "libmp3lame", "-b:a", "64k"]
     return [
         "ffmpeg",
         "-y",
@@ -84,19 +182,19 @@ def build_extract_command(video_path: str, out_path: str) -> list[str]:
         "-vn",
         "-ac",
         "1",
-        "-c:a",
-        "libmp3lame",
-        "-b:a",
-        "64k",
+        "-ar",
+        str(sample_rate),
+        *codec_flags,
         out_path,
     ]
 
 
-def _extract_audio(video_path: str, progress) -> str:
+def _extract_audio(video_path: str, progress, fmt: str = "mp3") -> str:
     if not os.path.isfile(video_path):
         raise TranscriptionError(f"File not found: {video_path}")
 
-    fd, out_path = tempfile.mkstemp(suffix=".mp3")
+    suffix = ".wav" if fmt == "wav" else ".mp3"
+    fd, out_path = tempfile.mkstemp(suffix=suffix)
     os.close(fd)
     try:
         os.remove(out_path)
@@ -112,7 +210,7 @@ def _extract_audio(video_path: str, progress) -> str:
 
         try:
             result = subprocess.run(
-                build_extract_command(video_path, out_path),
+                build_extract_command(video_path, out_path, fmt),
                 capture_output=True,
                 text=True,
             )
