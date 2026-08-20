@@ -1,6 +1,8 @@
-"""Project endpoints: list, create, detail (with signed clip URLs), start job."""
+"""Project endpoints: list, create, detail (with signed source/clip URLs), jobs."""
 
 from __future__ import annotations
+
+import os
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -10,6 +12,7 @@ from ..schemas import (
     ProjectCreate,
     ProjectDetail,
     ProjectListItem,
+    RenderClipRequest,
     StartJobRequest,
 )
 from ..security import SessionUser, current_user
@@ -22,10 +25,6 @@ def _presigned(key: str | None) -> str | None:
     if not key:
         return None
     from core.s3 import presigned_get_url
-
-    # Keys are stored without a bucket; the default bucket from S3_BUCKET
-    # is used (mirrors the previous Next.js presignedGet behavior).
-    import os
 
     bucket = os.environ.get("S3_BUCKET", "")
     if not bucket:
@@ -61,9 +60,17 @@ def get_project(project_id: str, user: SessionUser = Depends(current_user)) -> d
     if project is None:
         raise HTTPException(status_code=404, detail="Not found")
 
+    # The stored source video powers clip previews (browser seeks to the
+    # clip's [start_time, end_time]). Expose a signed URL when available.
+    project["source_video_url"] = _presigned(project.get("source_key"))
+
     for clip in project["clips"]:
+        # Rendered file (only exists after a render job ran).
         clip["signed_video_url"] = _presigned(clip.get("video_url"))
         clip["signed_thumbnail_url"] = _presigned(clip.get("thumbnail_url"))
+        # A clip may have a render job queued/running — surface it so the
+        # UI can show progress and disable duplicate downloads.
+        clip["render_job"] = db.find_active_render_job(clip["id"])
 
     return project
 
@@ -84,11 +91,43 @@ def start_job(
     orientation = payload.orientation if payload.orientation in ("portrait", "landscape", "original") else "portrait"
     options = {"orientation": orientation, "max_clips": payload.max_clips}
 
-    job = db.create_job(project_id, options)
+    job = db.create_job(project_id, options, job_type="analyze")
     db.update_project(project_id, status="queued")
 
     # In-process enqueue — no HTTP hop to a separate service needed now
     # that the API and the pipeline worker live in the same FastAPI app.
     pool.submit(job["id"])
 
+    return job
+
+
+@router.post("/{project_id}/clips/{clip_id}/render", response_model=JobResponse, status_code=201)
+def render_clip(
+    project_id: str,
+    clip_id: str,
+    payload: RenderClipRequest,
+    user: SessionUser = Depends(current_user),
+) -> dict:
+    """Enqueue cutting + uploading a single clip (on-demand download)."""
+    project = db.get_project_for_user(project_id, user.id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    clip = db.get_clip_for_user(clip_id, user.id)
+    if clip is None:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # Already rendered — the stored video_url is ready to download; nothing
+    # to enqueue. Frontend falls back to the signed video_url in this case.
+    if clip.get("video_url"):
+        raise HTTPException(status_code=409, detail="Clip is already rendered")
+
+    if db.find_active_render_job(clip_id) is not None:
+        raise HTTPException(status_code=409, detail="A render job is already running for this clip")
+
+    orientation = payload.orientation if payload.orientation in ("portrait", "landscape", "original") else "portrait"
+    options = {"orientation": orientation}
+
+    job = db.create_job(project_id, options, job_type="render", clip_id=clip_id)
+    pool.submit(job["id"])
     return job

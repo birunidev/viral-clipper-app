@@ -45,6 +45,10 @@ class StartJobRequest(BaseModel):
     max_clips: int = Field(default=10, ge=1, le=20)
 
 
+class RenderClipRequest(BaseModel):
+    orientation: str = "portrait"  # portrait | landscape | original
+
+
 class ClipResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -53,12 +57,15 @@ class ClipResponse(BaseModel):
     viral_hook: str | None = None
     start_time: float
     end_time: float
-    video_url: str
+    # Null until a render job cuts this clip; previews use the project's
+    # source_video_url + [start_time, end_time] instead.
+    video_url: str | None = None
     thumbnail_url: str | None = None
     created_at: dt.datetime
     # populated server-side:
     signed_video_url: str | None = None
     signed_thumbnail_url: str | None = None
+    render_job: dict | None = None
 
 
 class JobResponse(BaseModel):
@@ -66,6 +73,8 @@ class JobResponse(BaseModel):
 
     id: str
     project_id: str
+    type: str = "analyze"  # analyze | render
+    clip_id: str | None = None
     status: str
     stage: str | None = None
     progress: int
@@ -99,8 +108,11 @@ class ProjectDetail(BaseModel):
     title: str
     source: str
     source_type: str
+    source_key: str | None = None
     status: str
     created_at: dt.datetime
+    # signed URL of the canonical source video (used for clip previews)
+    source_video_url: str | None = None
     clips: list[ClipResponse] = []
     jobs: list[JobResponse] = []
 

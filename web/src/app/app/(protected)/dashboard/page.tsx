@@ -1,8 +1,21 @@
 "use client";
 
+import {
+  CloudArrowUp,
+  Clock,
+  FilmReel,
+  Plus,
+  Warning,
+  X,
+  YoutubeLogo,
+} from "@phosphor-icons/react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Card, EmptyState, Skeleton } from "@/components/ui/card";
+import { StatusPill } from "@/components/ui/status-pill";
+import { SourceTypeIcon } from "@/components/project/source-icon";
 import { useCreateProject, usePresignUpload, useProjects } from "@/hooks/use-projects";
 
 export default function DashboardPage() {
@@ -11,11 +24,13 @@ export default function DashboardPage() {
   const createProject = useCreateProject();
   const presignUpload = usePresignUpload();
 
+  const [composerOpen, setComposerOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [sourceType, setSourceType] = useState<"youtube" | "upload">("youtube");
   const [url, setUrl] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -52,7 +67,7 @@ export default function DashboardPage() {
         headers: { "Content-Type": file.type || "application/octet-stream" },
         body: file,
       });
-      if (!uploadRes.ok) throw new Error("Upload failed");
+      if (!uploadRes.ok) throw new Error("Upload failed. Try again.");
 
       createProject.mutate(
         { title, source: key, source_type: "upload" },
@@ -70,107 +85,178 @@ export default function DashboardPage() {
   const isUploading = presignUpload.isPending || createProject.isPending;
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-8">
-      <div>
-        <h1 className="text-2xl font-semibold">Projects</h1>
-        <p className="mt-1 text-sm text-zinc-400">
-          Paste a YouTube URL or upload a video, then cut the best moments.
-        </p>
+    <div className="mx-auto flex max-w-4xl flex-col gap-8">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-[22px] font-semibold tracking-tight text-ink">Projects</h1>
+          <p className="mt-1 text-sm text-ink-tertiary">
+            Paste a YouTube link or upload a video — ClipForge finds the moments worth cutting.
+          </p>
+        </div>
+        {!composerOpen && (
+          <Button onClick={() => setComposerOpen(true)}>
+            <Plus size={16} weight="bold" />
+            New project
+          </Button>
+        )}
       </div>
 
-      <form
-        onSubmit={onSubmit}
-        className="flex flex-col gap-4 rounded-2xl border border-zinc-800 bg-zinc-900 p-6"
-      >
-        <label className="flex flex-col gap-1 text-sm">
-          Title (optional)
-          <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="My podcast episode"
-            className="rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-zinc-400"
-          />
-        </label>
-
-        <div className="flex gap-2">
-          {(["youtube", "upload"] as const).map((type) => (
-            <button
-              key={type}
-              type="button"
-              onClick={() => setSourceType(type)}
-              className={`rounded-lg px-4 py-2 text-sm ${
-                sourceType === type
-                  ? "bg-zinc-100 text-zinc-900"
-                  : "border border-zinc-700 text-zinc-300 hover:bg-zinc-800"
-              }`}
-            >
-              {type === "youtube" ? "YouTube URL" : "Upload file"}
-            </button>
-          ))}
-        </div>
-
-        {sourceType === "youtube" ? (
-          <label className="flex flex-col gap-1 text-sm">
-            YouTube URL
-            <input
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://www.youtube.com/watch?v=..."
-              className="rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-zinc-400"
-            />
-          </label>
-        ) : (
-          <label className="flex flex-col gap-1 text-sm">
-            Video file
-            <input
-              type="file"
-              accept="video/*"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-              className="rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
-            />
-          </label>
-        )}
-
-        {error && <p className="text-sm text-red-400">{error}</p>}
-
-        <button
-          type="submit"
-          disabled={isUploading}
-          className="rounded-lg bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-white disabled:opacity-50"
-        >
-          {isUploading ? "Uploading..." : "Create project"}
-        </button>
-      </form>
-
-      <div className="flex flex-col gap-3">
-        {projectsQuery.isLoading && <p className="text-sm text-zinc-500">Loading...</p>}
-        {projects?.length === 0 && (
-          <p className="text-sm text-zinc-500">No projects yet.</p>
-        )}
-        {projects?.map((p) => (
-          <Link
-            key={p.id}
-            href={`/app/projects/${p.id}`}
-            className="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900 px-5 py-4 hover:border-zinc-600"
-          >
-            <div>
-              <p className="font-medium">{p.title}</p>
-              <p className="mt-0.5 truncate text-xs text-zinc-500">{p.source}</p>
+      {composerOpen && (
+        <Card className="p-5">
+          <form onSubmit={onSubmit} className="flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium text-ink">New project</p>
+              <button
+                type="button"
+                onClick={() => setComposerOpen(false)}
+                className="flex h-7 w-7 items-center justify-center rounded-md text-ink-tertiary hover:bg-surface-2 hover:text-ink"
+                aria-label="Close"
+              >
+                <X size={15} />
+              </button>
             </div>
-            <div className="flex items-center gap-4 text-right">
-              <span
-                className={`rounded-full px-2.5 py-1 text-xs ${
-                  p.status === "completed"
-                    ? "bg-emerald-900 text-emerald-300"
-                    : p.status === "failed"
-                      ? "bg-red-900 text-red-300"
-                      : "bg-zinc-800 text-zinc-300"
+
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => setSourceType("youtube")}
+                className={`flex items-center gap-2.5 rounded-lg border px-3.5 py-3 text-left text-sm transition-colors ${
+                  sourceType === "youtube"
+                    ? "border-accent/40 bg-accent-soft text-ink"
+                    : "border-line text-ink-secondary hover:border-line-strong"
                 }`}
               >
-                {p.status}
-              </span>
-              <span className="text-xs text-zinc-400">{p.clip_count} clips</span>
+                <YoutubeLogo size={20} weight={sourceType === "youtube" ? "fill" : "regular"} />
+                <div>
+                  <p className="font-medium leading-tight">YouTube link</p>
+                  <p className="text-xs text-ink-tertiary">Paste a public video URL</p>
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSourceType("upload")}
+                className={`flex items-center gap-2.5 rounded-lg border px-3.5 py-3 text-left text-sm transition-colors ${
+                  sourceType === "upload"
+                    ? "border-accent/40 bg-accent-soft text-ink"
+                    : "border-line text-ink-secondary hover:border-line-strong"
+                }`}
+              >
+                <CloudArrowUp size={20} weight={sourceType === "upload" ? "fill" : "regular"} />
+                <div>
+                  <p className="font-medium leading-tight">Upload file</p>
+                  <p className="text-xs text-ink-tertiary">MP4, MOV, or MKV</p>
+                </div>
+              </button>
             </div>
+
+            <label className="flex flex-col gap-1.5 text-sm">
+              <span className="text-ink-secondary">Title (optional)</span>
+              <input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="My podcast episode"
+                className="h-10 rounded-lg border border-line bg-surface-2 px-3 text-sm text-ink outline-none placeholder:text-ink-muted focus:border-accent/50"
+              />
+            </label>
+
+            {sourceType === "youtube" ? (
+              <label className="flex flex-col gap-1.5 text-sm">
+                <span className="text-ink-secondary">YouTube URL</span>
+                <input
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://www.youtube.com/watch?v=..."
+                  className="h-10 rounded-lg border border-line bg-surface-2 px-3 text-sm text-ink outline-none placeholder:text-ink-muted focus:border-accent/50"
+                />
+              </label>
+            ) : (
+              <label className="flex flex-col gap-1.5 text-sm">
+                <span className="text-ink-secondary">Video file</span>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex h-10 items-center justify-between rounded-lg border border-line bg-surface-2 px-3 text-left text-sm text-ink-tertiary hover:border-line-strong"
+                >
+                  <span className="truncate text-ink">{file ? file.name : "Choose a file..."}</span>
+                  <CloudArrowUp size={16} />
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="video/*"
+                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                  className="hidden"
+                />
+              </label>
+            )}
+
+            {error && (
+              <p className="flex items-center gap-1.5 text-sm text-danger">
+                <Warning size={14} weight="fill" />
+                {error}
+              </p>
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <Button type="button" variant="ghost" onClick={() => setComposerOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" loading={isUploading} disabled={isUploading}>
+                {isUploading ? "Creating..." : "Create project"}
+              </Button>
+            </div>
+          </form>
+        </Card>
+      )}
+
+      <div className="flex flex-col gap-3">
+        {projectsQuery.isLoading && (
+          <div className="flex flex-col gap-3">
+            {[0, 1, 2].map((i) => (
+              <Card key={i} className="flex items-center gap-4 p-4">
+                <Skeleton className="h-10 w-10 shrink-0 rounded-lg" />
+                <div className="flex-1 space-y-2">
+                  <Skeleton className="h-4 w-1/3" />
+                  <Skeleton className="h-3 w-1/2" />
+                </div>
+                <Skeleton className="h-6 w-20 rounded-full" />
+              </Card>
+            ))}
+          </div>
+        )}
+
+        {projects?.length === 0 && !composerOpen && (
+          <EmptyState
+            icon={<FilmReel size={28} />}
+            title="No projects yet"
+            body="Create your first project and ClipForge will find the moments worth cutting."
+            action={
+              <Button onClick={() => setComposerOpen(true)}>
+                <Plus size={16} weight="bold" />
+                New project
+              </Button>
+            }
+          />
+        )}
+
+        {projects?.map((p) => (
+          <Link key={p.id} href={`/app/projects/${p.id}`}>
+            <Card className="group flex items-center gap-4 p-4 transition-colors hover:border-line-strong">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-ink-tertiary">
+                <SourceTypeIcon type={p.source_type} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium text-ink">{p.title}</p>
+                <p className="mt-0.5 truncate text-xs text-ink-muted">{p.source}</p>
+              </div>
+              <div className="flex shrink-0 items-center gap-4">
+                <span className="flex items-center gap-1 text-xs text-ink-tertiary tabular-nums">
+                  <Clock size={13} />
+                  {p.clip_count} clip{p.clip_count === 1 ? "" : "s"}
+                </span>
+                <StatusPill status={p.status} />
+              </div>
+            </Card>
           </Link>
         ))}
       </div>

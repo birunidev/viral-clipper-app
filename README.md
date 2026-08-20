@@ -205,9 +205,10 @@ The backend owns all data and auth. Routes under `/api/v1`:
 | POST | `/auth/logout` | revoke session |
 | GET | `/auth/me` | current user |
 | GET/POST | `/projects` | list / create projects |
-| GET | `/projects/{id}` | project + clips + jobs (with signed R2 URLs) |
-| POST | `/projects/{id}/start` | create Job and enqueue the pipeline |
-| GET | `/jobs/{id}` | poll job status |
+| GET | `/projects/{id}` | project + clips + jobs (source + per-clip signed R2 URLs) |
+| POST | `/projects/{id}/start` | create an **analyze** Job and enqueue the pipeline |
+| POST | `/projects/{id}/clips/{clip_id}/render` | create a **render** Job to cut+upload one clip |
+| GET | `/jobs/{id}` | poll job status (either job type) |
 | POST | `/uploads/presign` | presigned PUT URL for direct browser uploads |
 
 Migrations live in `backend/alembic/`; the backend image runs
@@ -215,15 +216,39 @@ Migrations live in `backend/alembic/`; the backend image runs
 
 ## How it works
 
+The pipeline is split into two job types so previewing a clip never costs
+an ffmpeg render — only downloading one does.
+
+**1. Analyze job** (`POST /projects/{id}/start`) — runs once per pipeline run:
+
 1. **Source** — paste a YouTube URL (downloaded with yt-dlp, capped at 1080p,
    403 retry fallback) or upload a video (presigned PUT straight to R2).
-2. **Transcribe** — the backend extracts audio with ffmpeg and transcribes
-   with whisper.cpp (local) or AssemblyAI (cloud), then deletes the temporary
-   audio.
-3. **Analyze** — an OpenAI-compatible LLM (Ollama local, or any hosted
-   endpoint) returns viral moments as JSON (title, hook, start, end).
-4. **Cut** — ffmpeg trims each moment, crops to the chosen ratio, and the clip
-   is uploaded to R2. Thumbnails are extracted and stored too.
+2. **Store** — the downloaded (or uploaded) source video is uploaded to R2
+   as the project's canonical `source_key`. This is the file every clip
+   preview and render reads from — YouTube is never re-fetched later.
+3. **Transcribe** — the backend extracts audio with ffmpeg and transcribes
+   with whisper.cpp (local) or AssemblyAI (cloud).
+4. **Analyze** — an OpenAI-compatible LLM (Ollama local, or any hosted
+   endpoint) returns viral moments as JSON (title, hook, start, end). Each
+   moment becomes a `Clip` row with **timestamps only** — no video is cut.
+   A thumbnail frame is grabbed and stored per clip.
+
+**2. Preview** (no job, instant) — the frontend plays the project's source
+video and seeks it to the clip's `[start_time, end_time]`, pausing at the
+end. Zero ffmpeg calls.
+
+**3. Render job** (`POST /projects/{id}/clips/{clip_id}/render`) — created
+on demand when a user wants to actually download a clip:
+
+1. Downloads the project's stored source video from R2 (never YouTube).
+2. Cuts `[start_time, end_time]` with ffmpeg, cropped to the requested
+   orientation.
+3. Uploads the rendered MP4 to R2 and stamps `clip.video_url`.
+
+Once rendered, the file persists in R2 — repeat downloads of the same clip
+are instant (`signed_video_url` is already set, no new render). If a
+render is already queued/running for a clip, the API returns 409 and the
+frontend shows progress instead of enqueueing a duplicate.
 
 Jobs run in the background via a bounded worker pool (`WORKERS`, default 1);
 the UI polls progress (stage + %) every couple of seconds with React Query.

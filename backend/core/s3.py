@@ -82,8 +82,23 @@ def upload_file(
 
     ``progress`` (optional) receives a fraction in [0, 1].
     """
-    bucket = _get_bucket()
     key = f"{key_prefix.rstrip('/')}/{uuid.uuid4().hex}.{_ext_for(file_path)}"
+    return upload_file_as(file_path, key, content_type=content_type, progress=progress)
+
+
+def upload_file_as(
+    file_path: str,
+    key: str,
+    content_type: str | None = None,
+    progress: Callable[[float], None] | None = None,
+) -> S3Upload:
+    """Upload ``file_path`` to an exact ``key`` (deterministic, no UUID).
+
+    Used for source videos and clip renders whose S3 paths must be
+    predictable (stored on the Project/Clip rows so previews and render
+    jobs can reference them).
+    """
+    bucket = _get_bucket()
 
     try:
         client = _client()

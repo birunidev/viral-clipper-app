@@ -83,6 +83,21 @@ export function useStartJob(projectId: string) {
   });
 }
 
+/** Enqueue cutting + uploading a single clip (on-demand download). */
+export function useRenderClip(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { clipId: string; orientation: string }) =>
+      api.post<Job>(`/projects/${projectId}/clips/${payload.clipId}/render`, {
+        orientation: payload.orientation,
+      }),
+    onSuccess: (job) => {
+      queryClient.setQueryData(jobKey(job.id), job);
+      queryClient.invalidateQueries({ queryKey: projectKey(projectId) });
+    },
+  });
+}
+
 export function usePresignUpload() {
   return useMutation({
     mutationFn: (payload: { file_name: string; content_type: string }) =>

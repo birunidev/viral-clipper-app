@@ -1,8 +1,20 @@
-"""Background pipeline orchestrator.
+"""Background job orchestrators.
 
-Runs a full clip job for a given ``Job`` row: download/transcribe/analyze/
-cut, uploading final assets to S3 and inserting ``Clip`` rows as it goes.
-Progress is persisted to the ``Job`` row so Next.js can poll it.
+Two job types share the ``Job`` table (``type`` column):
+
+- ``analyze`` — download the source, upload it to S3 as the project's
+  canonical source video, transcribe, analyze, and insert ``Clip`` rows
+  with timestamps only (no rendered video). This is the expensive,
+  model-heavy job and only ever runs once per project (per pipeline run).
+- ``render`` — cut exactly one clip from the stored source video with
+  ffmpeg and upload the result to S3. Cheap, ffmpeg-only, run on demand
+  when a user wants to download a specific clip. Enqueued lazily so
+  clips are never rendered until someone actually wants the file.
+
+Splitting these means clip *previews* never touch ffmpeg: the frontend
+seeks the stored source video to [start_time, end_time] directly. Only a
+real download request pays the cutting cost, and the rendered file is
+cached in S3 (video_url) so repeat downloads are free.
 """
 
 from __future__ import annotations
@@ -29,12 +41,18 @@ def _settings() -> dict:
         "llm_model": os.environ.get("LLM_MODEL", "deepseek-v4-flash"),
     }
 
-# overall progress ranges per stage (out of 100)
-STAGE_RANGES = {
-    "downloading": (2, 12),
-    "transcribing": (15, 50),
-    "analyzing": (52, 54),
-    "cutting": (55, 99),
+
+# overall progress ranges per stage (out of 100) — analyze job
+ANALYZE_STAGE_RANGES = {
+    "downloading": (2, 25),
+    "transcribing": (28, 70),
+    "analyzing": (72, 99),
+}
+
+# overall progress ranges per stage (out of 100) — render job
+RENDER_STAGE_RANGES = {
+    "downloading": (2, 40),
+    "cutting": (42, 99),
 }
 
 
@@ -76,20 +94,30 @@ def _extract_thumbnail(src: str, at: float, dest: str) -> bool:
 
 
 def run_job(job_id: str) -> None:
-    """Run the pipeline for ``job_id``, never raising (failures go to DB)."""
+    """Dispatch a job to the right runner by its ``type``, never raising."""
+    job = db.get_job(job_id)
+    if not job:
+        return
+    job_type = job.get("type") or "analyze"
     try:
-        _run(job_id)
+        if job_type == "render":
+            _run_render(job_id)
+        else:
+            _run_analyze(job_id)
     except Exception as exc:
         try:
             db.update_job(job_id, status="failed", stage=None, error=str(exc))
             job = db.get_job(job_id)
-            if job:
+            if job and job_type == "analyze":
                 db.update_project(job["project_id"], status="failed")
         except Exception:
             pass
 
 
-def _run(job_id: str) -> None:
+# ------------------------------------------------------------------ analyze
+
+
+def _run_analyze(job_id: str) -> None:
     job = db.get_job(job_id)
     if not job:
         return
@@ -99,7 +127,6 @@ def _run(job_id: str) -> None:
         raise RuntimeError(f"Project {project_id} not found")
 
     options = job.get("options") or {}
-    orientation = options.get("orientation", "portrait")
     max_clips = int(options.get("max_clips", 10))
     source = project["source"]
     source_type = project.get("source_type", "youtube")
@@ -128,7 +155,7 @@ def _run(job_id: str) -> None:
     db.update_project(project_id, status="running")
     db.update_job(job_id, status="running", stage="downloading", progress=2)
 
-    workdir = tempfile.mkdtemp(prefix="clipforge_job_")
+    workdir = tempfile.mkdtemp(prefix="clipforge_analyze_")
     local_video: str | None = None
     try:
         if source_type == "youtube":
@@ -136,52 +163,52 @@ def _run(job_id: str) -> None:
             local_video = youtube.download(
                 source,
                 dl_dir,
-                progress=_make_progress(job_id, *STAGE_RANGES["downloading"]),
+                progress=_make_progress(job_id, *ANALYZE_STAGE_RANGES["downloading"]),
             )
         elif source_type == "upload":
+            # Already-uploaded source: it's already the canonical source
+            # video in S3 under `source` (the presigned-upload key).
             local_video = s3.download_object(
                 source, os.path.join(workdir, "src.mp4")
             )
         else:
             raise RuntimeError(f"Unknown sourceType: {source_type!r}")
-        db.update_job(job_id, stage="downloading", progress=12)
 
-        db.update_job(job_id, stage="transcribing", progress=15)
+        # Persist the canonical source video so previews can seek it and
+        # render jobs can cut from it later, without re-downloading from
+        # YouTube (which can go stale/rate-limited) each time.
+        if source_type == "youtube":
+            ext = os.path.splitext(local_video)[1] or ".mp4"
+            source_key = f"projects/{project_id}/source{ext}"
+            s3.upload_file_as(local_video, source_key, "video/mp4")
+            db.update_project(project_id, source_key=source_key)
+        else:
+            db.update_project(project_id, source_key=source)
+
+        db.update_job(job_id, stage="downloading", progress=25)
+
+        db.update_job(job_id, stage="transcribing", progress=28)
         transcript = transcriber.transcribe(
             local_video,
             assemblyai_key,
-            progress=_make_progress(job_id, *STAGE_RANGES["transcribing"]),
+            progress=_make_progress(job_id, *ANALYZE_STAGE_RANGES["transcribing"]),
             provider=transcription_provider,
         )
-        db.update_job(job_id, stage="transcribing", progress=50)
+        db.update_job(job_id, stage="transcribing", progress=70)
 
-        db.update_job(job_id, stage="analyzing", progress=52)
+        db.update_job(job_id, stage="analyzing", progress=72)
         clips = analyzer.analyze(transcript, llm_api_key, llm_base_url, llm_model)
         if len(clips) > max_clips:
             clips = clips[:max_clips]
         if not clips:
             raise RuntimeError("The model returned no usable clip timestamps.")
-        db.update_job(job_id, stage="analyzing", progress=54)
 
-        db.update_job(job_id, stage="cutting", progress=55)
-        out_dir = os.path.join(workdir, "clips")
+        thumb_dir = os.path.join(workdir, "thumbs")
+        os.makedirs(thumb_dir, exist_ok=True)
         total = max(len(clips), 1)
         for i, clip in enumerate(clips, start=1):
-            mp4 = cutter.cut_clip(
-                local_video,
-                clip["start"],
-                clip["end"],
-                clip["title"],
-                out_dir,
-                i,
-                orientation,
-            )
-            upload = s3.upload_file(
-                mp4, f"projects/{project_id}/clips", "video/mp4"
-            )
-
             thumbnail_key = None
-            thumb_png = os.path.join(out_dir, f"thumb_{i:02d}.png")
+            thumb_png = os.path.join(thumb_dir, f"thumb_{i:02d}.png")
             mid = clip["start"] + (clip["end"] - clip["start"]) / 2.0
             if _extract_thumbnail(local_video, mid, thumb_png):
                 try:
@@ -193,6 +220,9 @@ def _run(job_id: str) -> None:
                 except Exception:
                     thumbnail_key = None
 
+            # video_url is intentionally left unset — clips preview by
+            # seeking the source video, and only get their own rendered
+            # file once a render job is requested (see _run_render).
             db.add_clip(
                 project_id,
                 job_id,
@@ -200,14 +230,78 @@ def _run(job_id: str) -> None:
                 clip.get("hook"),
                 clip["start"],
                 clip["end"],
-                upload.key,
+                None,
                 thumbnail_key,
             )
 
-            lo, hi = STAGE_RANGES["cutting"]
-            db.update_job(job_id, stage="cutting", progress=int(lo + (hi - lo) * i / total))
+            lo, hi = ANALYZE_STAGE_RANGES["analyzing"]
+            db.update_job(job_id, stage="analyzing", progress=int(lo + (hi - lo) * i / total))
 
         db.update_job(job_id, status="completed", stage=None, progress=100)
         db.update_project(project_id, status="completed")
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+# ------------------------------------------------------------------- render
+
+
+def _run_render(job_id: str) -> None:
+    """Cut a single clip on demand and upload it to S3.
+
+    Downloads the project's stored source video (never re-downloads from
+    YouTube), cuts the clip's [start_time, end_time] with the requested
+    orientation, uploads the result, and stamps ``clip.video_url``. The
+    rendered file persists in S3, so a second download of the same clip
+    is instant (no re-render).
+    """
+    job = db.get_job(job_id)
+    if not job:
+        return
+    clip_id = job.get("clip_id")
+    if not clip_id:
+        raise RuntimeError("Render job is missing clip_id")
+
+    clip = db.get_clip(clip_id)
+    if not clip:
+        raise RuntimeError(f"Clip {clip_id} not found")
+
+    project_id = job["project_id"]
+    project = db.get_project(project_id)
+    if not project:
+        raise RuntimeError(f"Project {project_id} not found")
+
+    source_key = project.get("source_key")
+    if not source_key:
+        raise RuntimeError("Project has no stored source video to render from")
+
+    options = job.get("options") or {}
+    orientation = options.get("orientation", "portrait")
+
+    db.update_job(job_id, status="running", stage="downloading", progress=2)
+
+    workdir = tempfile.mkdtemp(prefix="clipforge_render_")
+    try:
+        ext = os.path.splitext(source_key)[1] or ".mp4"
+        local_video = s3.download_object(source_key, os.path.join(workdir, f"src{ext}"))
+        db.update_job(job_id, stage="downloading", progress=40)
+
+        db.update_job(job_id, stage="cutting", progress=42)
+        out_dir = os.path.join(workdir, "out")
+        mp4 = cutter.cut_clip(
+            local_video,
+            clip["start_time"],
+            clip["end_time"],
+            clip["title"],
+            out_dir,
+            1,
+            orientation,
+        )
+        db.update_job(job_id, stage="cutting", progress=90)
+
+        upload = s3.upload_file(mp4, f"projects/{project_id}/clips", "video/mp4")
+        db.set_clip_video_url(clip_id, upload.key)
+
+        db.update_job(job_id, status="completed", stage=None, progress=100)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)

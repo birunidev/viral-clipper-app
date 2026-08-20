@@ -113,9 +113,14 @@ def get_job_with_project(job_id: str) -> dict[str, Any] | None:
         return data
 
 
-def create_job(project_id: str, options: dict | None = None) -> dict:
+def create_job(
+    project_id: str,
+    options: dict | None = None,
+    job_type: str = "analyze",
+    clip_id: str | None = None,
+) -> dict:
     with session_scope() as db:
-        job = Job(id=_new_id(), project_id=project_id, options=options or {})
+        job = Job(id=_new_id(), project_id=project_id, options=options or {}, type=job_type, clip_id=clip_id)
         db.add(job)
         db.flush()
         return _row(job)
@@ -127,6 +132,38 @@ def find_active_job(project_id: str) -> dict[str, Any] | None:
             Job.project_id == project_id, Job.status.in_(("queued", "running"))
         )
         return _row(db.execute(stmt).scalars().first())
+
+
+def find_active_render_job(clip_id: str) -> dict[str, Any] | None:
+    """A render job for ``clip_id`` that is queued or running."""
+    with session_scope() as db:
+        stmt = select(Job).where(
+            Job.clip_id == clip_id, Job.status.in_(("queued", "running"))
+        )
+        return _row(db.execute(stmt).scalars().first())
+
+
+def get_clip(clip_id: str) -> dict[str, Any] | None:
+    with session_scope() as db:
+        return _row(db.get(Clip, clip_id))
+
+
+def get_clip_for_user(clip_id: str, user_id: str) -> dict[str, Any] | None:
+    """Clip row scoped by ownership through its project."""
+    with session_scope() as db:
+        stmt = (
+            select(Clip)
+            .join(Project, Project.id == Clip.project_id)
+            .where(Clip.id == clip_id, Project.user_id == user_id)
+        )
+        return _row(db.execute(stmt).scalar_one_or_none())
+
+
+def set_clip_video_url(clip_id: str, video_url: str) -> None:
+    with session_scope() as db:
+        clip = db.get(Clip, clip_id)
+        if clip is not None:
+            clip.video_url = video_url
 
 
 def update_job(job_id: str, **fields: Any) -> None:
@@ -215,7 +252,7 @@ def create_project(user_id: str, title: str, source: str, source_type: str) -> d
 def update_project(project_id: str, **fields: Any) -> None:
     if not fields:
         return
-    allowed = {"title", "source", "source_type", "status"}
+    allowed = {"title", "source", "source_type", "source_key", "status"}
     unknown = set(fields) - allowed
     if unknown:
         raise ValueError(f"Unknown project fields: {unknown}")
@@ -232,14 +269,16 @@ def update_project(project_id: str, **fields: Any) -> None:
 
 def add_clip(
     project_id: str,
-    job_id: str,
+    job_id: str | None,
     title: str,
     viral_hook: str | None,
     start: float,
     end: float,
-    video_url: str,
+    video_url: str | None,
     thumbnail_url: str | None,
 ) -> str:
+    """Insert a clip. ``video_url`` is None until a render job cuts it —
+    previews seek the project's source video to [start, end] until then."""
     with session_scope() as db:
         clip_id = _new_id()
         db.add(
