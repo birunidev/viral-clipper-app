@@ -6,6 +6,7 @@ from core.cutter import (
     build_command,
     crop_filter_for,
     slugify,
+    subtitles_filter_for,
     verify_ffmpeg,
     LANDSCAPE,
     ORIGINAL,
@@ -80,3 +81,54 @@ def test_verify_ffmpeg_on_host():
     path = verify_ffmpeg()
     assert path
     assert "ffmpeg" in path.lower()
+
+
+# --------------------------------------------------------------- subtitles
+
+
+def test_subtitles_filter_basic():
+    filt = subtitles_filter_for("/tmp/captions.ass")
+    assert filt == "subtitles=/tmp/captions.ass"
+
+
+def test_subtitles_filter_with_fonts_dir():
+    filt = subtitles_filter_for("/tmp/captions.ass", "/app/fonts")
+    assert filt == "subtitles=/tmp/captions.ass:fontsdir=/app/fonts"
+
+
+def test_subtitles_filter_escapes_colons():
+    filt = subtitles_filter_for("C:/videos/captions.ass")
+    assert filt == "subtitles=C\\:/videos/captions.ass"
+
+
+def test_build_command_combines_crop_and_subtitles():
+    cmd = build_command(
+        "clip.mp4", 0, 20, "P", "out", 1, subtitles_path="/tmp/captions.ass"
+    )
+    filter_index = cmd.index("-vf")
+    combined = cmd[filter_index + 1]
+    assert "crop=" in combined
+    assert "subtitles=/tmp/captions.ass" in combined
+    # crop must come first so subtitles position against the cropped frame
+    assert combined.index("crop=") < combined.index("subtitles=")
+
+
+def test_build_command_subtitles_with_fonts_dir():
+    cmd = build_command(
+        "clip.mp4",
+        0,
+        20,
+        "P",
+        "out",
+        1,
+        orientation=ORIGINAL,
+        subtitles_path="/tmp/captions.ass",
+        fonts_dir="/app/fonts",
+    )
+    filter_index = cmd.index("-vf")
+    assert cmd[filter_index + 1] == "subtitles=/tmp/captions.ass:fontsdir=/app/fonts"
+
+
+def test_build_command_no_subtitles_no_vf_when_original():
+    cmd = build_command("clip.mp4", 0, 20, "O", "out", 1, orientation=ORIGINAL)
+    assert "-vf" not in cmd

@@ -29,6 +29,31 @@ class DownloadError(Exception):
     """Raised when a remote video cannot be downloaded."""
 
 
+def get_info(url: str) -> dict:
+    """Fetch remote metadata (no download) for ``url``.
+
+    Returns the yt-dlp extractor info dict, which includes useful fields such
+    as ``id``, ``title``, ``uploader``, and ``language`` (the source video's
+    spoken language as an ISO 639-1 code where available). Raises
+    DownloadError if yt-dlp is missing or metadata cannot be fetched.
+    """
+    if yt_dlp is None:
+        raise DownloadError("yt-dlp is not installed. Run: poetry install")
+
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "skip_download": True,
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=False) or {}
+    except yt_dlp.utils.DownloadError as exc:
+        detail = _strip_ansi(str(exc))
+        raise DownloadError(f"Could not fetch video metadata: {detail}") from exc
+
+
 def is_url(value: str) -> bool:
     """Return True if ``value`` looks like a remote (http/https) URL."""
     return bool(URL_RE.match(value.strip()))

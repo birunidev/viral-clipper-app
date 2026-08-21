@@ -218,3 +218,115 @@ def test_render_clip_not_found_for_missing_clip(client):
     project = _make_project(client)
     res = client.post(f"/api/v1/projects/{project['id']}/clips/does-not-exist/render", json={})
     assert res.status_code == 404
+
+
+# ---------------------------------------------------------- caption styles
+
+
+def _classic_style_id():
+    style = db.get_caption_style_by_key("classic")
+    assert style is not None  # seeded by migration
+    return style["id"]
+
+
+def test_list_caption_styles_requires_auth(client):
+    assert client.get("/api/v1/caption-styles").status_code == 401
+
+
+def test_list_caption_styles_returns_seeded_presets(client):
+    register_user(client)
+    res = client.get("/api/v1/caption-styles")
+    assert res.status_code == 200
+    styles = res.json()
+    keys = {s["key"] for s in styles}
+    assert {"classic", "clean", "pop", "boxed", "minimal"} <= keys
+    classic = next(s for s in styles if s["key"] == "classic")
+    assert classic["label"] == "Classic"
+    assert "font" in classic["config"]
+    assert classic["is_builtin"] is True
+
+
+def test_render_clip_with_caption_style(client):
+    register_user(client)
+    project = _make_project(client)
+    db.update_project(project["id"], source_key="projects/x/source.mp4")
+    clip_id = _make_clip(project["id"])
+    style_id = _classic_style_id()
+
+    res = client.post(
+        f"/api/v1/projects/{project['id']}/clips/{clip_id}/render",
+        json={"orientation": "portrait", "caption_style_id": style_id},
+    )
+    assert res.status_code == 201
+    job = res.json()
+    assert job["options"] == {"orientation": "portrait", "caption_style_id": style_id}
+
+
+def test_render_clip_re_render_with_caption_style_when_already_rendered(client):
+    register_user(client)
+    project = _make_project(client)
+    db.update_project(project["id"], source_key="projects/x/source.mp4")
+    clip_id = _make_clip(project["id"])
+    db.set_clip_video_url(clip_id, "projects/x/clips/old.mp4")
+    style_id = _classic_style_id()
+
+    res = client.post(
+        f"/api/v1/projects/{project['id']}/clips/{clip_id}/render",
+        json={"caption_style_id": style_id},
+    )
+    assert res.status_code == 201  # re-render allowed when a style is requested
+
+
+def test_render_clip_invalid_caption_style_400(client):
+    register_user(client)
+    project = _make_project(client)
+    db.update_project(project["id"], source_key="projects/x/source.mp4")
+    clip_id = _make_clip(project["id"])
+
+    res = client.post(
+        f"/api/v1/projects/{project['id']}/clips/{clip_id}/render",
+        json={"caption_style_id": "no-such-style"},
+    )
+    assert res.status_code == 400
+
+
+def test_project_detail_reports_caption_style_id_for_rendered_clip(client, monkeypatch):
+    register_user(client)
+    project = _make_project(client)
+    db.update_project(project["id"], source_key="projects/x/source.mp4")
+    clip_id = _make_clip(project["id"])
+    style_id = _classic_style_id()
+
+    # simulate a completed render with a caption style
+    render_job = db.create_job(
+        project["id"],
+        {"orientation": "portrait", "caption_style_id": style_id},
+        job_type="render",
+        clip_id=clip_id,
+    )
+    db.update_job(render_job["id"], status="completed")
+    db.set_clip_video_url(clip_id, "projects/x/clips/rendered.mp4")
+
+    monkeypatch.setattr(
+        "app.api.projects._presigned",
+        lambda key: f"https://signed.example/{key}" if key else None,
+    )
+
+    res = client.get(f"/api/v1/projects/{project['id']}")
+    assert res.status_code == 200
+    clip = res.json()["clips"][0]
+    assert clip["video_url"] == "projects/x/clips/rendered.mp4"
+    assert clip["caption_style_id"] == style_id
+
+
+def test_project_detail_caption_style_none_for_unrendered(client):
+    register_user(client)
+    project = _make_project(client)
+    db.update_project(project["id"], source_key="projects/x/source.mp4")
+    clip_id = _make_clip(project["id"])
+
+    res = client.get(f"/api/v1/projects/{project['id']}")
+    assert res.status_code == 200
+    clip = res.json()["clips"][0]
+    assert clip["video_url"] is None
+    assert clip["caption_style_id"] is None

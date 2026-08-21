@@ -31,6 +31,7 @@ import os
 import subprocess
 import tempfile
 import time
+from dataclasses import dataclass
 from typing import Callable, Iterator
 
 import requests
@@ -51,6 +52,24 @@ DEFAULT_WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "base")
 DEFAULT_WHISPER_THREADS = int(os.environ.get("WHISPER_THREADS", "4"))
 
 
+@dataclass
+class TranscriptResult:
+    """A transcription plus per-word timestamps (used for captions).
+
+    ``words`` is a list of ``{"text": str, "start_ms": int, "end_ms": int}``
+    in transcript order, with absolute timestamps in milliseconds measured
+    from the start of the source audio.
+
+    ``language`` (optional) is the detected/language returned by the
+    provider as an ISO 639-1 code (e.g. ``"id"``), used to generate
+    titles/hooks in the transcript's own language.
+    """
+
+    text: str
+    words: list[dict]
+    language: str | None = None
+
+
 class TranscriptionError(Exception):
     """Raised when transcription fails for any reason."""
 
@@ -60,33 +79,56 @@ def transcribe(
     api_key: str,
     progress: Callable[[float], None] | None = None,
     provider: str | None = None,
+    language: str | None = None,
 ) -> str:
     """Extract audio from ``file_path`` and return the transcript text.
 
-    ``provider`` selects ``assemblyai`` (cloud, default) or ``local``
-    (whisper.cpp, no network). Falls back to the ``TRANSCRIPTION_PROVIDER``
-    env var, then to ``assemblyai``, if not passed explicitly.
+    Convenience wrapper over :func:`transcribe_with_words` that returns only
+    the plain text. ``provider`` selects ``assemblyai`` (cloud, default) or
+    ``local`` (whisper.cpp, no network). Falls back to the
+    ``TRANSCRIPTION_PROVIDER`` env var, then to ``assemblyai``, if not
+    passed explicitly. ``language`` (optional) is an ISO 639-1 hint (e.g.
+    ``"id"`` from the source YouTube metadata); providers auto-detect when
+    omitted.
 
     ``progress`` (optional) receives a float in [0, 1] estimating how far
     along the transcription is. Raises TranscriptionError on missing file,
     invalid key/model, or provider failures. This is synchronous
     (blocking), so call it from a worker thread, never the UI thread.
     """
+    return transcribe_with_words(file_path, api_key, progress, provider, language).text
+
+
+def transcribe_with_words(
+    file_path: str,
+    api_key: str,
+    progress: Callable[[float], None] | None = None,
+    provider: str | None = None,
+    language: str | None = None,
+) -> TranscriptResult:
+    """Like :func:`transcribe` but returns text + per-word timestamps.
+
+    The returned :class:`TranscriptResult` carries absolute word timings
+    (``start_ms``/``end_ms``) which the analyze job stores on the project's
+    timeline and re-anchors per clip for TikTok-style captions. ``language``
+    is an optional ISO 639-1 hint forwarded to the provider.
+    """
     provider = (provider or DEFAULT_PROVIDER or PROVIDER_ASSEMBLYAI).strip().lower()
     if provider == PROVIDER_LOCAL:
-        return _transcribe_local(file_path, progress)
+        return _transcribe_local(file_path, progress, language)
     if provider != PROVIDER_ASSEMBLYAI:
         raise TranscriptionError(
             f"Unknown TRANSCRIPTION_PROVIDER: {provider!r} (expected one of {PROVIDERS})"
         )
-    return _transcribe_assemblyai(file_path, api_key, progress)
+    return _transcribe_assemblyai(file_path, api_key, progress, language)
 
 
 def _transcribe_assemblyai(
     file_path: str,
     api_key: str,
     progress: Callable[[float], None] | None,
-) -> str:
+    language: str | None = None,
+) -> TranscriptResult:
     if not api_key:
         raise TranscriptionError("AssemblyAI API key is required.")
 
@@ -97,7 +139,7 @@ def _transcribe_assemblyai(
     uploaded: S3Upload | None = None
     try:
         audio_url, uploaded = _get_audio_url(session, audio_path, progress)
-        transcript_id = _submit(session, audio_url, progress)
+        transcript_id = _submit(session, audio_url, progress, language)
         return _poll(session, transcript_id, progress)
     finally:
         _quiet_remove(audio_path)
@@ -111,7 +153,8 @@ def _transcribe_assemblyai(
 def _transcribe_local(
     file_path: str,
     progress: Callable[[float], None] | None,
-) -> str:
+    language: str | None = None,
+) -> TranscriptResult:
     """Transcribe fully offline with whisper.cpp via ``pywhispercpp``.
 
     Loads the model fresh for this call and lets it go out of scope
@@ -119,6 +162,14 @@ def _transcribe_local(
     pipeline moves on to LLM analysis. That matters on RAM-constrained
     machines (e.g. 16GB laptops) where whisper and the LLM should never
     both be loaded at once.
+
+    Word timing: ``token_timestamps=True, max_len=1, split_on_word=True``
+    forces whisper.cpp to emit one word per segment with an absolute start
+    (``t0``) and end (``t1``), which we convert from whisper.cpp's own time
+    units (centiseconds) to milliseconds. ``language`` (ISO 639-1, e.g.
+    "id") is forwarded to whisper.cpp so it skips language auto-detection
+    and transcribes directly in that language — auto-detect is used when
+    omitted.
     """
     if not os.path.isfile(file_path):
         raise TranscriptionError(f"File not found: {file_path}")
@@ -142,7 +193,14 @@ def _transcribe_local(
             ) from exc
 
         try:
-            segments = model.transcribe(audio_path)
+            transcribe_kwargs = {
+                "token_timestamps": True,
+                "max_len": 1,
+                "split_on_word": True,
+            }
+            if language:
+                transcribe_kwargs["language"] = language
+            segments = model.transcribe(audio_path, **transcribe_kwargs)
         except Exception as exc:
             raise TranscriptionError(f"whisper.cpp transcription failed: {exc}") from exc
         finally:
@@ -150,8 +208,32 @@ def _transcribe_local(
             # multi-GB) weights are freed before analysis loads the LLM.
             del model
 
+        # whisper.cpp segment times are in its own unit (centiseconds of
+        # an internal 100Hz clock); t * 10 == milliseconds (matches the
+        # to_timestamp() reference implementation).
+        text_parts: list[str] = []
+        words: list[dict] = []
+        for segment in segments:
+            piece = segment.text.strip()
+            if not piece:
+                continue
+            text_parts.append(piece)
+            words.append(
+                {
+                    "text": piece,
+                    "start_ms": max(0, int(segment.t0 * 10)),
+                    "end_ms": int(segment.t1 * 10),
+                }
+            )
+
         _report(progress, 1.0)
-        return " ".join(segment.text.strip() for segment in segments).strip()
+        # If a language hint was supplied we forced whisper.cpp to use it,
+        # so it's also the "detected" language for downstream consumers.
+        # Without a hint, pywhispercpp's transcribe() doesn't surface the
+        # auto-detected code without a separate call, so it's left unknown.
+        return TranscriptResult(
+            text=" ".join(text_parts).strip(), words=words, language=language
+        )
     finally:
         _quiet_remove(audio_path)
 
@@ -307,9 +389,15 @@ def _upload(session: requests.Session, file_path: str, progress) -> str:
     return upload_url
 
 
-def _submit(session: requests.Session, audio_url: str, progress) -> str:
+def _submit(session: requests.Session, audio_url: str, progress, language: str | None = None) -> str:
     _report(progress, 0.2)
-    data = {"audio_url": audio_url, "language_detection": True}
+    data: dict = {"audio_url": audio_url}
+    if language:
+        # Use the known language code (e.g. "id" from YouTube metadata) so
+        # AssemblyAI doesn't have to auto-detect.
+        data["language_code"] = language
+    else:
+        data["language_detection"] = True
     try:
         response = session.post(BASE_URL + "/v2/transcript", json=data, timeout=60)
     except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
@@ -326,7 +414,7 @@ def _submit(session: requests.Session, audio_url: str, progress) -> str:
         ) from exc
 
 
-def _poll(session: requests.Session, transcript_id: str, progress) -> str:
+def _poll(session: requests.Session, transcript_id: str, progress) -> TranscriptResult:
     endpoint = f"{BASE_URL}/v2/transcript/{transcript_id}"
     deadline = time.monotonic() + MAX_WAIT
 
@@ -345,7 +433,12 @@ def _poll(session: requests.Session, transcript_id: str, progress) -> str:
         status = result.get("status")
         if status == "completed":
             _report(progress, 1.0)
-            return result.get("text") or ""
+            lang = result.get("language_code") or result.get("language")
+            return TranscriptResult(
+                text=result.get("text") or "",
+                words=_extract_words_from_payload(result),
+                language=lang,
+            )
         if status == "error":
             raise TranscriptionError(
                 f"AssemblyAI transcription failed: {result.get('error')}"
@@ -359,6 +452,30 @@ def _poll(session: requests.Session, transcript_id: str, progress) -> str:
         elapsed = deadline - time.monotonic()
         _report(progress, min(0.95, 0.2 + 0.75 * (MAX_WAIT - elapsed) / MAX_WAIT))
         time.sleep(POLL_INTERVAL)
+
+
+def _extract_words_from_payload(payload: dict) -> list[dict]:
+    """Normalize an AssemblyAI completed-transcript payload's ``words`` into
+    ``[{"text", "start_ms", "end_ms"}, ...]``.
+
+    The API returns a top-level ``words`` array (confirmed from the transcript
+    schema). Each entry has ``text`` (str), ``start`` (ms int), ``end`` (ms
+    int). Malformed/partial entries are skipped defensively.
+    """
+    words = payload.get("words") or []
+    result: list[dict] = []
+    for entry in words:
+        if not isinstance(entry, dict):
+            continue
+        text = str(entry.get("text", "")).strip()
+        start = entry.get("start")
+        end = entry.get("end")
+        if not text or not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+            continue
+        result.append(
+            {"text": text, "start_ms": int(start), "end_ms": int(end)}
+        )
+    return result
 
 
 def _raise_for_status(response: requests.Response, stage: str) -> None:

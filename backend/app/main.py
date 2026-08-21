@@ -11,7 +11,7 @@ load_dotenv()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import auth, jobs, projects, uploads
+from .api import auth, caption_styles, jobs, projects, uploads
 from .worker import pool
 
 FRONTEND_URLS = [
@@ -45,6 +45,7 @@ app.include_router(auth.router, prefix="/api/v1")
 app.include_router(projects.router, prefix="/api/v1")
 app.include_router(jobs.router, prefix="/api/v1")
 app.include_router(uploads.router, prefix="/api/v1")
+app.include_router(caption_styles.router, prefix="/api/v1")
 
 
 @app.get("/health")

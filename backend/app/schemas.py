@@ -47,6 +47,10 @@ class StartJobRequest(BaseModel):
 
 class RenderClipRequest(BaseModel):
     orientation: str = "portrait"  # portrait | landscape | original
+    # Optional caption style to burn in. When omitted, renders without
+    # captions; when set, a re-render of an already-rendered clip is
+    # allowed (produces a new S3 variant).
+    caption_style_id: str | None = None
 
 
 class ClipResponse(BaseModel):
@@ -61,11 +65,27 @@ class ClipResponse(BaseModel):
     # source_video_url + [start_time, end_time] instead.
     video_url: str | None = None
     thumbnail_url: str | None = None
+    # Clip-relative word timings for TikTok-style captions (computed at
+    # analyze time; may be None if the provider returned no word timings).
+    caption_json: list[dict] | None = None
     created_at: dt.datetime
     # populated server-side:
     signed_video_url: str | None = None
     signed_thumbnail_url: str | None = None
     render_job: dict | None = None
+    # The caption style id that produced the current rendered video_url,
+    # if any (None when video_url is unset or was rendered without captions).
+    caption_style_id: str | None = None
+
+
+class CaptionStyleResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    key: str
+    label: str
+    config: dict
+    is_builtin: bool
 
 
 class JobResponse(BaseModel):
@@ -95,6 +115,7 @@ class ProjectListItem(BaseModel):
     title: str
     source: str
     source_type: str
+    language: str | None = None
     status: str
     created_at: dt.datetime
     clip_count: int = 0
@@ -108,6 +129,7 @@ class ProjectDetail(BaseModel):
     title: str
     source: str
     source_type: str
+    language: str | None = None
     source_key: str | None = None
     status: str
     created_at: dt.datetime

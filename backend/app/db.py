@@ -19,7 +19,17 @@ from typing import Any
 from sqlalchemy import select
 
 from .database import session_scope
-from .models import Account, Clip, Job, Project, Session, User, Verification
+from .models import (
+    Account,
+    CaptionStyle,
+    Clip,
+    Job,
+    Project,
+    Session,
+    TimelineWord,
+    User,
+    Verification,
+)
 
 JOB_STATUS = ("queued", "running", "completed", "failed")
 PROJECT_STATUS = ("idle", "queued", "running", "completed", "failed")
@@ -143,6 +153,23 @@ def find_active_render_job(clip_id: str) -> dict[str, Any] | None:
         return _row(db.execute(stmt).scalars().first())
 
 
+def get_latest_completed_render_job(clip_id: str) -> dict[str, Any] | None:
+    """The most recent completed render job for a clip (used to report which
+    caption style produced the clip's current rendered file)."""
+    with session_scope() as db:
+        stmt = (
+            select(Job)
+            .where(
+                Job.clip_id == clip_id,
+                Job.status == "completed",
+                Job.type == "render",
+            )
+            .order_by(Job.created_at.desc())
+            .limit(1)
+        )
+        return _row(db.execute(stmt).scalars().first())
+
+
 def get_clip(clip_id: str) -> dict[str, Any] | None:
     with session_scope() as db:
         return _row(db.get(Clip, clip_id))
@@ -171,6 +198,90 @@ def set_clip_thumbnail_url(clip_id: str, thumbnail_url: str) -> None:
         clip = db.get(Clip, clip_id)
         if clip is not None:
             clip.thumbnail_url = thumbnail_url
+
+
+def set_clip_caption_json(clip_id: str, caption_json: list[dict] | None) -> None:
+    with session_scope() as db:
+        clip = db.get(Clip, clip_id)
+        if clip is not None:
+            clip.caption_json = caption_json
+
+
+# --------------------------------------------------------- timeline words
+
+
+def add_timeline_words(project_id: str, words: list[dict]) -> None:
+    """Bulk-insert absolute-timed words for a project's source video.
+
+    ``words`` is ``[{"text", "start_ms", "end_ms"}, ...]`` in transcript
+    order (from ``core.transcriber.TranscriptResult.words``). No-op if
+    ``words`` is empty (e.g. a provider that didn't return timings).
+    """
+    if not words:
+        return
+    with session_scope() as db:
+        for idx, word in enumerate(words):
+            db.add(
+                TimelineWord(
+                    id=_new_id(),
+                    project_id=project_id,
+                    idx=idx,
+                    text=word["text"],
+                    start_ms=word["start_ms"],
+                    end_ms=word["end_ms"],
+                )
+            )
+
+
+def get_timeline_words(project_id: str) -> list[dict[str, Any]]:
+    """All words for a project, in transcript order."""
+    with session_scope() as db:
+        stmt = (
+            select(TimelineWord)
+            .where(TimelineWord.project_id == project_id)
+            .order_by(TimelineWord.idx)
+        )
+        return [_row(w) for w in db.execute(stmt).scalars().all()]
+
+
+def get_timeline_words_in_range(project_id: str, start_ms: int, end_ms: int) -> list[dict[str, Any]]:
+    """Words whose span overlaps ``[start_ms, end_ms]``, in transcript order.
+
+    A word is included if any part of it falls inside the range (matches
+    on ``start_ms < end_ms`` and ``end_ms > start_ms`` to catch words that
+    straddle a clip boundary).
+    """
+    with session_scope() as db:
+        stmt = (
+            select(TimelineWord)
+            .where(
+                TimelineWord.project_id == project_id,
+                TimelineWord.start_ms < end_ms,
+                TimelineWord.end_ms > start_ms,
+            )
+            .order_by(TimelineWord.idx)
+        )
+        return [_row(w) for w in db.execute(stmt).scalars().all()]
+
+
+# --------------------------------------------------------- caption styles
+
+
+def list_caption_styles() -> list[dict[str, Any]]:
+    with session_scope() as db:
+        stmt = select(CaptionStyle).order_by(CaptionStyle.label)
+        return [_row(s) for s in db.execute(stmt).scalars().all()]
+
+
+def get_caption_style(style_id: str) -> dict[str, Any] | None:
+    with session_scope() as db:
+        return _row(db.get(CaptionStyle, style_id))
+
+
+def get_caption_style_by_key(key: str) -> dict[str, Any] | None:
+    with session_scope() as db:
+        stmt = select(CaptionStyle).where(CaptionStyle.key == key)
+        return _row(db.execute(stmt).scalar_one_or_none())
 
 
 def update_job(job_id: str, **fields: Any) -> None:
@@ -259,7 +370,7 @@ def create_project(user_id: str, title: str, source: str, source_type: str) -> d
 def update_project(project_id: str, **fields: Any) -> None:
     if not fields:
         return
-    allowed = {"title", "source", "source_type", "source_key", "status"}
+    allowed = {"title", "source", "source_type", "source_key", "language", "status"}
     unknown = set(fields) - allowed
     if unknown:
         raise ValueError(f"Unknown project fields: {unknown}")
@@ -283,9 +394,12 @@ def add_clip(
     end: float,
     video_url: str | None,
     thumbnail_url: str | None,
+    caption_json: list[dict] | None = None,
 ) -> str:
     """Insert a clip. ``video_url`` is None until a render job cuts it —
-    previews seek the project's source video to [start, end] until then."""
+    previews seek the project's source video to [start, end] until then.
+    ``caption_json`` is the clip-relative word timing list used for
+    TikTok-style captions (computed at analyze time)."""
     with session_scope() as db:
         clip_id = _new_id()
         db.add(
@@ -299,6 +413,7 @@ def add_clip(
                 end_time=end,
                 video_url=video_url,
                 thumbnail_url=thumbnail_url,
+                caption_json=caption_json,
             )
         )
         return clip_id

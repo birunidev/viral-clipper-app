@@ -128,6 +128,10 @@ class Project(Base, TimestampMixin):
     # S3 key of the canonical source video (stored during analysis). The
     # browser seeks into this for previews; render jobs cut from it.
     source_key: Mapped[str | None] = mapped_column(String)
+    # Spoken language of the source, ISO 639-1 (e.g. "id"). Detected from
+    # source metadata / the transcription provider and used to write
+    # titles/hooks in the transcript's language.
+    language: Mapped[str | None] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, server_default="idle", nullable=False)
     user_id: Mapped[str] = mapped_column(
         String, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
@@ -136,6 +140,9 @@ class Project(Base, TimestampMixin):
     user: Mapped[User] = relationship(back_populates="projects")
     clips: Mapped[list["Clip"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     jobs: Mapped[list["Job"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    timeline_words: Mapped[list["TimelineWord"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
 
 
 class Job(Base):
@@ -185,9 +192,55 @@ class Clip(Base):
     # source video to [start_time, end_time].
     video_url: Mapped[str | None] = mapped_column(String)
     thumbnail_url: Mapped[str | None] = mapped_column(String)
+    # Clip-relative word timings [{"text", "start_ms", "end_ms"}, ...] used
+    # for TikTok-style word-by-word captions. Computed once at analyze time;
+    # burned into the rendered clip only when a caption style is requested.
+    caption_json: Mapped[list | None] = mapped_column(JSON)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
     project: Mapped[Project] = relationship(back_populates="clips")
     job: Mapped[Job | None] = relationship(back_populates="clips")
+
+
+class TimelineWord(Base):
+    """A single spoken word with its absolute timestamp in the source video.
+
+    Populated once per project during the analyze job (from whichever
+    transcription provider is active), shared by every clip so caption
+    timings can be derived per-clip without re-transcribing.
+    """
+
+    __tablename__ = "timeline_words"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String, ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    idx: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(String, nullable=False)
+    start_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    project: Mapped[Project] = relationship(back_populates="timeline_words")
+
+
+class CaptionStyle(Base):
+    """A named, reusable caption style preset (TikTok-style config).
+
+    Seeded with built-in presets; config holds the ASS-style primitives the
+    caption builder (core/captions.py) needs: font, size, position, colors,
+    outline/shadow, and word-grouping rules.
+    """
+
+    __tablename__ = "caption_styles"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    key: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    label: Mapped[str] = mapped_column(String, nullable=False)
+    config: Mapped[dict] = mapped_column(JSON, nullable=False)
+    is_builtin: Mapped[bool] = mapped_column(Boolean, server_default="true", nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

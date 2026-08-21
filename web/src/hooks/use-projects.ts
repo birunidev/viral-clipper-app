@@ -3,11 +3,22 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { api } from "@/lib/api";
-import type { Job, ProjectDetail, ProjectListItem } from "./types";
+import type { CaptionStyle, Job, ProjectDetail, ProjectListItem } from "./types";
 
 export const projectsKey = ["projects"] as const;
 export const projectKey = (id: string) => ["projects", id] as const;
 export const jobKey = (id: string) => ["jobs", id] as const;
+export const captionStylesKey = ["caption-styles"] as const;
+
+/** Built-in + custom caption presets for the render style picker. Rarely
+ * changes, so it's cached for the whole session. */
+export function useCaptionStyles() {
+  return useQuery<CaptionStyle[]>({
+    queryKey: captionStylesKey,
+    queryFn: () => api.get<CaptionStyle[]>("/caption-styles"),
+    staleTime: Infinity,
+  });
+}
 
 export function useProjects() {
   return useQuery<ProjectListItem[]>({
@@ -87,9 +98,14 @@ export function useStartJob(projectId: string) {
 export function useRenderClip(projectId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { clipId: string; orientation: string }) =>
+    mutationFn: (payload: {
+      clipId: string;
+      orientation: string;
+      captionStyleId?: string | null;
+    }) =>
       api.post<Job>(`/projects/${projectId}/clips/${payload.clipId}/render`, {
         orientation: payload.orientation,
+        caption_style_id: payload.captionStyleId ?? null,
       }),
     onSuccess: (job) => {
       queryClient.setQueryData(jobKey(job.id), job);

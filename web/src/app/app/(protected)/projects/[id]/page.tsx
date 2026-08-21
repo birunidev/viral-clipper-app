@@ -3,6 +3,7 @@
 import {
   Check,
   CircleNotch,
+  ClosedCaptioning,
   Download,
   FilmReel,
   Lightning,
@@ -19,6 +20,7 @@ import { StatusPill } from "@/components/ui/status-pill";
 import { Timestamp, fmtDuration } from "@/components/ui/timestamp";
 import { SourceTypeIcon } from "@/components/project/source-icon";
 import {
+  useCaptionStyles,
   useJob,
   useProject,
   useRefreshProjectOnJobDone,
@@ -27,6 +29,8 @@ import {
 } from "@/hooks/use-projects";
 import type { Clip, ProjectDetail } from "@/hooks/types";
 import { Button } from "@/components/ui/button";
+import { CaptionStylePicker } from "@/components/project/caption-style-picker";
+import { WordCaptionOverlay } from "@/components/project/word-caption-overlay";
 
 const STAGE_LABEL: Record<string, string> = {
   downloading: "Downloading source",
@@ -232,12 +236,18 @@ export default function ProjectPage() {
 
 /**
  * A clip card. Previews by seeking the project's source video to the
- * clip's [start_time, end_time] — no ffmpeg involved. A separate
- * "Render for download" action enqueues a render job; the resulting file
- * is uploaded to S3 and can be downloaded immediately or later.
+ * clip's [start_time, end_time] — no ffmpeg involved. A separate render
+ * action (with an optional caption style) enqueues a render job; the
+ * resulting file is uploaded to S3 and can be downloaded immediately or
+ * later.
  */
 function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [captionsOpen, setCaptionsOpen] = useState(false);
+  const [selectedStyleId, setSelectedStyleId] = useState<string | null>(
+    clip.caption_style_id
+  );
+  const captionStylesQuery = useCaptionStyles();
   const renderClip = useRenderClip(project.id);
   const renderJobId = clip.render_job?.id;
   const renderJobQuery = useJob(renderJobId ?? "");
@@ -249,14 +259,15 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
   const duration = clip.end_time - clip.start_time;
   const canPreview = Boolean(project.source_video_url);
   const canDownload = Boolean(clip.signed_video_url);
+  const hasCaptionWords = Boolean(clip.caption_json?.length);
   const filename = `${clip.title.replace(/[^\w]+/g, "-").toLowerCase() || "clip"}.mp4`;
 
-  function handleRender() {
+  function handleRender(styleId: string | null) {
+    setSelectedStyleId(styleId);
+    setCaptionsOpen(false);
     renderClip.mutate(
-      { clipId: clip.id, orientation: "portrait" },
-      {
-        onError: () => {},
-      }
+      { clipId: clip.id, orientation: "portrait", captionStyleId: styleId },
+      { onError: () => {} }
     );
   }
 
@@ -290,6 +301,12 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
               </span>
             </span>
           )}
+          {clip.caption_style_id && (
+            <span className="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-black/60 px-2 py-0.5 text-[10px] font-medium text-white backdrop-blur">
+              <ClosedCaptioning size={11} weight="fill" />
+              Captioned
+            </span>
+          )}
         </button>
 
         <div className="flex flex-col gap-2 p-4">
@@ -311,41 +328,59 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
           </div>
 
           <div className="mt-2 flex items-center gap-2">
-            {canDownload ? (
-              <Button
-                size="sm"
-                variant="secondary"
-                className="flex-1"
-                onClick={() => {
-                  const a = document.createElement("a");
-                  a.href = clip.signed_video_url!;
-                  a.download = filename;
-                  a.target = "_blank";
-                  a.rel = "noopener";
-                  a.click();
-                }}
-              >
-                <Download size={13} />
-                Download
-              </Button>
-            ) : isRendering ? (
+            {isRendering ? (
               <div className="flex flex-1 items-center gap-2 rounded-lg border border-line bg-surface-2 px-3 py-1.5 text-xs text-ink-secondary">
                 <CircleNotch size={13} className="animate-spin" />
                 Rendering… {renderJob?.progress ?? 0}%
               </div>
             ) : (
-              <Button
-                size="sm"
-                variant="secondary"
-                className="flex-1"
-                onClick={handleRender}
-                loading={renderClip.isPending}
-              >
-                <Scissors size={13} />
-                Render for download
-              </Button>
+              <>
+                {canDownload && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="flex-1"
+                    onClick={() => {
+                      const a = document.createElement("a");
+                      a.href = clip.signed_video_url!;
+                      a.download = filename;
+                      a.target = "_blank";
+                      a.rel = "noopener";
+                      a.click();
+                    }}
+                  >
+                    <Download size={13} />
+                    Download
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  variant={canDownload ? "ghost" : "secondary"}
+                  className={canDownload ? "" : "flex-1"}
+                  onClick={() => setCaptionsOpen((v) => !v)}
+                  loading={renderClip.isPending}
+                >
+                  <Scissors size={13} />
+                  {canDownload ? "Change captions" : "Render for download"}
+                </Button>
+              </>
             )}
           </div>
+
+          {captionsOpen && !isRendering && (
+            <div className="mt-1 rounded-lg border border-line bg-surface-2 p-3">
+              {captionStylesQuery.isLoading ? (
+                <p className="text-xs text-ink-tertiary">Loading styles…</p>
+              ) : (
+                <CaptionStylePicker
+                  styles={captionStylesQuery.data ?? []}
+                  selectedId={selectedStyleId}
+                  onSelect={handleRender}
+                  disabled={renderClip.isPending}
+                />
+              )}
+            </div>
+          )}
         </div>
       </Card>
 
@@ -356,6 +391,7 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
           start={clip.start_time}
           end={clip.end_time}
           title={clip.title}
+          captionWords={hasCaptionWords ? clip.caption_json! : []}
           onClose={() => setPreviewOpen(false)}
         />
       )}
@@ -374,6 +410,7 @@ function SeekPreview({
   start,
   end,
   title,
+  captionWords,
   onClose,
 }: {
   sourceUrl: string;
@@ -381,6 +418,7 @@ function SeekPreview({
   start: number;
   end: number;
   title: string;
+  captionWords: { text: string; start_ms: number; end_ms: number }[];
   onClose: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -433,6 +471,12 @@ function SeekPreview({
             <span className="ml-1 font-mono text-xs text-ink-tertiary tabular-nums">
               <Timestamp seconds={start} /> – <Timestamp seconds={end} /> · {fmtDuration(end - start)}
             </span>
+            {captionWords.length > 0 && (
+              <span className="flex items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[10px] text-ink-tertiary">
+                <ClosedCaptioning size={11} />
+                Captions
+              </span>
+            )}
           </div>
           <button
             onClick={onClose}
@@ -442,13 +486,22 @@ function SeekPreview({
             <X size={16} />
           </button>
         </div>
-        <video
-          ref={videoRef}
-          src={sourceUrl}
-          poster={thumbnail ?? undefined}
-          controls
-          className="aspect-video w-full bg-black"
-        />
+        <div className="relative">
+          <video
+            ref={videoRef}
+            src={sourceUrl}
+            poster={thumbnail ?? undefined}
+            controls
+            className="aspect-video w-full bg-black"
+          />
+          {captionWords.length > 0 && (
+            <WordCaptionOverlay
+              videoRef={videoRef}
+              words={captionWords}
+              clipStartSeconds={start}
+            />
+          )}
+        </div>
       </div>
     </div>
   );

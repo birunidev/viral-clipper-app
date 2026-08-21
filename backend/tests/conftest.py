@@ -21,14 +21,42 @@ os.environ.setdefault(
 os.environ.setdefault("FRONTEND_URLS", "http://testserver")
 
 from app import database  # noqa: E402
+from app.caption_presets import BUILTIN_CAPTION_STYLES  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import Base  # noqa: E402
+
+
+def _seed_caption_styles() -> None:
+    """Insert the built-in caption presets (mirrors the Alembic migration's
+    seed step, which doesn't run here since the test schema is created
+    directly from the SQLAlchemy metadata, not via `alembic upgrade`)."""
+    import uuid
+
+    engine = database.get_engine()
+    with engine.begin() as conn:
+        for style in BUILTIN_CAPTION_STYLES:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO caption_styles (id, key, label, config, is_builtin)
+                    VALUES (:id, :key, :label, cast(:config as json), true)
+                    ON CONFLICT (key) DO NOTHING
+                    """
+                ),
+                {
+                    "id": uuid.uuid4().hex,
+                    "key": style["key"],
+                    "label": style["label"],
+                    "config": __import__("json").dumps(style["config"]),
+                },
+            )
 
 
 @pytest.fixture(scope="session", autouse=True)
 def _create_schema():
     engine = database.get_engine()
     Base.metadata.create_all(engine)
+    _seed_caption_styles()
     yield
     engine.dispose()
 
@@ -37,7 +65,11 @@ def _create_schema():
 def _truncate_tables():
     yield
     engine = database.get_engine()
-    tables = ", ".join(f'"{t.name}"' for t in reversed(Base.metadata.sorted_tables))
+    # caption_styles is seed/reference data, not per-test state — keep it
+    # across truncation so tests can rely on the built-in presets existing.
+    tables = ", ".join(
+        f'"{t.name}"' for t in reversed(Base.metadata.sorted_tables) if t.name != "caption_styles"
+    )
     with engine.begin() as conn:
         conn.execute(text(f"TRUNCATE {tables} CASCADE"))
 

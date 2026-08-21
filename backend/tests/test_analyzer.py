@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from core.analyzer import parse_clips
+from core.analyzer import analyze, parse_clips, LANGUAGE_NAMES
 
 
 def test_plain_json_object():
@@ -99,3 +99,86 @@ def test_missing_hook_is_omitted():
 @pytest.mark.parametrize("bad", ["null", "42", '"just a string"', "[1, 2, 3]"])
 def test_non_object_responses(bad):
     assert parse_clips(bad) == []
+
+
+# ------------------------------------------------------------ language hint
+
+
+class _FakeMessage:
+    def __init__(self, content):
+        self.content = content
+
+
+class _FakeChoice:
+    def __init__(self, content):
+        self.message = _FakeMessage(content)
+
+
+class _FakeCompletion:
+    def __init__(self, content):
+        self.choices = [_FakeChoice(content)]
+
+
+class _FakeCompletions:
+    def __init__(self, capture):
+        self._capture = capture
+
+    def create(self, **kwargs):
+        self._capture.append(kwargs)
+        return _FakeCompletion(
+            '{"clips": [{"title": "Judul", "hook": "Ini hook", "start": 1, "end": 20}]}'
+        )
+
+
+class _FakeChat:
+    def __init__(self, capture):
+        self.completions = _FakeCompletions(capture)
+
+
+def _install_fake_openai(monkeypatch, capture):
+    """Patch the `openai` module's OpenAI class (resolved via the local
+    `from openai import OpenAI` import inside analyzer.analyze)."""
+    import openai
+
+    class _FakeOpenAI:
+        def __init__(self, base_url=None, api_key=None):
+            self.chat = _FakeChat(capture)
+
+    monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
+
+
+def test_analyze_injects_language_hint(monkeypatch):
+    calls = []
+    _install_fake_openai(monkeypatch, calls)
+
+    clips = analyze("some transcript text", "fake-key", language="id")
+
+    assert len(clips) == 1
+    assert clips[0]["title"] == "Judul"
+    system_content = calls[0]["messages"][0]["content"]
+    assert "Indonesian" in system_content
+    assert "id" in system_content
+
+
+def test_analyze_no_language_hint_omits_instruction(monkeypatch):
+    calls = []
+    _install_fake_openai(monkeypatch, calls)
+
+    analyze("some transcript text", "fake-key")
+
+    system_content = calls[0]["messages"][0]["content"]
+    assert "Language hint" not in system_content
+
+
+def test_analyze_unknown_language_code_falls_back_to_raw_code(monkeypatch):
+    calls = []
+    _install_fake_openai(monkeypatch, calls)
+
+    analyze("some transcript text", "fake-key", language="xx")
+
+    system_content = calls[0]["messages"][0]["content"]
+    assert "xx" in system_content
+
+
+def test_language_names_table_has_indonesian():
+    assert LANGUAGE_NAMES["id"] == "Indonesian (Bahasa Indonesia)"

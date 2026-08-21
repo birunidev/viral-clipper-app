@@ -53,6 +53,26 @@ def slugify(title: str) -> str:
     return slug or "clip"
 
 
+def _escape_filter_path(path: str) -> str:
+    """Escape a filesystem path for use inside an ffmpeg filter argument.
+
+    ffmpeg filtergraph syntax treats ``:``, ``\\``, ``'`` and ``[``/``]`` as
+    special; the subtitles filter's own docs show colons in Windows-style
+    drive paths escaped as ``\\:``. Backslashes must be escaped first so we
+    don't double-escape the backslashes we just inserted.
+    """
+    return path.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+
+
+def subtitles_filter_for(ass_path: str, fonts_dir: str | None = None) -> str:
+    """Build the ``subtitles=`` filter fragment that burns an ASS file in."""
+    escaped = _escape_filter_path(ass_path)
+    parts = [f"subtitles={escaped}"]
+    if fonts_dir:
+        parts.append(f"fontsdir={_escape_filter_path(fonts_dir)}")
+    return ":".join(parts)
+
+
 def build_command(
     src: str,
     start: float,
@@ -61,6 +81,8 @@ def build_command(
     out_dir: str,
     index: int,
     orientation: str = PORTRAIT,
+    subtitles_path: str | None = None,
+    fonts_dir: str | None = None,
 ) -> list[str]:
     """Build the FFmpeg command that trims a clip to the chosen ratio.
 
@@ -68,6 +90,9 @@ def build_command(
       (duration) rather than ``-to``.
     - ``orientation`` selects the crop filter: portrait (9:16), landscape
       (16:9), or original (no crop).
+    - ``subtitles_path`` (optional): an ASS subtitle file to burn in via
+      libass. Combined with the crop filter in one ``-vf`` chain so
+      captions are positioned against the already-cropped frame.
     """
     duration = max(end - start, 0.1)
     filename = f"{slugify(title)}_{index:02d}.mp4"
@@ -87,9 +112,14 @@ def build_command(
         f"{duration:.2f}",
     ]
 
+    filters = []
     crop_filter = crop_filter_for(orientation)
     if crop_filter:
-        command += ["-vf", crop_filter]
+        filters.append(crop_filter)
+    if subtitles_path:
+        filters.append(subtitles_filter_for(subtitles_path, fonts_dir))
+    if filters:
+        command += ["-vf", ",".join(filters)]
 
     command += [
         "-c:v",
@@ -117,8 +147,14 @@ def cut_clip(
     out_dir: str,
     index: int,
     orientation: str = PORTRAIT,
+    subtitles_path: str | None = None,
+    fonts_dir: str | None = None,
 ) -> str:
-    """Cut a single clip to out_dir and return the output file path."""
+    """Cut a single clip to out_dir and return the output file path.
+
+    ``subtitles_path`` (optional) is an ASS file burned in via libass;
+    ``fonts_dir`` (optional) is a font directory passed to libass.
+    """
     if not os.path.isfile(src):
         raise CutterError(f"Source video not found: {src}")
 
@@ -126,7 +162,17 @@ def cut_clip(
 
     os.makedirs(out_dir, exist_ok=True)
 
-    command = build_command(src, start, end, title, out_dir, index, orientation)
+    command = build_command(
+        src,
+        start,
+        end,
+        title,
+        out_dir,
+        index,
+        orientation,
+        subtitles_path=subtitles_path,
+        fonts_dir=fonts_dir,
+    )
     result = subprocess.run(command, capture_output=True, text=True)
 
     if result.returncode != 0:

@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg gcc g++ cmake \
+    && apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-dejavu-core gcc g++ cmake \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -11,6 +11,10 @@ COPY core ./core
 COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini ./
+
+# Caption preset fonts (Anton, Space Grotesk — SIL OFL).
+COPY assets/fonts /app/fonts
+RUN fc-cache -f /app/fonts
 
 RUN pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir pywhispercpp

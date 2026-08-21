@@ -26,7 +26,7 @@ import tempfile
 import uuid
 from typing import Callable
 
-from core import analyzer, cutter, s3, transcriber, youtube
+from core import analyzer, captions, cutter, s3, transcriber, youtube
 
 from . import db
 
@@ -121,6 +121,61 @@ def _extract_thumbnail_offsets(src: str, start: float, end: float, dest: str) ->
     return False
 
 
+def _probe_dimensions(video_path: str) -> tuple[int, int] | None:
+    """Return (width, height) of a video via ffprobe, or None on failure.
+
+    Uses ffprobe (ships with ffmpeg) to read the first video stream's
+    dimensions — needed to size the ASS ``PlayRes`` to the cropped frame.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "csv=s=x:p=0",
+                video_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            return None
+        csv = result.stdout.strip()
+        w, h = csv.split("x")
+        return int(w), int(h)
+    except Exception:
+        return None
+
+
+def _build_caption_file(
+    clip: dict, style: dict, local_video: str, orientation: str, out_dir: str
+) -> str | None:
+    """Write an ASS caption file for ``clip`` and return its path, or None if
+    captions can't be built (no words or invalid style)."""
+    caption_words = clip.get("caption_json")
+    if not caption_words:
+        return None
+
+    dims = _probe_dimensions(local_video)
+    if not dims:
+        return None
+    out_w, out_h = captions.crop_dimensions(dims[0], dims[1], orientation)
+
+    ass = captions.build_ass(caption_words, style, out_w, out_h)
+    os.makedirs(out_dir, exist_ok=True)
+    ass_path = os.path.join(out_dir, "captions.ass")
+    with open(ass_path, "w", encoding="utf-8") as fh:
+        fh.write(ass)
+    return ass_path
+
+
 def _upload_thumbnail(project_id: str, thumb_path: str) -> str | None:
     """Upload a thumbnail to S3 (JPEG, unique key). Returns the S3 key, or
     None if upload fails (the clip just won't have a thumbnail)."""
@@ -133,6 +188,32 @@ def _upload_thumbnail(project_id: str, thumb_path: str) -> str | None:
         return upload.key
     except Exception:
         return None
+
+
+def _build_clip_caption_json(project_id: str, start: float, end: float) -> list[dict] | None:
+    """Words within a clip's [start, end] (seconds), re-anchored to
+    clip-relative milliseconds for TikTok-style word-by-word captions.
+
+    Returns None (no captions) when the project has no timeline words at
+    all (e.g. the active transcription provider doesn't return word
+    timings). Words that straddle the clip boundary are clamped to the
+    clip's own duration so the caption never runs past the trimmed video.
+    """
+    start_ms = int(start * 1000)
+    end_ms = int(end * 1000)
+    words = db.get_timeline_words_in_range(project_id, start_ms, end_ms)
+    if not words:
+        return None
+
+    duration_ms = max(end_ms - start_ms, 1)
+    caption_words = []
+    for word in words:
+        rel_start = max(0, word["start_ms"] - start_ms)
+        rel_end = min(duration_ms, word["end_ms"] - start_ms)
+        if rel_end <= rel_start:
+            continue
+        caption_words.append({"text": word["text"], "start_ms": rel_start, "end_ms": rel_end})
+    return caption_words or None
 
 
 def run_job(job_id: str) -> None:
@@ -199,9 +280,24 @@ def _run_analyze(job_id: str) -> None:
 
     workdir = tempfile.mkdtemp(prefix="clipforge_analyze_")
     local_video: str | None = None
+    # Spoken-language hint, ISO 639-1. Preferred source: the source video's
+    # own metadata (yt-dlp exposes `language` for many YouTube videos, e.g.
+    # "id" for Bahasa Indonesia). If unavailable, transcription auto-detects.
+    source_language: str | None = None
     try:
         if source_type == "youtube":
             dl_dir = os.path.join(workdir, "src")
+            # Fetch metadata first so we can pass the video's spoken language
+            # down to the transcription provider as a hint. Persist it right
+            # away (not after a later stage) so it survives even if the
+            # download itself fails afterwards.
+            try:
+                info = youtube.get_info(source)
+                source_language = info.get("language") or info.get("original_language")
+                if source_language:
+                    db.update_project(project_id, language=source_language)
+            except Exception:
+                source_language = None
             local_video = youtube.download(
                 source,
                 dl_dir,
@@ -230,16 +326,33 @@ def _run_analyze(job_id: str) -> None:
         db.update_job(job_id, stage="downloading", progress=25)
 
         db.update_job(job_id, stage="transcribing", progress=28)
-        transcript = transcriber.transcribe(
+        transcript_result = transcriber.transcribe_with_words(
             local_video,
             assemblyai_key,
             progress=_make_progress(job_id, *ANALYZE_STAGE_RANGES["transcribing"]),
             provider=transcription_provider,
+            language=source_language,
         )
         db.update_job(job_id, stage="transcribing", progress=70)
 
+        # Prefer the transcription provider's detected language (ground
+        # truth) over the source metadata hint.
+        detected_language = transcript_result.language or source_language
+        if detected_language:
+            db.update_project(project_id, language=detected_language)
+
+        # Persist the absolute-timed word timeline once per project. Every
+        # clip reuses it to derive its own caption timings (no re-transcribe).
+        db.add_timeline_words(project_id, transcript_result.words)
+
         db.update_job(job_id, stage="analyzing", progress=72)
-        clips = analyzer.analyze(transcript, llm_api_key, llm_base_url, llm_model)
+        clips = analyzer.analyze(
+            transcript_result.text,
+            llm_api_key,
+            llm_base_url,
+            llm_model,
+            language=detected_language,
+        )
         if len(clips) > max_clips:
             clips = clips[:max_clips]
         if not clips:
@@ -257,6 +370,11 @@ def _run_analyze(job_id: str) -> None:
             if _extract_thumbnail_offsets(local_video, clip["start"], clip["end"], thumb_jpg):
                 thumbnail_key = _upload_thumbnail(project_id, thumb_jpg)
 
+            # Derive clip-relative caption timings for TikTok-style
+            # word-by-word captions. Empty when the provider returned no
+            # word timings (the clip simply renders without captions).
+            caption_json = _build_clip_caption_json(project_id, clip["start"], clip["end"])
+
             # video_url is intentionally left unset — clips preview by
             # seeking the source video, and only get their own rendered
             # file once a render job is requested (see _run_render).
@@ -269,6 +387,7 @@ def _run_analyze(job_id: str) -> None:
                 clip["end"],
                 None,
                 thumbnail_key,
+                caption_json=caption_json,
             )
 
             lo, hi = ANALYZE_STAGE_RANGES["analyzing"]
@@ -314,6 +433,14 @@ def _run_render(job_id: str) -> None:
 
     options = job.get("options") or {}
     orientation = options.get("orientation", "portrait")
+    caption_style_id = options.get("caption_style_id")
+
+    # Resolve the caption style preset (if requested) so we can burn it in.
+    caption_style = None
+    if caption_style_id:
+        caption_style = db.get_caption_style(caption_style_id)
+        if caption_style is None:
+            raise RuntimeError(f"Caption style {caption_style_id!r} not found")
 
     db.update_job(job_id, status="running", stage="downloading", progress=2)
 
@@ -325,6 +452,14 @@ def _run_render(job_id: str) -> None:
 
         db.update_job(job_id, stage="cutting", progress=42)
         out_dir = os.path.join(workdir, "out")
+        os.makedirs(out_dir, exist_ok=True)
+
+        ass_path = None
+        if caption_style is not None:
+            ass_path = _build_caption_file(
+                clip, caption_style.get("config") or {}, local_video, orientation, out_dir
+            )
+
         mp4 = cutter.cut_clip(
             local_video,
             clip["start_time"],
@@ -333,6 +468,8 @@ def _run_render(job_id: str) -> None:
             out_dir,
             1,
             orientation,
+            subtitles_path=ass_path,
+            fonts_dir=os.environ.get("CAPTION_FONTS_DIR", "/app/fonts"),
         )
         db.update_job(job_id, stage="cutting", progress=90)
 

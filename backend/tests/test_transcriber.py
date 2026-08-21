@@ -10,8 +10,10 @@ import requests
 
 from core.transcriber import (
     TranscriptionError,
+    TranscriptResult,
     build_extract_command,
     transcribe,
+    transcribe_with_words,
     BASE_URL,
 )
 
@@ -346,16 +348,18 @@ def test_transcribe_local_success(monkeypatch, tmp_path):
     )
 
     class FakeSegment:
-        def __init__(self, text):
+        def __init__(self, text, t0=0, t1=0):
             self.text = text
+            self.t0 = t0
+            self.t1 = t1
 
     class FakeModel:
         def __init__(self, model_name, n_threads=4):
             self.model_name = model_name
             self.n_threads = n_threads
 
-        def transcribe(self, audio_path):
-            return [FakeSegment(" Hello"), FakeSegment(" world ")]
+        def transcribe(self, audio_path, **kwargs):
+            return [FakeSegment(" Hello", t0=0, t1=50), FakeSegment(" world ", t0=55, t1=110)]
 
     _install_fake_whisper(monkeypatch, FakeModel)
 
@@ -409,3 +413,227 @@ def test_transcribe_local_model_load_failure(monkeypatch, tmp_path):
 
     with pytest.raises(TranscriptionError, match="Could not load whisper.cpp model"):
         transcribe(video, "", provider="local")
+
+
+# ------------------------------------------------------------- word timestamps
+
+
+def test_transcribe_with_words_assemblyai(session, fake_audio):
+    session.script = [
+        ("post", BASE_URL + "/v2/upload", 200, {"upload_url": "https://cdn.example/u"}),
+        ("post", BASE_URL + "/v2/transcript", 200, {"id": "abc123"}),
+        (
+            "get",
+            BASE_URL + "/v2/transcript/abc123",
+            200,
+            {
+                "status": "completed",
+                "text": "Hello world",
+                "words": [
+                    {"text": "Hello", "start": 100, "end": 500, "confidence": 0.9},
+                    {"text": "world", "start": 550, "end": 900, "confidence": 0.95},
+                ],
+            },
+        ),
+    ]
+
+    result = transcribe_with_words("video.mp4", "test-key")
+
+    assert isinstance(result, TranscriptResult)
+    assert result.text == "Hello world"
+    assert result.words == [
+        {"text": "Hello", "start_ms": 100, "end_ms": 500},
+        {"text": "world", "start_ms": 550, "end_ms": 900},
+    ]
+
+
+def test_transcribe_with_words_assemblyai_missing_words_field(session, fake_audio):
+    """Older/degraded responses without a words[] field should not crash."""
+    session.script = [
+        ("post", BASE_URL + "/v2/upload", 200, {"upload_url": "https://cdn.example/u"}),
+        ("post", BASE_URL + "/v2/transcript", 200, {"id": "abc123"}),
+        ("get", BASE_URL + "/v2/transcript/abc123", 200, {"status": "completed", "text": "Hello"}),
+    ]
+
+    result = transcribe_with_words("video.mp4", "test-key")
+
+    assert result.text == "Hello"
+    assert result.words == []
+
+
+def test_transcribe_with_words_assemblyai_skips_malformed_entries(session, fake_audio):
+    session.script = [
+        ("post", BASE_URL + "/v2/upload", 200, {"upload_url": "https://cdn.example/u"}),
+        ("post", BASE_URL + "/v2/transcript", 200, {"id": "abc123"}),
+        (
+            "get",
+            BASE_URL + "/v2/transcript/abc123",
+            200,
+            {
+                "status": "completed",
+                "text": "Hello",
+                "words": [
+                    {"text": "Hello", "start": 100, "end": 500},
+                    {"text": "", "start": 500, "end": 600},  # empty text
+                    {"text": "bad", "start": None, "end": 700},  # bad start
+                    "not-a-dict",
+                ],
+            },
+        ),
+    ]
+
+    result = transcribe_with_words("video.mp4", "test-key")
+
+    assert result.words == [{"text": "Hello", "start_ms": 100, "end_ms": 500}]
+
+
+def test_transcribe_with_words_local(monkeypatch, tmp_path):
+    video = make_file(tmp_path)
+    monkeypatch.setattr(
+        "core.transcriber._extract_audio",
+        lambda video_path, progress=None, fmt="mp3": video_path,
+    )
+
+    class FakeSegment:
+        def __init__(self, text, t0, t1):
+            self.text = text
+            self.t0 = t0
+            self.t1 = t1
+
+    captured_kwargs = {}
+
+    class FakeModel:
+        def __init__(self, model_name, n_threads=4):
+            pass
+
+        def transcribe(self, audio_path, **kwargs):
+            captured_kwargs.update(kwargs)
+            return [FakeSegment(" Hello", 0, 50), FakeSegment(" world", 55, 110)]
+
+    _install_fake_whisper(monkeypatch, FakeModel)
+
+    result = transcribe_with_words(video, "", provider="local")
+
+    # whisper.cpp centiseconds -> ms (t * 10)
+    assert result.text == "Hello world"
+    assert result.words == [
+        {"text": "Hello", "start_ms": 0, "end_ms": 500},
+        {"text": "world", "start_ms": 550, "end_ms": 1100},
+    ]
+    # word-level timing requires these params to be forwarded to whisper.cpp
+    assert captured_kwargs.get("token_timestamps") is True
+    assert captured_kwargs.get("max_len") == 1
+    assert captured_kwargs.get("split_on_word") is True
+
+
+def test_transcribe_with_words_local_skips_empty_segments(monkeypatch, tmp_path):
+    video = make_file(tmp_path)
+    monkeypatch.setattr(
+        "core.transcriber._extract_audio",
+        lambda video_path, progress=None, fmt="mp3": video_path,
+    )
+
+    class FakeSegment:
+        def __init__(self, text, t0, t1):
+            self.text = text
+            self.t0 = t0
+            self.t1 = t1
+
+    class FakeModel:
+        def __init__(self, model_name, n_threads=4):
+            pass
+
+        def transcribe(self, audio_path, **kwargs):
+            return [FakeSegment("  ", 0, 10), FakeSegment(" Hello", 10, 60)]
+
+    _install_fake_whisper(monkeypatch, FakeModel)
+
+    result = transcribe_with_words(video, "", provider="local")
+
+    assert result.text == "Hello"
+    assert result.words == [{"text": "Hello", "start_ms": 100, "end_ms": 600}]
+
+
+# ------------------------------------------------------------ language
+
+
+def test_transcribe_assemblyai_uses_language_hint(session, fake_audio):
+    """When a language hint is given, AssemblyAI gets language_code (not
+    auto-detect) and the detected language is echoed back."""
+    session.script = [
+        ("post", BASE_URL + "/v2/upload", 200, {"upload_url": "https://cdn.example/u"}),
+        ("post", BASE_URL + "/v2/transcript", 200, {"id": "abc123"}),
+        (
+            "get",
+            BASE_URL + "/v2/transcript/abc123",
+            200,
+            {
+                "status": "completed",
+                "text": "Halo dunia",
+                "language_code": "id",
+                "words": [{"text": "Halo", "start": 100, "end": 400}],
+            },
+        ),
+    ]
+
+    result = transcribe_with_words("video.mp4", "test-key", language="id")
+
+    assert result.language == "id"
+    assert result.text == "Halo dunia"
+    # _submit should have sent language_code="id" instead of auto-detect
+    submit_kwargs = session.calls[1][2]
+    assert submit_kwargs["json"] == {
+        "audio_url": "https://cdn.example/u",
+        "language_code": "id",
+    }
+
+
+def test_transcribe_assemblyai_auto_detects_when_no_hint(session, fake_audio):
+    session.script = [
+        ("post", BASE_URL + "/v2/upload", 200, {"upload_url": "https://cdn.example/u"}),
+        ("post", BASE_URL + "/v2/transcript", 200, {"id": "abc123"}),
+        (
+            "get",
+            BASE_URL + "/v2/transcript/abc123",
+            200,
+            {"status": "completed", "text": "Halo", "language_code": "id"},
+        ),
+    ]
+
+    result = transcribe_with_words("video.mp4", "test-key")
+
+    submit_kwargs = session.calls[1][2]
+    assert submit_kwargs["json"] == {"audio_url": "https://cdn.example/u", "language_detection": True}
+    assert result.language == "id"
+
+
+def test_transcribe_local_forwards_language_hint(monkeypatch, tmp_path):
+    video = make_file(tmp_path)
+    monkeypatch.setattr(
+        "core.transcriber._extract_audio",
+        lambda video_path, progress=None, fmt="mp3": video_path,
+    )
+
+    captured_kwargs = {}
+
+    class FakeSegment:
+        def __init__(self, text, t0, t1):
+            self.text = text
+            self.t0 = t0
+            self.t1 = t1
+
+    class FakeModel:
+        def __init__(self, model_name, n_threads=4):
+            pass
+
+        def transcribe(self, audio_path, **kwargs):
+            captured_kwargs.update(kwargs)
+            return [FakeSegment(" Halo", 0, 50), FakeSegment(" dunia", 55, 110)]
+
+    _install_fake_whisper(monkeypatch, FakeModel)
+
+    result = transcribe_with_words(video, "", provider="local", language="id")
+
+    assert captured_kwargs.get("language") == "id"
+    assert result.language == "id"
+    assert result.text == "Halo dunia"
