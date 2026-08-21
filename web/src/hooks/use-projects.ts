@@ -94,6 +94,17 @@ export function useStartJob(projectId: string) {
   });
 }
 
+/** Save a custom caption style from the in-app editor. Invalidates the
+ * shared caption-styles cache so it shows up in every picker right away. */
+export function useCreateCaptionStyle() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { label: string; config: Record<string, unknown> }) =>
+      api.post<CaptionStyle>("/caption-styles", payload),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: captionStylesKey }),
+  });
+}
+
 /** Enqueue cutting + uploading a single clip (on-demand download). */
 export function useRenderClip(projectId: string) {
   const queryClient = useQueryClient();

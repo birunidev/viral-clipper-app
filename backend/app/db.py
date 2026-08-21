@@ -284,6 +284,21 @@ def get_caption_style_by_key(key: str) -> dict[str, Any] | None:
         return _row(db.execute(stmt).scalar_one_or_none())
 
 
+def create_caption_style(label: str, config: dict, key: str) -> dict:
+    """Insert a user-defined (non-builtin) caption style.
+
+    ``key`` must already be unique (see ``app/api/caption_styles.py`` for
+    the slug-plus-suffix generation that guarantees this).
+    """
+    with session_scope() as db:
+        style = CaptionStyle(
+            id=_new_id(), key=key, label=label, config=config, is_builtin=False
+        )
+        db.add(style)
+        db.flush()
+        return _row(style)
+
+
 def update_job(job_id: str, **fields: Any) -> None:
     if not fields:
         return

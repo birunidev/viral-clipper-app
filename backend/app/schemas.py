@@ -88,6 +88,19 @@ class CaptionStyleResponse(BaseModel):
     is_builtin: bool
 
 
+class CaptionStyleCreate(BaseModel):
+    """A user-defined caption style saved from the in-app style editor.
+
+    ``config`` uses the same primitives as the built-in presets in
+    ``app/caption_presets.py`` (font, font_size, colors, position, outline,
+    boxed, word-grouping) and is validated by attempting to build a sample
+    ASS file before saving.
+    """
+
+    label: str = Field(min_length=1, max_length=100)
+    config: dict
+
+
 class JobResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

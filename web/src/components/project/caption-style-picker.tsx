@@ -1,6 +1,7 @@
 "use client";
 
 import { CaptionStyle } from "@/hooks/types";
+import { captionTextStyle } from "@/lib/caption-preview-style";
 import { Check } from "@phosphor-icons/react";
 
 /**
@@ -11,15 +12,7 @@ import { Check } from "@phosphor-icons/react";
  */
 function CaptionSwatch({ style }: { style: CaptionStyle }) {
   const c = style.config as Record<string, unknown>;
-  const font = String(c.font ?? "sans-serif");
-  const size = Number(c.font_size ?? 64);
-  const idle = String(c.primary_color ?? "#FFFFFF");
   const highlight = String(c.highlight_color ?? "#FFD60A");
-  const outline = String(c.outline_color ?? "#000000");
-  const outlineW = Number(c.outline ?? 3);
-  const bold = Boolean(c.bold);
-  const italic = Boolean(c.italic);
-  const boxed = Boolean(c.boxed);
   const y = Number(c.y ?? 0.8);
 
   return (
@@ -28,20 +21,7 @@ function CaptionSwatch({ style }: { style: CaptionStyle }) {
         className="absolute inset-x-0 px-3 text-center"
         style={{ top: `${y * 100}%`, transform: "translateY(-50%)" }}
       >
-        <div
-          className="inline-block"
-          style={{
-            fontFamily: font,
-            fontSize: `${Math.round(size * 0.35)}px`,
-            fontWeight: bold ? 700 : 400,
-            fontStyle: italic ? "italic" : "normal",
-            color: idle,
-            textShadow: `${outlineW}px 0 0 ${outline}, -${outlineW}px 0 0 ${outline}, 0 ${outlineW}px 0 ${outline}, 0 -${outlineW}px 0 ${outline}`,
-            ...(boxed
-              ? { backgroundColor: "rgba(0,0,0,0.45)", borderRadius: "8px", padding: "2px 8px" }
-              : {}),
-          }}
-        >
+        <div className="inline-block" style={captionTextStyle(c)}>
           <span style={{ color: highlight }}>This</span> is a caption
         </div>
       </div>

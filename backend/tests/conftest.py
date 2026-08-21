@@ -67,11 +67,15 @@ def _truncate_tables():
     engine = database.get_engine()
     # caption_styles is seed/reference data, not per-test state — keep it
     # across truncation so tests can rely on the built-in presets existing.
+    # Custom (non-builtin) styles created *during* a test (e.g. via
+    # POST /caption-styles) are per-test state though, so those are deleted
+    # explicitly to avoid key collisions leaking across tests.
     tables = ", ".join(
         f'"{t.name}"' for t in reversed(Base.metadata.sorted_tables) if t.name != "caption_styles"
     )
     with engine.begin() as conn:
         conn.execute(text(f"TRUNCATE {tables} CASCADE"))
+        conn.execute(text("DELETE FROM caption_styles WHERE is_builtin = false"))
 
 
 @pytest.fixture

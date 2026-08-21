@@ -9,6 +9,7 @@ import {
   Lightning,
   Play,
   Scissors,
+  SlidersHorizontal,
   Warning,
   Waveform,
   X,
@@ -30,6 +31,7 @@ import {
 import type { Clip, ProjectDetail } from "@/hooks/types";
 import { Button } from "@/components/ui/button";
 import { CaptionStylePicker } from "@/components/project/caption-style-picker";
+import { CaptionStyleEditor } from "@/components/project/caption-style-editor";
 import { WordCaptionOverlay } from "@/components/project/word-caption-overlay";
 
 const STAGE_LABEL: Record<string, string> = {
@@ -244,6 +246,7 @@ export default function ProjectPage() {
 function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [captionsOpen, setCaptionsOpen] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
   const [selectedStyleId, setSelectedStyleId] = useState<string | null>(
     clip.caption_style_id
   );
@@ -269,6 +272,11 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
       { clipId: clip.id, orientation: "portrait", captionStyleId: styleId },
       { onError: () => {} }
     );
+  }
+
+  function handleSaveAndRenderFromEditor(styleId: string) {
+    setEditorOpen(false);
+    handleRender(styleId);
   }
 
   return (
@@ -372,12 +380,29 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
               {captionStylesQuery.isLoading ? (
                 <p className="text-xs text-ink-tertiary">Loading styles…</p>
               ) : (
-                <CaptionStylePicker
-                  styles={captionStylesQuery.data ?? []}
-                  selectedId={selectedStyleId}
-                  onSelect={handleRender}
-                  disabled={renderClip.isPending}
-                />
+                <>
+                  <CaptionStylePicker
+                    styles={captionStylesQuery.data ?? []}
+                    selectedId={selectedStyleId}
+                    onSelect={handleRender}
+                    disabled={renderClip.isPending}
+                  />
+                  {hasCaptionWords && canPreview && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="mt-2 w-full"
+                      onClick={() => {
+                        setCaptionsOpen(false);
+                        setEditorOpen(true);
+                      }}
+                      disabled={renderClip.isPending}
+                    >
+                      <SlidersHorizontal size={13} />
+                      Customize captions
+                    </Button>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -395,7 +420,85 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
           onClose={() => setPreviewOpen(false)}
         />
       )}
+
+      {editorOpen && canPreview && hasCaptionWords && (
+        <CaptionEditorModal
+          title={clip.title}
+          onClose={() => setEditorOpen(false)}
+        >
+          <CaptionStyleEditor
+            sourceVideoUrl={project.source_video_url!}
+            thumbnail={clip.signed_thumbnail_url}
+            clipStart={clip.start_time}
+            clipEnd={clip.end_time}
+            captionWords={clip.caption_json!}
+            initialConfig={
+              selectedStyleId
+                ? (captionStylesQuery.data?.find((s) => s.id === selectedStyleId)
+                    ?.config as Record<string, unknown> | undefined)
+                : undefined
+            }
+            onCancel={() => setEditorOpen(false)}
+            onSaveAndRender={handleSaveAndRenderFromEditor}
+            isRendering={renderClip.isPending}
+          />
+        </CaptionEditorModal>
+      )}
     </>
+  );
+}
+
+/**
+ * Modal shell for the caption style editor — same overlay/scroll-lock
+ * pattern as `SeekPreview`, sized wider to fit the live preview + controls
+ * side by side on desktop.
+ */
+function CaptionEditorModal({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  useEffect(() => {
+    const original = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = original;
+    };
+  }, []);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Customize captions: ${title}`}
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-3xl overflow-hidden rounded-xl border border-line bg-surface-1 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-line px-4 py-3">
+          <div className="flex items-center gap-2 text-sm font-medium text-ink">
+            <SlidersHorizontal size={14} className="text-accent" />
+            Customize captions
+            <span className="ml-1 text-xs text-ink-tertiary">{title}</span>
+          </div>
+          <button
+            onClick={onClose}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-ink-tertiary hover:bg-surface-2 hover:text-ink"
+            aria-label="Close editor"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="max-h-[80vh] overflow-y-auto p-4">{children}</div>
+      </div>
+    </div>
   );
 }
 
