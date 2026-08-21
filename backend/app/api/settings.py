@@ -5,9 +5,18 @@ the app runs without the operator paying for API usage. Keys are encrypted
 at rest (core/secrets.py) and are **write-only**: the GET response shows
 only ``has_*`` booleans + a masked preview, never plaintext. To clear a
 key, PUT an empty string; to leave it untouched, PUT null/omit it.
+
+Raises ``503`` when ``APP_SECRET_KEY`` is not configured (the deployment
+cannot safely encrypt/decrypt stored keys).
+
+Raises ``400`` when ``transcription_provider`` is ``local`` but the
+deployment lacks ``pywhispercpp``.
 """
 
 from __future__ import annotations
+
+import importlib.util
+import os
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -23,12 +32,18 @@ def _mask(value: str | None) -> str | None:
     """Return a short preview of a key like ``sk-…abc123`` for UI display."""
     if not value:
         return None
-    if len(value) <= 6:
-        return "••••"
+    if len(value) <= 12:
+        return "•" * len(value)
     return f"{value[:3]}…{value[-4:]}"
 
 
 def _response(user: SessionUser) -> UserSettingsResponse:
+    if not secrets.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="API key encryption is not configured (APP_SECRET_KEY missing).",
+        )
+
     used = storage.storage_used(user.id)
     remaining = storage.storage_remaining(user.id)
     row = db.get_user_settings(user.id)
@@ -68,14 +83,43 @@ def update_settings(
     payload: UserSettingsUpdate, user: SessionUser = Depends(current_user)
 ) -> UserSettingsResponse:
     """Save/clear BYOK settings. Validate before persisting so bad combos
-    (e.g. assemblyai provider with no key anywhere) fail fast."""
-    provider = payload.transcription_provider or "assemblyai"
+    (e.g. assemblyai provider with no key anywhere) fail fast.
+
+    Partial updates must not clobber fields the client didn't touch: a
+    ``None`` transcription_provider keeps the currently-stored provider.
+
+    Raises ``503`` when ``APP_SECRET_KEY`` is not configured.
+    """
+    if not secrets.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="API key encryption is not configured (APP_SECRET_KEY missing).",
+        )
+
+    existing = db.get_user_settings(user.id) or {}
+
+    # Provider: only change it when explicitly supplied.
+    provider = (
+        payload.transcription_provider
+        if payload.transcription_provider is not None
+        else (existing.get("transcription_provider") or "assemblyai")
+    )
+
+    # Gate ``local`` provider behind pywhispercpp availability.
+    if provider == "local" and not (
+        importlib.util.find_spec("pywhispercpp")
+        or os.environ.get("TRANSCRIPTION_PROVIDER") == "local"
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Local transcription is not available on this deployment. "
+            "Choose ``assemblyai`` or contact the operator.",
+        )
 
     # Merge in the stored keys (decrypted) so we can validate the *effective*
     # result, then re-encrypt everything before writing back. An explicit ""
     # (cleared) key must reach upsert as "" so it wipes the stored value,
     # not as None (which means "leave unchanged") — hence no `or None` here.
-    existing = db.get_user_settings(user.id) or {}
     current_llm = secrets.decrypt_secret(existing.get("llm_api_key"))
     current_aai = secrets.decrypt_secret(existing.get("assemblyai_key"))
 

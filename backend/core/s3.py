@@ -202,3 +202,8 @@ def head_object_size(bucket: str, key: str) -> int | None:
         return int(resp.get("ContentLength", 0))
     except Exception:
         return None
+
+
+def head_object_size_default_bucket(key: str) -> int | None:
+    """Return size of object at *key* in the configured S3 bucket, or None."""
+    return head_object_size(_get_bucket(), key)

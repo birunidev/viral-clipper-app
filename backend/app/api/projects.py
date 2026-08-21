@@ -18,6 +18,7 @@ from ..schemas import (
 from ..security import SessionUser, current_user
 from ..worker import pool
 from core import storage
+from core.s3 import head_object_size_default_bucket as head_object_size_default_bucket
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -49,24 +50,41 @@ def create_project(payload: ProjectCreate, user: SessionUser = Depends(current_u
     source_type = "upload" if payload.source_type == "upload" else "youtube"
     title = (payload.title or "").strip() or "Untitled"
 
-    if source_type == "upload" and payload.source_size_bytes:
-        # The uploaded file already lives in S3 (direct browser upload), so
-        # the quota is enforced/accounted now, at project creation, rather
-        # than later in the analyze job (which can't know the size a priori).
+    # Determine the authoritative size of the uploaded object in S3, so a
+    # client cannot bypass the cap by claiming ``source_size_bytes=0``.
+    if source_type == "upload":
+        real_size = head_object_size_default_bucket(source)
+        if real_size is None:
+            # Fall back to the client-provided size; if that is also absent
+            # or zero we must reject because we cannot verify the upload.
+            if not payload.source_size_bytes:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Could not verify uploaded file size; try re-uploading.",
+                )
+            real_size = payload.source_size_bytes
+        elif real_size <= 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+        size_bytes = real_size
+    else:
+        size_bytes = payload.source_size_bytes or 0
+
+    if source_type == "upload" and size_bytes:
+        # Enforce cap with the *real* size before persisting.
         try:
-            storage.enforce_cap(user.id, payload.source_size_bytes)
+            storage.enforce_cap(user.id, size_bytes)
         except storage.StorageQuotaExceeded as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     project = db.create_project(user.id, title, source, source_type)
-    if source_type == "upload" and payload.source_size_bytes:
+    if source_type == "upload" and size_bytes:
         db.update_project(
             project["id"],
             source_key=source,
-            source_size_bytes=payload.source_size_bytes,
-            storage_bytes=payload.source_size_bytes,
+            source_size_bytes=size_bytes,
+            storage_bytes=size_bytes,
         )
-        storage.add_storage(user.id, payload.source_size_bytes)
+        storage.add_storage(user.id, size_bytes)
     project["clip_count"] = 0
     project["latest_job"] = None
     return project

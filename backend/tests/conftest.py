@@ -55,10 +55,17 @@ def _seed_caption_styles() -> None:
 @pytest.fixture(scope="session", autouse=True)
 def _create_schema():
     engine = database.get_engine()
-    # Drop everything first: the test DB is persistent between runs, and
-    # create_all() won't alter tables that already exist, so a schema change
-    # would otherwise silently leave the DB out of date with the models.
-    Base.metadata.drop_all(engine)
+    database_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql://clipforge:clipforge@localhost:5438/clipforge",
+    )
+    # Only drop the schema on the dedicated test DB to avoid accidentally
+    # destroying a developer's local or remote production database.
+    is_test_db = "localhost" in database_url or "127.0.0.1" in database_url
+    if is_test_db:
+        Base.metadata.drop_all(engine)
+    elif os.environ.get("ALLOW_TEST_SCHEMA_DROP"):
+        Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     _seed_caption_styles()
     yield

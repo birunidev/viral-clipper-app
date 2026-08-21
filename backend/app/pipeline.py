@@ -212,6 +212,11 @@ def _upload_thumbnail(project_id: str, thumb_path: str) -> str | None:
     None if upload fails (the clip just won't have a thumbnail)."""
     project = db.get_project(project_id)
     user_id = project.get("user_id", "") if project else ""
+    thumb_size = os.path.getsize(thumb_path)
+    # Gracefully skip thumbnail upload when the user is at their cap — the
+    # clip still renders and downloads fine without it.
+    if not storage.has_storage_room(user_id, thumb_size):
+        return None
     try:
         upload = s3.upload_file_as(
             thumb_path,
@@ -352,22 +357,35 @@ def _run_analyze(job_id: str) -> None:
             raise RuntimeError(f"Unknown sourceType: {source_type!r}")
 
         # Persist the canonical source video so previews can seek it and
-        # render jobs can cut from it later, without re-downloading from
-        # YouTube (which can go stale/rate-limited) each time.
-        if source_type == "youtube":
-            ext = os.path.splitext(local_video)[1] or ".mp4"
-            source_key = f"projects/{project_id}/source{ext}"
+    # render jobs can cut from it later, without re-downloading from
+    # YouTube (which can go stale/rate-limited) each time.
+    if source_type == "youtube":
+        ext = os.path.splitext(local_video)[1] or ".mp4"
+        source_key = f"projects/{project_id}/source{ext}"
 
-            # Enforce the per-user storage cap BEFORE uploading. The video is
-            # already on disk (downloaded), so we know its exact size now.
-            source_size = os.path.getsize(local_video)
-            storage.enforce_cap(project.get("user_id", ""), source_size)
+        # Previously accounted source size (may be 0 for a brand-new project).
+        prev_source_size = int(project.get("source_size_bytes") or 0)
 
-            s3.upload_file_as(local_video, source_key, "video/mp4")
-            db.update_project(project_id, source_key=source_key, source_size_bytes=source_size)
-            storage.add_project_storage(project_id, project.get("user_id", ""), source_size)
-        else:
-            db.update_project(project_id, source_key=source)
+        # Remove old accounting so we can re-add with the correct net delta.
+        # add_project_storage internally uses atomic increments, so this is
+        # safe under concurrent workers.
+        if prev_source_size:
+            storage.add_project_storage(project_id, project.get("user_id", ""), -prev_source_size)
+
+        # New source size and net delta.
+        source_size = os.path.getsize(local_video)
+        delta = source_size - prev_source_size
+
+        # Enforce cap only on the *additional* bytes (may be negative if the
+        # new source is smaller than the one being replaced).
+        if delta > 0:
+            storage.enforce_cap(project.get("user_id", ""), delta)
+
+        s3.upload_file_as(local_video, source_key, "video/mp4")
+        db.update_project(project_id, source_key=source_key, source_size_bytes=source_size)
+        storage.add_project_storage(project_id, project.get("user_id", ""), source_size)
+    else:
+        db.update_project(project_id, source_key=source)
 
         db.update_job(job_id, stage="downloading", progress=25)
 
@@ -518,6 +536,14 @@ def _run_render(job_id: str) -> None:
             fonts_dir=os.environ.get("CAPTION_FONTS_DIR", "/app/fonts"),
         )
         db.update_job(job_id, stage="cutting", progress=90)
+
+        # Pre-check the rendered clip size against the user's storage cap;
+        # if the user is already at their limit the render fails fast with a
+        # clear error rather than silently uploading an unbounded file.
+        render_size = os.path.getsize(mp4)
+        user_id = project.get("user_id", "")
+        if user_id:
+            storage.enforce_cap(user_id, render_size)
 
         # If the clip never got a thumbnail during analysis (scene cut at
         # the midpoint, transient failure, or an older clip), backfill one

@@ -51,7 +51,7 @@ def storage_used(user_id: str) -> int:
 
 def storage_remaining(user_id: str) -> int:
     """Bytes of quota left before ``user_id`` hits the cap."""
-    return max(0, STORAGE_CAP_BYTES - storage_used(user_id))
+    return max(0, STORAGE_CAP_BYTES - storage_used(user_id)
 
 
 def enforce_cap(user_id: str, additional_bytes: int) -> None:
@@ -69,12 +69,7 @@ def add_storage(user_id: str, delta_bytes: int) -> None:
     Never drops below zero."""
     if delta_bytes == 0:
         return
-    user = db.get_user(user_id)
-    if not user:
-        return
-    current = int(user.get("storage_used_bytes") or 0)
-    new_value = max(0, current + delta_bytes)
-    db.update_user(user_id, storage_used_bytes=new_value)
+    db.increment_user_storage(user_id, delta_bytes)
 
 
 def add_project_storage(project_id: str, user_id: str, delta_bytes: int) -> None:
@@ -84,8 +79,14 @@ def add_project_storage(project_id: str, user_id: str, delta_bytes: int) -> None
     if delta_bytes == 0:
         return
     add_storage(user_id, delta_bytes)
-    project = db.get_project(project_id)
-    if not project:
-        return
-    current = int(project.get("storage_bytes") or 0)
-    db.update_project(project_id, storage_bytes=max(0, current + delta_bytes))
+    db.increment_project_storage(project_id, delta_bytes)
+
+
+def has_storage_room(user_id: str, additional_bytes: int) -> bool:
+    """Return True if adding ``additional_bytes`` would keep the user under
+    the 100MB cap. Used before uploading thumbnails when rendering is over
+    cap."""
+    if additional_bytes <= 0:
+        return True
+    used = storage_used(user_id)
+    return used + additional_bytes <= STORAGE_CAP_BYTES

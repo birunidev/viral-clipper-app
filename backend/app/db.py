@@ -12,11 +12,13 @@ handlers) don't need to manage sessions themselves.
 
 from __future__ import annotations
 
+from __future__ import annotations
+
 import datetime as dt
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from .database import session_scope
 from .models import (
@@ -76,6 +78,45 @@ def update_user(user_id: str, **fields: Any) -> None:
             return
         for key, value in fields.items():
             setattr(user, key, value)
+
+
+def increment_user_storage(user_id: str, delta_bytes: int) -> None:
+    """Atomically add ``delta_bytes`` to ``users.storage_used_bytes``.
+
+    Uses a SQL UPDATE … SET storage_used_bytes = GREATEST(0, x + delta)
+    so concurrent renders/thumbnails can't lose updates via read-modify-write
+    races (relevant when WORKERS > 1). Never goes below zero.
+    """
+    if delta_bytes == 0:
+        return
+    with session_scope() as db:
+        from sqlalchemy import func as sqlfunc
+        db.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(
+                storage_used_bytes=sqlfunc.greatest(
+                    0, User.storage_used_bytes + delta_bytes
+                )
+            )
+        )
+
+
+def increment_project_storage(project_id: str, delta_bytes: int) -> None:
+    """Atomically add ``delta_bytes`` to ``projects.storage_bytes``."""
+    if delta_bytes == 0:
+        return
+    with session_scope() as db:
+        from sqlalchemy import func as sqlfunc
+        db.execute(
+            update(Project)
+            .where(Project.id == project_id)
+            .values(
+                storage_bytes=sqlfunc.greatest(
+                    0, Project.storage_bytes + delta_bytes
+                )
+            )
+        )
 
 
 def get_user_by_email(email: str) -> dict[str, Any] | None:

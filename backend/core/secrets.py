@@ -30,6 +30,11 @@ class SecretError(Exception):
 _fernet: Fernet | None = None
 
 
+def is_configured() -> bool:
+    """Whether ``APP_SECRET_KEY`` is present, i.e. key encryption is usable."""
+    return bool(os.environ.get(SECRET_ENV, "").strip())
+
+
 def _get_fernet() -> Fernet:
     global _fernet
     if _fernet is None:
