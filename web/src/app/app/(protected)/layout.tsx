@@ -1,6 +1,6 @@
 "use client";
 
-import { SignOut, SquaresFour, VideoCamera } from "@phosphor-icons/react";
+import { GearSix, SignOut, SquaresFour, VideoCamera } from "@phosphor-icons/react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
@@ -17,7 +17,10 @@ function Logo() {
   );
 }
 
-const NAV = [{ href: "/app/dashboard", label: "Projects", icon: SquaresFour }];
+const NAV = [
+  { href: "/app/dashboard", label: "Projects", icon: SquaresFour },
+  { href: "/app/settings", label: "Settings", icon: GearSix },
+];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();

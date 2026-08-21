@@ -243,3 +243,87 @@ def test_build_caption_file_none_when_probe_fails(monkeypatch, tmp_path):
     monkeypatch.setattr("app.pipeline._probe_dimensions", lambda path: None)
     clip = {"caption_json": [{"text": "Hi", "start_ms": 0, "end_ms": 300}]}
     assert _build_caption_file(clip, CLASSIC_STYLE_CONFIG, "video.mp4", "portrait", str(tmp_path)) is None
+
+
+# ------------------------------------------------------------ BYOK settings
+
+
+def _seed_user_with_settings(monkeypatch, **settings):
+    from core import secrets
+
+    monkeypatch.setenv("APP_SECRET_KEY", "test-secret-key")
+    secrets.reset_fernet()
+
+    user = db.create_user("byok@example.com", "hash")
+    db.upsert_user_settings(
+        user["id"],
+        {
+            "llm_api_key": secrets.encrypt_secret(settings.get("llm_api_key", "")),
+            "assemblyai_key": secrets.encrypt_secret(settings.get("assemblyai_key", "")),
+            "llm_base_url": settings.get("llm_base_url") or None,
+            "llm_model": settings.get("llm_model") or None,
+            "transcription_provider": settings.get("transcription_provider", "assemblyai"),
+        },
+    )
+    return user["id"]
+
+
+def test_user_settings_precedence_user_over_env(monkeypatch):
+    from app.pipeline import _user_settings_for
+
+    monkeypatch.setenv("LLM_API_KEY", "env-key")
+    monkeypatch.setenv("ASSEMBLYAI_KEY", "env-aai")
+    monkeypatch.setenv("TRANSCRIPTION_PROVIDER", "assemblyai")
+
+    uid = _seed_user_with_settings(
+        monkeypatch,
+        llm_api_key="user-llm",
+        assemblyai_key="user-aai",
+        llm_base_url="https://user.openai/v1",
+        llm_model="gpt-4o",
+    )
+
+    resolved = _user_settings_for(uid)
+    assert resolved["llm_api_key"] == "user-llm"
+    assert resolved["assemblyai_key"] == "user-aai"
+    assert resolved["llm_base_url"] == "https://user.openai/v1"
+    assert resolved["llm_model"] == "gpt-4o"
+
+
+def test_user_settings_precedence_falls_back_to_env(monkeypatch):
+    from app.pipeline import _user_settings_for
+
+    monkeypatch.setenv("LLM_API_KEY", "env-key")
+    monkeypatch.setenv("ASSEMBLYAI_KEY", "env-aai")
+    monkeypatch.setenv("TRANSCRIPTION_PROVIDER", "assemblyai")
+    monkeypatch.setenv("LLM_MODEL", "env-model")
+
+    uid = _seed_user_with_settings(monkeypatch, transcription_provider="local")
+
+    resolved = _user_settings_for(uid)
+    # User set only the provider; keys/base_url/model fall back to env.
+    assert resolved["transcription_provider"] == "local"
+    assert resolved["llm_api_key"] == "env-key"
+    assert resolved["assemblyai_key"] == "env-aai"
+    assert resolved["llm_model"] == "env-model"
+
+
+def test_user_settings_no_row_uses_env(monkeypatch):
+    from app.pipeline import _user_settings_for
+
+    monkeypatch.setenv("LLM_API_KEY", "env-key")
+    monkeypatch.setenv("ASSEMBLYAI_KEY", "env-aai")
+    uid = db.create_user("nosettings@example.com", "hash")["id"]
+
+    resolved = _user_settings_for(uid)
+    assert resolved["llm_api_key"] == "env-key"
+    assert resolved["assemblyai_key"] == "env-aai"
+
+
+def test_user_settings_local_provider_overrides_env(monkeypatch):
+    from app.pipeline import _user_settings_for
+
+    monkeypatch.setenv("TRANSCRIPTION_PROVIDER", "assemblyai")
+    uid = _seed_user_with_settings(monkeypatch, transcription_provider="local")
+
+    assert _user_settings_for(uid)["transcription_provider"] == "local"

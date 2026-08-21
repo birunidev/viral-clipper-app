@@ -26,7 +26,7 @@ import tempfile
 import uuid
 from typing import Callable
 
-from core import analyzer, captions, cutter, s3, transcriber, youtube
+from core import analyzer, captions, cutter, s3, storage, transcriber, youtube
 
 from . import db
 
@@ -41,6 +41,37 @@ def _settings() -> dict:
         "llm_base_url": os.environ.get("LLM_BASE_URL", "https://ai.sumopod.com/v1"),
         "llm_model": os.environ.get("LLM_MODEL", "deepseek-v4-flash"),
     }
+
+
+def _user_settings_for(user_id: str) -> dict:
+    """Per-user BYOK settings merged over the env defaults.
+
+    A user who has set their own keys overrides the app's shared env keys;
+    anything unset falls back to env. Returns the same shape as
+    ``_settings()`` but with keys decrypted from at-rest storage.
+    """
+    from core import secrets
+
+    settings = _settings()
+    row = db.get_user_settings(user_id)
+    if not row:
+        return settings
+
+    llm_key = secrets.decrypt_secret(row.get("llm_api_key"))
+    aai_key = secrets.decrypt_secret(row.get("assemblyai_key"))
+    provider = row.get("transcription_provider")
+
+    if llm_key:
+        settings["llm_api_key"] = llm_key
+    if row.get("llm_base_url"):
+        settings["llm_base_url"] = row["llm_base_url"]
+    if row.get("llm_model"):
+        settings["llm_model"] = row["llm_model"]
+    if provider in ("assemblyai", "local"):
+        settings["transcription_provider"] = provider
+    if aai_key:
+        settings["assemblyai_key"] = aai_key
+    return settings
 
 
 # overall progress ranges per stage (out of 100) — analyze job
@@ -179,12 +210,15 @@ def _build_caption_file(
 def _upload_thumbnail(project_id: str, thumb_path: str) -> str | None:
     """Upload a thumbnail to S3 (JPEG, unique key). Returns the S3 key, or
     None if upload fails (the clip just won't have a thumbnail)."""
+    project = db.get_project(project_id)
+    user_id = project.get("user_id", "") if project else ""
     try:
         upload = s3.upload_file_as(
             thumb_path,
             f"projects/{project_id}/thumbs/{uuid.uuid4().hex}.jpg",
             "image/jpeg",
         )
+        storage.add_project_storage(project_id, user_id, upload.size_bytes)
         return upload.key
     except Exception:
         return None
@@ -254,7 +288,7 @@ def _run_analyze(job_id: str) -> None:
     source = project["source"]
     source_type = project.get("source_type", "youtube")
 
-    settings = _settings()
+    settings = _user_settings_for(project.get("user_id", ""))
     assemblyai_key = settings["assemblyai_key"]
     transcription_provider = settings["transcription_provider"]
     llm_api_key = settings["llm_api_key"]
@@ -262,17 +296,22 @@ def _run_analyze(job_id: str) -> None:
     llm_model = settings["llm_model"]
 
     # AssemblyAI key is only required for the cloud transcription provider;
-    # the local (whisper.cpp) provider needs no network credentials.
+    # the local (whisper.cpp) provider needs no network credentials. The key
+    # can come from the user's own BYOK settings or the app's env config.
     if transcription_provider == "assemblyai" and not assemblyai_key:
-        raise RuntimeError("ASSEMBLYAI_KEY environment variable is not set.")
+        raise RuntimeError(
+            "No AssemblyAI API key set. Add one in Settings, or set "
+            "ASSEMBLYAI_KEY in the backend environment."
+        )
     # A local Ollama/OpenAI-compatible server generally ignores the API key,
     # but the OpenAI SDK still requires a non-empty string to construct the
     # client, so LLM_API_KEY may be a dummy value (e.g. "ollama") when
     # LLM_BASE_URL points at a local endpoint.
     if not llm_api_key:
         raise RuntimeError(
-            "LLM_API_KEY environment variable is not set (use any non-empty "
-            "value, e.g. 'ollama', when LLM_BASE_URL points at a local server)."
+            "No LLM API key set. Add one in Settings, or set LLM_API_KEY in "
+            "the backend environment (any non-empty value, e.g. 'ollama', "
+            "works when LLM_BASE_URL points at a local server)."
         )
 
     db.update_project(project_id, status="running")
@@ -318,8 +357,15 @@ def _run_analyze(job_id: str) -> None:
         if source_type == "youtube":
             ext = os.path.splitext(local_video)[1] or ".mp4"
             source_key = f"projects/{project_id}/source{ext}"
+
+            # Enforce the per-user storage cap BEFORE uploading. The video is
+            # already on disk (downloaded), so we know its exact size now.
+            source_size = os.path.getsize(local_video)
+            storage.enforce_cap(project.get("user_id", ""), source_size)
+
             s3.upload_file_as(local_video, source_key, "video/mp4")
-            db.update_project(project_id, source_key=source_key)
+            db.update_project(project_id, source_key=source_key, source_size_bytes=source_size)
+            storage.add_project_storage(project_id, project.get("user_id", ""), source_size)
         else:
             db.update_project(project_id, source_key=source)
 
@@ -485,6 +531,7 @@ def _run_render(job_id: str) -> None:
 
         upload = s3.upload_file(mp4, f"projects/{project_id}/clips", "video/mp4")
         db.set_clip_video_url(clip_id, upload.key)
+        storage.add_project_storage(project_id, project.get("user_id", ""), upload.size_bytes)
 
         db.update_job(job_id, status="completed", stage=None, progress=100)
     finally:

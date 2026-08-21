@@ -28,6 +28,7 @@ from .models import (
     Session,
     TimelineWord,
     User,
+    UserSettings,
     Verification,
 )
 
@@ -60,6 +61,21 @@ def create_user(email: str, password_hash: str, name: str | None = None) -> dict
 def get_user(user_id: str) -> dict[str, Any] | None:
     with session_scope() as db:
         return _row(db.get(User, user_id))
+
+
+def update_user(user_id: str, **fields: Any) -> None:
+    if not fields:
+        return
+    allowed = {"name", "image", "storage_used_bytes"}
+    unknown = set(fields) - allowed
+    if unknown:
+        raise ValueError(f"Unknown user fields: {unknown}")
+    with session_scope() as db:
+        user = db.get(User, user_id)
+        if user is None:
+            return
+        for key, value in fields.items():
+            setattr(user, key, value)
 
 
 def get_user_by_email(email: str) -> dict[str, Any] | None:
@@ -97,6 +113,65 @@ def delete_session_by_token(token: str) -> None:
         row = db.execute(stmt).scalar_one_or_none()
         if row is not None:
             db.delete(row)
+
+
+# ------------------------------------------------------------------ jobs
+
+
+def create_settings(user_id: str, settings: dict) -> dict:
+    """Insert one user_settings row. ``settings`` fields map 1:1 to the
+    UserSettings model (API keys should already be encrypted by the caller).
+    """
+    with session_scope() as db:
+        row = UserSettings(
+            id=_new_id(),
+            user_id=user_id,
+            llm_api_key=settings.get("llm_api_key"),
+            llm_base_url=settings.get("llm_base_url") or None,
+            llm_model=settings.get("llm_model") or None,
+            transcription_provider=settings.get("transcription_provider", "assemblyai") or "assemblyai",
+            assemblyai_key=settings.get("assemblyai_key"),
+        )
+        db.add(row)
+        db.flush()
+        return _row(row)
+
+
+def get_user_settings(user_id: str) -> dict[str, Any] | None:
+    """A user's BYOK settings row (raw/encrypted), or None if unset."""
+    with session_scope() as db:
+        stmt = select(UserSettings).where(UserSettings.user_id == user_id)
+        return _row(db.execute(stmt).scalar_one_or_none())
+
+
+def upsert_user_settings(user_id: str, settings: dict) -> dict:
+    """Create or update a user's settings row (merge on all fields)."""
+    with session_scope() as db:
+        stmt = select(UserSettings).where(UserSettings.user_id == user_id)
+        row = db.execute(stmt).scalar_one_or_none()
+        if row is None:
+            new_row = UserSettings(id=_new_id(), user_id=user_id)
+            db.add(new_row)
+            db.flush()
+            row = new_row
+
+        llm_api_key = settings.get("llm_api_key")
+        assemblyai_key = settings.get("assemblyai_key")
+        # Only overwrite a key field when one was actually supplied. A None
+        # key in the payload means "leave as-is"; an empty string means
+        # "clear it". (The API cannot read existing keys back, so this
+        # distinction is what lets clients clear a key.)
+        if llm_api_key is not None:
+            row.llm_api_key = llm_api_key or None
+        if assemblyai_key is not None:
+            row.assemblyai_key = assemblyai_key or None
+        row.llm_base_url = settings.get("llm_base_url") or None
+        row.llm_model = settings.get("llm_model") or None
+        transcription_provider = settings.get("transcription_provider")
+        if transcription_provider:
+            row.transcription_provider = transcription_provider
+        db.flush()
+        return _row(row)
 
 
 # ------------------------------------------------------------------ jobs
@@ -368,6 +443,14 @@ def get_project_detail(project_id: str, user_id: str) -> dict[str, Any] | None:
         return data
 
 
+def delete_project(project_id: str) -> None:
+    """Delete a project row. Clips/jobs/timeline_words cascade via FKs."""
+    with session_scope() as db:
+        project = db.get(Project, project_id)
+        if project is not None:
+            db.delete(project)
+
+
 def create_project(user_id: str, title: str, source: str, source_type: str) -> dict:
     with session_scope() as db:
         project = Project(
@@ -385,7 +468,8 @@ def create_project(user_id: str, title: str, source: str, source_type: str) -> d
 def update_project(project_id: str, **fields: Any) -> None:
     if not fields:
         return
-    allowed = {"title", "source", "source_type", "source_key", "language", "status"}
+    allowed = {"title", "source", "source_type", "source_key", "language", "status",
+               "source_size_bytes", "storage_bytes"}
     unknown = set(fields) - allowed
     if unknown:
         raise ValueError(f"Unknown project fields: {unknown}")

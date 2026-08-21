@@ -14,6 +14,7 @@ import datetime as dt
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -51,10 +52,48 @@ class User(Base, TimestampMixin):
     email_verified: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)
     password_hash: Mapped[str | None] = mapped_column(String)
     image: Mapped[str | None] = mapped_column(String)
+    # Running total of the user's stored bytes in S3 (source videos +
+    # rendered clips + thumbnails). Enforced against the per-user storage
+    # cap (core/storage.py). Kept denormalized for cheap quota checks; use
+    # bigint so a high cap / many files can't overflow the int API.
+    storage_used_bytes: Mapped[int] = mapped_column(
+        BigInteger, server_default="0", nullable=False
+    )
 
     sessions: Mapped[list["Session"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     accounts: Mapped[list["Account"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     projects: Mapped[list["Project"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    settings: Mapped["UserSettings | None"] = relationship(
+        back_populates="user", cascade="all, delete-orphan", uselist=False
+    )
+
+
+class UserSettings(Base, TimestampMixin):
+    """Per-user Bring-Your-Own-Key (BYOK) settings for LLM + transcription.
+
+    One row per user, created lazily on first save. API-key fields store
+    Fernet-encrypted values (see core/secrets.py); empty string means "not
+    set", in which case the pipeline falls back to the app's env-configured
+    keys. The LLM fields also let users override the OpenAI-compatible
+    endpoint/model, so this works with any vendor (OpenAI, DeepSeek, Groq,
+    Ollama, ...), not just OpenAI.
+    """
+
+    __tablename__ = "user_settings"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True, nullable=False
+    )
+    llm_api_key: Mapped[str | None] = mapped_column(String)
+    llm_base_url: Mapped[str | None] = mapped_column(String)
+    llm_model: Mapped[str | None] = mapped_column(String)
+    transcription_provider: Mapped[str] = mapped_column(
+        String, server_default="assemblyai", nullable=False
+    )
+    assemblyai_key: Mapped[str | None] = mapped_column(String)
+
+    user: Mapped[User] = relationship(back_populates="settings")
 
 
 class Session(Base):
@@ -128,6 +167,13 @@ class Project(Base, TimestampMixin):
     # S3 key of the canonical source video (stored during analysis). The
     # browser seeks into this for previews; render jobs cut from it.
     source_key: Mapped[str | None] = mapped_column(String)
+    # Size in bytes of the stored source video (S3 object size). Used for
+    # per-user storage accounting against the 100MB cap; 0/None = unknown.
+    source_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    # Total S3 bytes accounted to this project (source + rendered clips +
+    # thumbnails). Mirrors the user's running total so a whole-project delete
+    # can free exactly the right amount.
+    storage_bytes: Mapped[int] = mapped_column(BigInteger, server_default="0", nullable=False)
     # Spoken language of the source, ISO 639-1 (e.g. "id"). Detected from
     # source metadata / the transcription provider and used to write
     # titles/hooks in the transcript's language.

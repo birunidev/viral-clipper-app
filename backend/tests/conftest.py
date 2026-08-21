@@ -55,6 +55,10 @@ def _seed_caption_styles() -> None:
 @pytest.fixture(scope="session", autouse=True)
 def _create_schema():
     engine = database.get_engine()
+    # Drop everything first: the test DB is persistent between runs, and
+    # create_all() won't alter tables that already exist, so a schema change
+    # would otherwise silently leave the DB out of date with the models.
+    Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     _seed_caption_styles()
     yield

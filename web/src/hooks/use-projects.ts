@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { api } from "@/lib/api";
 import type { CaptionStyle, Job, ProjectDetail, ProjectListItem } from "./types";
+import { settingsKey } from "./use-settings";
 
 export const projectsKey = ["projects"] as const;
 export const projectKey = (id: string) => ["projects", id] as const;
@@ -75,8 +76,12 @@ export function useRefreshProjectOnJobDone(projectId: string, job: Job | undefin
 export function useCreateProject() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { title: string; source: string; source_type: string }) =>
-      api.post<ProjectListItem>("/projects", payload),
+    mutationFn: (payload: {
+      title: string;
+      source: string;
+      source_type: string;
+      source_size_bytes?: number;
+    }) => api.post<ProjectListItem>("/projects", payload),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: projectsKey }),
   });
 }
@@ -121,6 +126,18 @@ export function useRenderClip(projectId: string) {
     onSuccess: (job) => {
       queryClient.setQueryData(jobKey(job.id), job);
       queryClient.invalidateQueries({ queryKey: projectKey(projectId) });
+    },
+  });
+}
+
+/** Delete a project: frees S3 storage + removes the DB row. */
+export function useDeleteProject() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string) => api.delete<void>(`/projects/${projectId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: projectsKey });
+      queryClient.invalidateQueries({ queryKey: settingsKey });
     },
   });
 }

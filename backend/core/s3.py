@@ -38,6 +38,7 @@ class S3Upload:
     bucket: str
     key: str
     url: str
+    size_bytes: int = 0
 
 
 def _client_kwargs() -> dict:
@@ -126,7 +127,7 @@ def upload_file_as(
     except Exception as exc:
         raise S3Error(f"S3 upload failed: {exc}") from exc
 
-    return S3Upload(bucket=bucket, key=key, url=url)
+    return S3Upload(bucket=bucket, key=key, url=url, size_bytes=total)
 
 
 def upload_audio(
@@ -190,3 +191,14 @@ def delete_object(bucket: str, key: str) -> None:
         _client().delete_object(Bucket=bucket, Key=key)
     except Exception:
         pass
+
+
+def head_object_size(bucket: str, key: str) -> int | None:
+    """Return an object's size in bytes via HEAD, or None on failure."""
+    if boto3 is None:
+        return None
+    try:
+        resp = _client().head_object(Bucket=bucket, Key=key)
+        return int(resp.get("ContentLength", 0))
+    except Exception:
+        return None

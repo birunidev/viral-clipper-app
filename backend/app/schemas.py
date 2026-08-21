@@ -33,6 +33,10 @@ class ProjectCreate(BaseModel):
     title: str | None = Field(default=None, max_length=200)
     source: str = Field(min_length=1, max_length=1000)
     source_type: str = "youtube"  # youtube | upload
+    # For source_type="upload": the size in bytes of the uploaded file, so
+    # the storage cap can be enforced/accounted without the backend ever
+    # reading the object. 0/omitted = unknown (no accounting).
+    source_size_bytes: int = Field(default=0, ge=0)
 
 
 class JobOptions(BaseModel):
@@ -163,3 +167,35 @@ class PresignRequest(BaseModel):
 class PresignResponse(BaseModel):
     url: str
     key: str
+
+
+# ------------------------------------------------------------------ settings (BYOK)
+
+
+class UserSettingsResponse(BaseModel):
+    """Per-user BYOK settings as exposed to the frontend. API keys are
+    write-only: the response carries only ``has_*`` booleans and a masked
+    preview, never the plaintext."""
+
+    transcription_provider: str = "assemblyai"
+    llm_base_url: str | None = None
+    llm_model: str | None = None
+    has_llm_api_key: bool = False
+    llm_api_key_preview: str | None = None
+    has_assemblyai_key: bool = False
+    assemblyai_key_preview: str | None = None
+    storage_used_bytes: int = 0
+    storage_cap_bytes: int = 0
+    storage_remaining_bytes: int = 0
+
+
+class UserSettingsUpdate(BaseModel):
+    """Write-only settings payload. ``None`` leaves a field unchanged; empty
+    string clears it. Key fields never echo back — sending ``None`` keeps the
+    stored key, sending ``""`` deletes it."""
+
+    transcription_provider: str | None = Field(default=None, pattern="^(assemblyai|local)$")
+    llm_base_url: str | None = None
+    llm_model: str | None = None
+    llm_api_key: str | None = None
+    assemblyai_key: str | None = None

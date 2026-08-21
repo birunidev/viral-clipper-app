@@ -6,6 +6,20 @@ export type User = {
   email: string;
 };
 
+/** Per-user BYOK settings (GET response; keys are masked/write-only). */
+export type UserSettings = {
+  transcription_provider: "assemblyai" | "local";
+  llm_base_url: string | null;
+  llm_model: string | null;
+  has_llm_api_key: boolean;
+  llm_api_key_preview: string | null;
+  has_assemblyai_key: boolean;
+  assemblyai_key_preview: string | null;
+  storage_used_bytes: number;
+  storage_cap_bytes: number;
+  storage_remaining_bytes: number;
+};
+
 export type CaptionWord = {
   text: string;
   start_ms: number;

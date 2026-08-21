@@ -56,6 +56,15 @@ export default function DashboardPage() {
       return;
     }
 
+    // 100MB per-user cap (matches backend core/storage.py). The backend
+    // enforces this authoritatively too, but failing fast client-side is a
+    // better UX than a rejected upload.
+    const CAP_BYTES = 100 * 1024 * 1024;
+    if (file.size > CAP_BYTES) {
+      setError("This file is larger than the 100MB storage limit.");
+      return;
+    }
+
     try {
       const { url: putUrl, key } = await presignUpload.mutateAsync({
         file_name: file.name,
@@ -70,7 +79,7 @@ export default function DashboardPage() {
       if (!uploadRes.ok) throw new Error("Upload failed. Try again.");
 
       createProject.mutate(
-        { title, source: key, source_type: "upload" },
+        { title, source: key, source_type: "upload", source_size_bytes: file.size },
         {
           onSuccess: (project) => router.push(`/app/projects/${project.id}`),
           onError: (err) => setError(err.message),

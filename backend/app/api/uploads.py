@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ..schemas import PresignRequest, PresignResponse
 from ..security import SessionUser, current_user
+from core import storage
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
 
@@ -21,6 +22,20 @@ def presign_upload(
     user: SessionUser = Depends(current_user),
 ) -> dict:
     from core.s3 import S3Error, presign_put_url
+
+    # The backend never sees the bytes on a presigned PUT, so we can't know
+    # the exact final size here. Reject up front only when the user has less
+    # than a small headroom left — the authoritative check happens later at
+    # project creation (source_size_bytes) and/or the analyze job.
+    if storage.storage_remaining(user.id) <= storage.UPLOAD_HEADROOM_BYTES:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Storage limit reached ({storage.storage_used(user.id)} of "
+                f"{storage.STORAGE_CAP_BYTES} bytes used). Delete a project "
+                "to free up space."
+            ),
+        )
 
     match = _EXT_RE.search(payload.file_name)
     ext = match.group(1).lower() if match else "bin"

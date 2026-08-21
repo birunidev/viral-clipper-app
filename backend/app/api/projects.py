@@ -17,6 +17,7 @@ from ..schemas import (
 )
 from ..security import SessionUser, current_user
 from ..worker import pool
+from core import storage
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -48,7 +49,24 @@ def create_project(payload: ProjectCreate, user: SessionUser = Depends(current_u
     source_type = "upload" if payload.source_type == "upload" else "youtube"
     title = (payload.title or "").strip() or "Untitled"
 
+    if source_type == "upload" and payload.source_size_bytes:
+        # The uploaded file already lives in S3 (direct browser upload), so
+        # the quota is enforced/accounted now, at project creation, rather
+        # than later in the analyze job (which can't know the size a priori).
+        try:
+            storage.enforce_cap(user.id, payload.source_size_bytes)
+        except storage.StorageQuotaExceeded as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     project = db.create_project(user.id, title, source, source_type)
+    if source_type == "upload" and payload.source_size_bytes:
+        db.update_project(
+            project["id"],
+            source_key=source,
+            source_size_bytes=payload.source_size_bytes,
+            storage_bytes=payload.source_size_bytes,
+        )
+        storage.add_storage(user.id, payload.source_size_bytes)
     project["clip_count"] = 0
     project["latest_job"] = None
     return project
@@ -154,3 +172,42 @@ def render_clip(
     job = db.create_job(project_id, options, job_type="render", clip_id=clip_id)
     pool.submit(job["id"])
     return job
+
+
+@router.delete("/{project_id}", status_code=204, response_model=None)
+def delete_project(project_id: str, user: SessionUser = Depends(current_user)) -> None:
+    """Delete a project: remove its S3 objects (source video, rendered
+    clips, thumbnails) best-effort, free the user's storage accounting, then
+    drop the DB row (clips/jobs/words cascade)."""
+    from core.s3 import delete_object
+
+    project = db.get_project_for_user(project_id, user.id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    bucket = os.environ.get("S3_BUCKET", "")
+
+    # Collect S3 keys before deleting the rows (we need them to free space).
+    detail = db.get_project_detail(project_id, user.id)
+    keys: list[str] = []
+    if detail:
+        if detail.get("source_key"):
+            keys.append(detail["source_key"])
+        for clip in detail.get("clips", []):
+            if clip.get("video_url"):
+                keys.append(clip["video_url"])
+            if clip.get("thumbnail_url"):
+                keys.append(clip["thumbnail_url"])
+
+    # How much storage the project accounts for. We track a per-project
+    # running total (source + renders + thumbnails) so the whole-project
+    # delete frees exactly the right amount from the user's quota.
+    project_bytes = int(project.get("storage_bytes") or 0)
+
+    db.delete_project(project_id)
+    if project_bytes:
+        storage.add_storage(user.id, -project_bytes)
+
+    if bucket:
+        for key in keys:
+            delete_object(bucket, key)
