@@ -19,6 +19,7 @@ cached in S3 (video_url) so repeat downloads are free.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -29,6 +30,8 @@ from typing import Callable
 from core import analyzer, captions, cutter, s3, storage, transcriber, youtube
 
 from . import db
+
+logger = logging.getLogger(__name__)
 
 
 def _settings() -> dict:
@@ -189,17 +192,39 @@ def _build_caption_file(
     clip: dict, style: dict, local_video: str, orientation: str, out_dir: str
 ) -> str | None:
     """Write an ASS caption file for ``clip`` and return its path, or None if
-    captions can't be built (no words or invalid style)."""
+    captions can't be built (no words or invalid style). Failures are logged
+    — a silent None here used to produce renders with no subtitles and no
+    trace of why."""
     caption_words = clip.get("caption_json")
     if not caption_words:
+        logger.warning(
+            "Clip %s has no caption words; rendering without burned captions. "
+            "This usually means the transcript had no word timings for this "
+            "clip's time window.",
+            clip.get("id"),
+        )
         return None
 
     dims = _probe_dimensions(local_video)
     if not dims:
+        logger.warning(
+            "Could not probe video dimensions for clip %s; rendering without "
+            "burned captions.",
+            clip.get("id"),
+        )
         return None
     out_w, out_h = captions.crop_dimensions(dims[0], dims[1], orientation)
 
-    ass = captions.build_ass(caption_words, style, out_w, out_h)
+    try:
+        ass = captions.build_ass(caption_words, style, out_w, out_h)
+    except captions.CaptionBuildError as exc:
+        logger.warning(
+            "Invalid caption style for clip %s (%s); rendering without "
+            "burned captions.",
+            clip.get("id"),
+            exc,
+        )
+        return None
     os.makedirs(out_dir, exist_ok=True)
     ass_path = os.path.join(out_dir, "captions.ass")
     with open(ass_path, "w", encoding="utf-8") as fh:
@@ -237,10 +262,37 @@ def _build_clip_caption_json(project_id: str, start: float, end: float) -> list[
     all (e.g. the active transcription provider doesn't return word
     timings). Words that straddle the clip boundary are clamped to the
     clip's own duration so the caption never runs past the trimmed video.
+
+    The clip bounds come from the LLM, whose timestamps routinely drift by
+    a second or more. When its window catches zero timeline words we clamp
+    the window into the timeline's actual span and retry once, so a drifted
+    clip still gets captions instead of silently rendering with none.
     """
     start_ms = int(start * 1000)
     end_ms = int(end * 1000)
     words = db.get_timeline_words_in_range(project_id, start_ms, end_ms)
+    if not words:
+        # LLM window missed every word — snap it back onto the timeline,
+        # preserving the window's duration so it still covers a sensible
+        # stretch of speech instead of collapsing onto one word.
+        timeline = db.get_timeline_words(project_id)
+        if timeline:
+            lo = timeline[0]["start_ms"]
+            hi = max(w["end_ms"] for w in timeline)
+            duration = max(end_ms - start_ms, 1)
+            if start_ms > hi:
+                # Drifted past the end of the transcript.
+                end_ms = hi
+                start_ms = max(lo, hi - duration)
+            elif end_ms < lo:
+                # Drifted before the start of the transcript.
+                start_ms = lo
+                end_ms = min(hi, lo + duration)
+            else:
+                # Inside the span but in a gap between words — clamp.
+                start_ms = min(max(start_ms, lo), hi - 1)
+                end_ms = min(max(end_ms, start_ms + 1), hi)
+            words = db.get_timeline_words_in_range(project_id, start_ms, end_ms)
     if not words:
         return None
 
@@ -249,8 +301,7 @@ def _build_clip_caption_json(project_id: str, start: float, end: float) -> list[
     for word in words:
         rel_start = max(0, word["start_ms"] - start_ms)
         rel_end = min(duration_ms, word["end_ms"] - start_ms)
-        if rel_end <= rel_start:
-            continue
+        rel_end = max(rel_end, rel_start + 1)
         caption_words.append({"text": word["text"], "start_ms": rel_start, "end_ms": rel_end})
     return caption_words or None
 
@@ -357,35 +408,37 @@ def _run_analyze(job_id: str) -> None:
             raise RuntimeError(f"Unknown sourceType: {source_type!r}")
 
         # Persist the canonical source video so previews can seek it and
-    # render jobs can cut from it later, without re-downloading from
-    # YouTube (which can go stale/rate-limited) each time.
-    if source_type == "youtube":
-        ext = os.path.splitext(local_video)[1] or ".mp4"
-        source_key = f"projects/{project_id}/source{ext}"
+        # render jobs can cut from it later, without re-downloading from
+        # YouTube (which can go stale/rate-limited) each time.
+        if source_type == "youtube":
+            ext = os.path.splitext(local_video)[1] or ".mp4"
+            source_key = f"projects/{project_id}/source{ext}"
 
-        # Previously accounted source size (may be 0 for a brand-new project).
-        prev_source_size = int(project.get("source_size_bytes") or 0)
+            # Previously accounted source size (0 for a brand-new project).
+            prev_source_size = int(project.get("source_size_bytes") or 0)
 
-        # Remove old accounting so we can re-add with the correct net delta.
-        # add_project_storage internally uses atomic increments, so this is
-        # safe under concurrent workers.
-        if prev_source_size:
-            storage.add_project_storage(project_id, project.get("user_id", ""), -prev_source_size)
+            # Remove old accounting so we can re-add with the correct net
+            # delta. add_project_storage uses atomic increments, so this is
+            # safe under concurrent workers. Re-analysis of the same video
+            # must be net-zero, not a double count.
+            if prev_source_size:
+                storage.add_project_storage(
+                    project_id, project.get("user_id", ""), -prev_source_size
+                )
 
-        # New source size and net delta.
-        source_size = os.path.getsize(local_video)
-        delta = source_size - prev_source_size
+            source_size = os.path.getsize(local_video)
+            delta = source_size - prev_source_size
 
-        # Enforce cap only on the *additional* bytes (may be negative if the
-        # new source is smaller than the one being replaced).
-        if delta > 0:
-            storage.enforce_cap(project.get("user_id", ""), delta)
+            # Enforce the cap on the *net additional* bytes only (negative
+            # when the replacement source is smaller — nothing to enforce).
+            if delta > 0:
+                storage.enforce_cap(project.get("user_id", ""), delta)
 
-        s3.upload_file_as(local_video, source_key, "video/mp4")
-        db.update_project(project_id, source_key=source_key, source_size_bytes=source_size)
-        storage.add_project_storage(project_id, project.get("user_id", ""), source_size)
-    else:
-        db.update_project(project_id, source_key=source)
+            s3.upload_file_as(local_video, source_key, "video/mp4")
+            db.update_project(project_id, source_key=source_key, source_size_bytes=source_size)
+            storage.add_project_storage(project_id, project.get("user_id", ""), source_size)
+        else:
+            db.update_project(project_id, source_key=source)
 
         db.update_job(job_id, stage="downloading", progress=25)
 

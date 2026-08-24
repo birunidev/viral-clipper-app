@@ -118,6 +118,8 @@ function KeysForm({ settings }: { settings: UserSettings | null }) {
   const [llmModel, setLlmModel] = useState(settings?.llm_model ?? "");
   const [llmKey, setLlmKey] = useState("");
   const [aaiKey, setAaiKey] = useState("");
+  const [clearLlm, setClearLlm] = useState(false);
+  const [clearAai, setClearAai] = useState(false);
   const [savedMsg, setSavedMsg] = useState("");
   const [error, setError] = useState("");
 
@@ -130,15 +132,18 @@ function KeysForm({ settings }: { settings: UserSettings | null }) {
         transcription_provider: provider,
         llm_base_url: llmBaseUrl.trim() || null,
         llm_model: llmModel.trim() || null,
-        // Key fields: send the typed value only when the user typed
-        // something (empty input = leave unchanged; empty string clears).
-        llm_api_key: llmKey,
-        assemblyai_key: aaiKey,
+        // Key fields: an untouched/empty input must NOT wipe a stored key,
+        // so empty means "leave unchanged" (null). Clearing is explicit —
+        // only the "Remove" button sends "" (the backend's clear value).
+        llm_api_key: clearLlm ? "" : llmKey || null,
+        assemblyai_key: clearAai ? "" : aaiKey || null,
       },
       {
         onSuccess: () => {
           setLlmKey("");
           setAaiKey("");
+          setClearLlm(false);
+          setClearAai(false);
           setSavedMsg("Saved. Keys are encrypted at rest.");
         },
         onError: (err) => setError(err.message),
@@ -179,38 +184,94 @@ function KeysForm({ settings }: { settings: UserSettings | null }) {
 
         {provider === "assemblyai" && (
           <label className="flex flex-col gap-1.5 text-sm">
-            <span className="text-ink-secondary">
+            <span className="flex items-center justify-between text-ink-secondary">
               AssemblyAI API key{settings?.has_assemblyai_key ? " — set" : ""}
+              {clearAai ? (
+                <button
+                  type="button"
+                  onClick={() => setClearAai(false)}
+                  className="text-xs font-normal text-accent hover:underline"
+                >
+                  Keep key
+                </button>
+              ) : (
+                settings?.has_assemblyai_key && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setClearAai(true);
+                      setAaiKey("");
+                    }}
+                    className="text-xs font-normal text-danger hover:underline"
+                  >
+                    Remove saved key on save
+                  </button>
+                )
+              )}
             </span>
             <input
               type="password"
               value={aaiKey}
-              onChange={(e) => setAaiKey(e.target.value)}
+              onChange={(e) => {
+                setAaiKey(e.target.value);
+                if (e.target.value) setClearAai(false);
+              }}
               placeholder={
-                settings?.has_assemblyai_key
-                  ? `•••••••• (${settings.assemblyai_key_preview ?? "set"})`
-                  : "sk-…"
+                clearAai
+                  ? "Will be removed when you save"
+                  : settings?.has_assemblyai_key
+                    ? `•••••••• (${settings.assemblyai_key_preview ?? "set"})`
+                    : "sk-…"
               }
-              className={inputClass}
+              disabled={clearAai}
+              className={`${inputClass}${clearAai ? " opacity-50" : ""}`}
               autoComplete="off"
             />
           </label>
         )}
 
         <label className="flex flex-col gap-1.5 text-sm">
-          <span className="text-ink-secondary">
+          <span className="flex items-center justify-between text-ink-secondary">
             LLM API key (OpenAI-compatible){settings?.has_llm_api_key ? " — set" : ""}
+            {clearLlm ? (
+              <button
+                type="button"
+                onClick={() => setClearLlm(false)}
+                className="text-xs font-normal text-accent hover:underline"
+              >
+                Keep key
+              </button>
+            ) : (
+              settings?.has_llm_api_key && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setClearLlm(true);
+                    setLlmKey("");
+                  }}
+                  className="text-xs font-normal text-danger hover:underline"
+                >
+                  Remove saved key on save
+                </button>
+              )
+            )}
           </span>
           <input
             type="password"
             value={llmKey}
-            onChange={(e) => setLlmKey(e.target.value)}
+            onChange={(e) => {
+              setLlmKey(e.target.value);
+              if (e.target.value) setClearLlm(false);
+            }}
             placeholder={
-              settings?.has_llm_api_key
-                ? `•••••••• (${settings.llm_api_key_preview ?? "set"})`
-                : "sk-…"
+              clearLlm
+                ? "Will be removed when you save"
+                : settings?.has_llm_api_key
+                  ? `•••••••• (${settings.llm_api_key_preview ?? "set"})`
+                  : "sk-…"
             }
-            className={inputClass}
+            disabled={clearLlm}
+            className={`${inputClass}${clearLlm ? " opacity-50" : ""}`}
             autoComplete="off"
           />
         </label>

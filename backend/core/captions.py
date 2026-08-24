@@ -83,13 +83,17 @@ def _line_events(line: list[dict], highlight: str, idle: str) -> list[tuple[int,
     runs from its own ``start_ms`` to the next word's ``start_ms`` (so the
     highlight holds through any small gap/pause before the next word),
     except the last word, which ends at its own ``end_ms``.
+
+    Windows are clamped to at least 1 centisecond rather than skipped:
+    providers occasionally emit overlapping or zero-length word timings,
+    and skipping used to punch holes in the highlight sequence — moments
+    where no event was active and the caption vanished mid-line.
     """
     events: list[tuple[int, int, str]] = []
     for i, active in enumerate(line):
         start_ms = active["start_ms"]
-        end_ms = line[i + 1]["start_ms"] if i + 1 < len(line) else active["end_ms"]
-        if end_ms <= start_ms:
-            continue
+        raw_end = line[i + 1]["start_ms"] if i + 1 < len(line) else active["end_ms"]
+        end_ms = max(int(raw_end), start_ms + 1)
         rendered = " ".join(
             f"{{\\c{highlight if j == i else idle}}}{_sanitize_text(w['text'])}"
             for j, w in enumerate(line)

@@ -164,3 +164,36 @@ def test_crop_dimensions_landscape():
 
 def test_crop_dimensions_original():
     assert crop_dimensions(1920, 1080, "original") == (1920, 1080)
+
+def test_line_events_clamps_overlapping_word_timings():
+    """Overlapping/zero-length provider timings must not punch holes in the
+    highlight sequence — every word still gets an event (previously events
+    with end <= start were skipped, blanking the caption mid-line)."""
+    words = [
+        {"text": "a", "start_ms": 0, "end_ms": 500},
+        {"text": "b", "start_ms": 400, "end_ms": 400},   # zero-length
+        {"text": "c", "start_ms": 300, "end_ms": 900},   # overlaps a
+    ]
+    events = _line_events(words, "&HAAAA&", "&HBBBB&")
+    assert len(events) == 3
+    for start_ms, end_ms, _text in events:
+        assert end_ms > start_ms
+
+
+def test_build_ass_emits_dialogue_for_overlapping_words():
+    """The full builder must produce one Dialogue event per word even when
+    the input timings overlap or collapse."""
+    from core.captions import build_ass
+    style = {
+        "font_size": 64, "font": "Arial", "bold": True, "italic": False,
+        "primary_color": "#FFFFFF", "highlight_color": "#FF5A52",
+        "outline_color": "#000000", "outline": 3, "shadow": 0,
+        "y": 0.8, "max_chars_per_line": 32,
+    }
+    words = [
+        {"text": "a", "start_ms": 0, "end_ms": 0},
+        {"text": "b", "start_ms": 100, "end_ms": 100},
+    ]
+    ass = build_ass(words, style, 608, 1080)
+    dialogue_count = sum(1 for line in ass.splitlines() if line.startswith("Dialogue:"))
+    assert dialogue_count == 2

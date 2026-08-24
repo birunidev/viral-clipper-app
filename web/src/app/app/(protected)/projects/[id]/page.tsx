@@ -33,6 +33,7 @@ import { Button } from "@/components/ui/button";
 import { CaptionStylePicker } from "@/components/project/caption-style-picker";
 import { CaptionStyleEditor } from "@/components/project/caption-style-editor";
 import { WordCaptionOverlay } from "@/components/project/word-caption-overlay";
+import { DEFAULT_CAPTION_CONFIG } from "@/lib/caption-style-defaults";
 
 const STAGE_LABEL: Record<string, string> = {
   downloading: "Downloading source",
@@ -602,6 +603,11 @@ function SeekPreview({
               videoRef={videoRef}
               words={captionWords}
               clipStartSeconds={start}
+              // Group/highlight exactly like a burned render would with the
+              // default preset. Without this the overlay degenerated to one
+              // giant paragraph (maxChars=9999) wrapped into several visual
+              // rows — nothing like the actual TikTok-style output.
+              style={DEFAULT_CAPTION_CONFIG}
             />
           )}
         </div>

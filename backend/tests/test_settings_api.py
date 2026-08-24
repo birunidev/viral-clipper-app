@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib.util
+
 import pytest
 
 from app import db
@@ -109,7 +111,10 @@ def test_put_requires_aai_key_when_provider_is_assemblyai(client):
     assert "AssemblyAI key is required" in res.json()["detail"]
 
 
-def test_put_allows_local_provider_without_aai_key(client):
+def test_put_allows_local_provider_without_aai_key(client, monkeypatch):
+    # The deployment supports local transcription (env opts in), so the
+    # provider switch is accepted even though no AAI key is involved.
+    monkeypatch.setenv("TRANSCRIPTION_PROVIDER", "local")
     _register(client)
     res = client.put(
         "/api/v1/settings",
@@ -119,6 +124,20 @@ def test_put_allows_local_provider_without_aai_key(client):
     assert res.json()["transcription_provider"] == "local"
 
 
+def test_put_rejects_local_provider_when_unavailable(client, monkeypatch):
+    # Deployment has no pywhispercpp and doesn't opt into local via env:
+    # selecting ``local`` must fail fast instead of failing at job time.
+    monkeypatch.delenv("TRANSCRIPTION_PROVIDER", raising=False)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    _register(client)
+    res = client.put(
+        "/api/v1/settings",
+        json={"transcription_provider": "local", "llm_api_key": "sk-x"},
+    )
+    assert res.status_code == 400
+    assert "not available" in res.json()["detail"]
+
+
 def test_put_rejects_invalid_provider(client):
     _register(client)
     res = client.put(
@@ -126,3 +145,58 @@ def test_put_rejects_invalid_provider(client):
         json={"transcription_provider": "bogus"},
     )
     assert res.status_code == 422
+
+
+def test_put_partial_update_preserves_provider(client, monkeypatch):
+    """A partial PUT (e.g. only llm_model) must not reset the stored
+    transcription provider back to assemblyai."""
+    monkeypatch.setenv("TRANSCRIPTION_PROVIDER", "local")
+    _register(client)
+    res = client.put(
+        "/api/v1/settings",
+        json={"transcription_provider": "local", "llm_api_key": "sk-x"},
+    )
+    assert res.status_code == 200
+
+    # Partial update that doesn't mention the provider at all.
+    res = client.put("/api/v1/settings", json={"llm_model": "gpt-4o"})
+    assert res.status_code == 200
+    assert res.json()["transcription_provider"] == "local"
+
+    # Same for a key-only update.
+    res = client.put("/api/v1/settings", json={"assemblyai_key": "sk-aai"})
+    assert res.status_code == 200
+    assert res.json()["transcription_provider"] == "local"
+
+
+def test_short_keys_are_fully_masked(client):
+    """Keys of 12 chars or fewer must be masked entirely — the 3+4 preview
+    would leak the whole key for short values."""
+    _register(client)
+    res = client.put(
+        "/api/v1/settings",
+        json={"llm_api_key": "sk-12345", "assemblyai_key": "sk-1"},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["llm_api_key_preview"] == "•" * len("sk-12345")
+    assert data["assemblyai_key_preview"] == "•" * len("sk-1")
+    assert "sk-12345" not in res.text
+
+
+def test_get_and_put_return_503_when_secret_key_missing(client, monkeypatch):
+    """Without APP_SECRET_KEY the app cannot encrypt/decrypt keys: both GET
+    and PUT must fail loudly with 503 instead of silently reporting
+    has_*=false or 500-ing on encrypt."""
+    monkeypatch.delenv("APP_SECRET_KEY", raising=False)
+    secrets.reset_fernet()
+    try:
+        _register(client)
+        get_res = client.get("/api/v1/settings")
+        assert get_res.status_code == 503
+        put_res = client.put("/api/v1/settings", json={"llm_model": "gpt-4o"})
+        assert put_res.status_code == 503
+        assert "APP_SECRET_KEY" in put_res.json()["detail"]
+    finally:
+        monkeypatch.setenv("APP_SECRET_KEY", "test-secret-key")
+        secrets.reset_fernet()

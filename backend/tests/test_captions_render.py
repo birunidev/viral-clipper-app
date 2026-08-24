@@ -159,3 +159,101 @@ def test_landscape_captions_still_render_and_stay_in_bounds(tmp_path, gray_sourc
     assert max_x >= 0, "expected caption text to be visible in the rendered frame"
     assert min_x >= 2
     assert max_x <= out_w - 3
+
+
+# Pop's highlight is #FF5A52 (red). Detection thresholds are generous enough
+# for libass antialiasing but far from the white idle text and gray bg.
+def _count_red_pixels(rgb: bytes) -> int:
+    count = 0
+    for i in range(0, len(rgb), 3):
+        r, g, b = rgb[i], rgb[i + 1], rgb[i + 2]
+        if r > 180 and g < 140 and b < 140 and (r - g) > 60 and (r - b) > 60:
+            count += 1
+    return count
+
+
+_POP_WORDS = [
+    {"text": "first", "start_ms": i * 400, "end_ms": i * 400 + 380}
+    for i, w in enumerate(["first", "second", "third", "fourth"])
+]
+
+
+def test_word_highlight_moves_word_to_word(tmp_path, gray_source_1920x1080):
+    """The whole point of TikTok captions: exactly one word is highlighted at
+    a time, and WHICH word is highlighted changes as playback advances. We
+    render one frame mid-word-1 and one mid-word-2 and assert both contain
+    highlight-colored ink and that the highlighted regions differ."""
+    style = builtin_style_by_key("pop")["config"]
+    out_w, out_h = captions.crop_dimensions(1920, 1080, "portrait")
+
+    ass = captions.build_ass(_POP_WORDS, style, out_w, out_h)
+    ass_path = str(tmp_path / "captions.ass")
+    with open(ass_path, "w", encoding="utf-8") as fh:
+        fh.write(ass)
+
+    crop_filter = "crop=min(iw\\,ih*9/16):ih:(iw-min(iw\\,ih*9/16))/2:0"
+
+    # Burn the whole clip to a file first (like core.cutter does), then
+    # sample frames from the OUTPUT at their real timestamps. Extracting a
+    # single frame with -ss before -i resets PTS to ~0, which would always
+    # show the first caption event.
+    burned = str(tmp_path / "burned.mp4")
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-i", gray_source_1920x1080,
+            "-t", "1.6",
+            "-vf", f"{crop_filter},subtitles={ass_path}",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-pix_fmt", "yuv420p",
+            burned,
+        ],
+        check=True, capture_output=True,
+    )
+
+    def frame_at(seconds: float) -> bytes:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-ss", f"{seconds:.2f}", "-i", burned,
+                "-frames:v", "1",
+                "-pix_fmt", "rgb24", "-f", "rawvideo", "-",
+            ],
+            check=True, capture_output=True,
+        )
+        assert len(result.stdout) == out_w * out_h * 3
+        return result.stdout
+
+    frame1 = frame_at(0.2)   # inside "first" [0, 380ms)
+    frame2 = frame_at(0.6)   # inside "second" [400, 780ms)
+
+    red1 = _count_red_pixels(frame1)
+    red2 = _count_red_pixels(frame2)
+
+    assert red1 > 50, (
+        "expected highlight-colored pixels on the active word in frame 1 "
+        f"(got {red1}) — word-by-word highlighting is not rendering"
+    )
+    assert red2 > 50, (
+        "expected highlight-colored pixels on the active word in frame 2 "
+        f"(got {red2}) — word-by-word highlighting is not rendering"
+    )
+
+    # The highlighted word occupies a different x-range in each frame.
+    def red_x_range(rgb: bytes) -> tuple[int, int]:
+        min_x, max_x = out_w, -1
+        stride = out_w * 3
+        for y in range(out_h):
+            for x in range(out_w):
+                off = y * stride + x * 3
+                r, g, b = rgb[off], rgb[off + 1], rgb[off + 2]
+                if r > 180 and g < 140 and b < 140 and (r - g) > 60 and (r - b) > 60:
+                    min_x, max_x = min(min_x, x), max(max_x, x)
+        return min_x, max_x
+
+    r1_min, r1_max = red_x_range(frame1)
+    r2_min, r2_max = red_x_range(frame2)
+    assert abs(r1_min - r2_min) > 5 or abs(r1_max - r2_max) > 5, (
+        "highlight did not move between words — captions render but are not "
+        "word-by-word"
+    )

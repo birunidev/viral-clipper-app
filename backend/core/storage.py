@@ -51,7 +51,7 @@ def storage_used(user_id: str) -> int:
 
 def storage_remaining(user_id: str) -> int:
     """Bytes of quota left before ``user_id`` hits the cap."""
-    return max(0, STORAGE_CAP_BYTES - storage_used(user_id)
+    return max(0, STORAGE_CAP_BYTES - storage_used(user_id))
 
 
 def enforce_cap(user_id: str, additional_bytes: int) -> None:

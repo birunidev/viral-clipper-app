@@ -360,6 +360,15 @@ def get_timeline_words(project_id: str) -> list[dict[str, Any]]:
         return [_row(w) for w in db.execute(stmt).scalars().all()]
 
 
+def delete_timeline_words(project_id: str) -> None:
+    """Remove a project's whole word timeline (e.g. before re-inserting it
+    on re-analysis)."""
+    with session_scope() as db:
+        db.query(TimelineWord).filter(
+            TimelineWord.project_id == project_id
+        ).delete()
+
+
 def get_timeline_words_in_range(project_id: str, start_ms: int, end_ms: int) -> list[dict[str, Any]]:
     """Words whose span overlaps ``[start_ms, end_ms]``, in transcript order.
 

@@ -143,10 +143,13 @@ def test_build_caption_json_clamps_straddling_word(project_with_timeline):
     assert caption == [{"text": "world", "start_ms": 0, "end_ms": 600}]
 
 
-def test_build_caption_json_none_when_no_words(project_with_timeline):
-    # a gap with no words -> no captions
+def test_build_caption_json_recovers_gap_window(project_with_timeline):
+    # A window past the last word (drifted LLM timestamp) now snaps back
+    # into the timeline span and returns the nearest words, instead of
+    # silently producing a caption-less render.
     caption = _build_clip_caption_json(project_with_timeline["id"], 5.5, 9.0)
-    assert caption is None
+    assert caption is not None
+    assert len(caption) > 0
 
 
 def test_build_caption_json_none_when_no_timeline(monkeypatch):
@@ -327,3 +330,177 @@ def test_user_settings_local_provider_overrides_env(monkeypatch):
     uid = _seed_user_with_settings(monkeypatch, transcription_provider="local")
 
     assert _user_settings_for(uid)["transcription_provider"] == "local"
+
+
+# ------------------------------------------------- storage accounting (BYOK)
+
+MB = 1024 * 1024
+
+
+def test_analyze_youtube_source_accounting_is_net_on_rerun(client, monkeypatch, tmp_path):
+    """Re-running analysis on a YouTube project replaces the source object:
+    the user's quota must reflect the NEW size, not old + new."""
+    from app import pipeline as pl
+    from core import storage
+    from helpers import register_user
+
+    monkeypatch.setenv("LLM_API_KEY", "sk-test")
+    monkeypatch.setenv("ASSEMBLYAI_KEY", "sk-aai")
+    monkeypatch.setenv("TRANSCRIPTION_PROVIDER", "assemblyai")
+
+    register_user(client, email="rerun@example.com")
+    user = db.get_user_by_email("rerun@example.com")
+    project = db.create_project(user["id"], "P", "https://youtu.be/x", "youtube")
+
+    sizes = iter([10 * MB, 12 * MB])
+
+    def fake_download(source, dest_dir, progress=None):
+        os.makedirs(dest_dir, exist_ok=True)
+        path = os.path.join(dest_dir, "video.mp4")
+        with open(path, "wb") as fh:
+            fh.write(b"0" * next(sizes))
+        return path
+
+    class FakeTranscript:
+        text = "hello"
+        words: list[dict] = []
+        language = "en"
+
+    monkeypatch.setattr("app.pipeline.youtube.get_info", lambda s: {})
+    monkeypatch.setattr("app.pipeline.youtube.download", fake_download)
+    monkeypatch.setattr(
+        "app.pipeline.s3.upload_file_as",
+        lambda local, key, ct: type(
+            "U", (), {"key": key, "size_bytes": os.path.getsize(local)}
+        )(),
+    )
+    monkeypatch.setattr(
+        "app.pipeline.transcriber.transcribe_with_words",
+        lambda *a, **k: FakeTranscript(),
+    )
+    monkeypatch.setattr(
+        "app.pipeline.analyzer.analyze",
+        lambda *a, **k: [{"title": "C", "start": 0.0, "end": 1.0}],
+    )
+
+    job = db.create_job(project["id"], {"max_clips": 5}, job_type="analyze")
+    pl._run_analyze(job["id"])
+    assert storage.storage_used(user["id"]) == 10 * MB
+    p = db.get_project(project["id"])
+    assert p["source_size_bytes"] == 10 * MB
+    assert p["storage_bytes"] == 10 * MB
+
+    # Second run with a bigger download: net total must be 12MB, not 22MB.
+    job2 = db.create_job(project["id"], {"max_clips": 5}, job_type="analyze")
+    pl._run_analyze(job2["id"])
+    assert storage.storage_used(user["id"]) == 12 * MB
+    p = db.get_project(project["id"])
+    assert p["source_size_bytes"] == 12 * MB
+    assert p["storage_bytes"] == 12 * MB
+
+
+def test_render_fails_when_clip_would_exceed_cap(client, monkeypatch, tmp_path):
+    """The rendered mp4 is size-checked against the cap BEFORE upload: an
+    over-quota render fails fast instead of silently exceeding it."""
+    from app import pipeline as pl
+    from core import storage
+    from helpers import register_user
+
+    register_user(client, email="rendercap@example.com")
+    user = db.get_user_by_email("rendercap@example.com")
+    project = db.create_project(user["id"], "P", "https://youtu.be/x", "youtube")
+    db.update_project(project["id"], source_key="projects/p/source.mp4")
+    clip_id = db.add_clip(
+        project["id"],
+        None,
+        "C",
+        None,
+        0.0,
+        1.0,
+        None,
+        "projects/p/thumbs/x.jpg",
+    )
+
+    # Fill the user's quota almost to the cap; a 5MB render won't fit.
+    storage.add_storage(user["id"], storage.STORAGE_CAP_BYTES - MB)
+
+    def fake_download(key, dest):
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "wb") as fh:
+            fh.write(b"0")
+        return dest
+
+    def fake_cut(*a, **k):
+        out = os.path.join(a[4], "clip_01.mp4") if len(a) > 4 else k["out"]
+        os.makedirs(out, exist_ok=True)
+        path = os.path.join(out, "c.mp4")
+        with open(path, "wb") as fh:
+            fh.write(b"0" * (5 * MB))
+        return path
+
+    monkeypatch.setattr("app.pipeline.s3.download_object", fake_download)
+    monkeypatch.setattr("app.pipeline.cutter.cut_clip", fake_cut)
+    uploaded = []
+    monkeypatch.setattr(
+        "app.pipeline.s3.upload_file",
+        lambda *a, **k: uploaded.append(a) or (_ for _ in ()).throw(AssertionError("must not upload")),
+    )
+
+    job = db.create_job(
+        project["id"], {"orientation": "portrait"}, job_type="render", clip_id=clip_id
+    )
+    pl.run_job(job["id"])
+
+    job_row = db.get_job(job["id"])
+    assert job_row["status"] == "failed"
+    assert "Storage limit reached" in (job_row["error"] or "")
+    assert not uploaded
+    assert storage.storage_used(user["id"]) == storage.STORAGE_CAP_BYTES - MB
+
+
+def test_upload_thumbnail_skipped_when_no_room(client, tmp_path):
+    """At the cap, thumbnails are skipped gracefully (no S3 write, no error)
+    so renders still succeed without them."""
+    from core import storage
+    from helpers import register_user
+
+    register_user(client, email="thumb@example.com")
+    user = db.get_user_by_email("thumb@example.com")
+    project = db.create_project(user["id"], "P", "https://youtu.be/x", "youtube")
+
+    thumb = tmp_path / "t.jpg"
+    thumb.write_bytes(b"\xff" * 2048)
+
+    storage.add_storage(user["id"], storage.STORAGE_CAP_BYTES)
+    assert _upload_thumbnail(project["id"], str(thumb)) is None
+
+
+def test_build_clip_caption_json_snaps_drifted_llm_window(project_with_timeline):
+    """LLM clip timestamps drift. When the requested window catches zero
+    timeline words, the builder must clamp into the timeline span and still
+    return words instead of silently producing a caption-less render."""
+    # Timeline words live at 1000-5200ms; this window is entirely past them.
+    words = _build_clip_caption_json(project_with_timeline["id"], 8.0, 10.0)
+    assert words is not None
+    assert len(words) > 0
+    assert all("text" in w and "start_ms" in w and "end_ms" in w for w in words)
+
+
+def test_build_clip_caption_json_none_without_any_words(project_with_timeline, monkeypatch):
+    """With no timeline words at all there is nothing to recover — returns
+    None (clip renders without captions)."""
+    from app import db as app_db
+    app_db.delete_timeline_words(project_with_timeline["id"])
+    assert (
+        _build_clip_caption_json(project_with_timeline["id"], 1.0, 2.0) is None
+    )
+
+
+def test_build_clip_caption_json_preserves_duration_when_snapping(project_with_timeline):
+    """A window drifted entirely past the transcript must snap back with its
+    duration intact — recovering the surrounding words, not a sliver."""
+    words = _build_clip_caption_json(project_with_timeline["id"], 8.0, 12.0)
+    assert words is not None
+    # Timeline holds 4 words across 1000-5200ms; a 4s window snapped onto
+    # the span must recover more than one of them.
+    assert len(words) >= 2

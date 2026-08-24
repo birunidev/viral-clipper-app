@@ -149,3 +149,66 @@ def test_delete_project_other_users_404(client):
     client.post("/api/v1/auth/logout")
     register_user(client, email="b@example.com")
     assert client.delete(f"/api/v1/projects/{project['id']}").status_code == 404
+
+
+def test_upload_create_uses_real_s3_size_over_client_claim(client, monkeypatch):
+    """A client claiming source_size_bytes=1MB for an object that is really
+    60MB must be charged (and capped) by the REAL size."""
+    register_user(client, email="real@example.com")
+    user = db.get_user_by_email("real@example.com")
+    real = 60 * MB
+    monkeypatch.setattr(
+        "app.api.projects.head_object_size_default_bucket", lambda key: real
+    )
+    res = client.post(
+        "/api/v1/projects",
+        json={
+            "title": "P",
+            "source": "uploads/abc.mp4",
+            "source_type": "upload",
+            "source_size_bytes": 1 * MB,
+        },
+    )
+    assert res.status_code == 201
+    assert storage.storage_used(user["id"]) == real
+    project = db.get_project(res.json()["id"])
+    assert project["source_size_bytes"] == real
+
+
+def test_upload_create_rejects_when_real_size_exceeds_cap(client, monkeypatch):
+    """Real S3 size above the cap -> 409 even if the client claims a small
+    size."""
+    register_user(client, email="cap@example.com")
+    monkeypatch.setattr(
+        "app.api.projects.head_object_size_default_bucket",
+        lambda key: storage.STORAGE_CAP_BYTES + 10 * MB,
+    )
+    res = client.post(
+        "/api/v1/projects",
+        json={
+            "title": "P",
+            "source": "uploads/big.mp4",
+            "source_type": "upload",
+            "source_size_bytes": 1 * MB,
+        },
+    )
+    assert res.status_code == 409
+
+
+def test_upload_create_rejects_unverifiable_zero_size(client, monkeypatch):
+    """No HEAD result (S3 unavailable) AND source_size_bytes=0 -> reject:
+    that combination is exactly the cap-bypass vector."""
+    register_user(client, email="zero@example.com")
+    monkeypatch.setattr(
+        "app.api.projects.head_object_size_default_bucket", lambda key: None
+    )
+    res = client.post(
+        "/api/v1/projects",
+        json={
+            "title": "P",
+            "source": "uploads/abc.mp4",
+            "source_type": "upload",
+            "source_size_bytes": 0,
+        },
+    )
+    assert res.status_code == 400
