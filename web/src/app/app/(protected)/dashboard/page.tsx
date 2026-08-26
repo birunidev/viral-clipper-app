@@ -5,6 +5,7 @@ import {
   Clock,
   FilmReel,
   Plus,
+  Trash,
   Warning,
   X,
   YoutubeLogo,
@@ -17,13 +18,14 @@ import { Card, EmptyState, Skeleton } from "@/components/ui/card";
 import { StatusPill } from "@/components/ui/status-pill";
 import { SourceTypeIcon } from "@/components/project/source-icon";
 import { UpgradeRequired, isPaywall } from "@/components/upgrade-required";
-import { useCreateProject, usePresignUpload, useProjects } from "@/hooks/use-projects";
+import { useCreateProject, useDeleteProject, usePresignUpload, useProjects } from "@/hooks/use-projects";
 
 export default function DashboardPage() {
   const router = useRouter();
   const projectsQuery = useProjects();
   const createProject = useCreateProject();
   const presignUpload = usePresignUpload();
+  const deleteProject = useDeleteProject();
 
   const [composerOpen, setComposerOpen] = useState(false);
   const [title, setTitle] = useState("");
@@ -268,12 +270,26 @@ export default function DashboardPage() {
                 <p className="truncate text-sm font-medium text-ink">{p.title}</p>
                 <p className="mt-0.5 truncate text-xs text-ink-muted">{p.source}</p>
               </div>
-              <div className="flex shrink-0 items-center gap-4">
+              <div className="flex shrink-0 items-center gap-3">
                 <span className="flex items-center gap-1 text-xs text-ink-tertiary tabular-nums">
                   <Clock size={13} />
                   {p.clip_count} clip{p.clip_count === 1 ? "" : "s"}
                 </span>
                 <StatusPill status={p.status} />
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (!window.confirm(`Delete "${p.title}"? You can't undo this.`)) return;
+                    deleteProject.mutate(p.id, { onError: fail });
+                  }}
+                  disabled={deleteProject.isPending && deleteProject.variables === p.id}
+                  className="flex h-8 w-8 items-center justify-center rounded-md text-ink-muted opacity-0 transition-opacity hover:bg-danger/10 hover:text-danger focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-50"
+                  aria-label={`Delete project ${p.title}`}
+                >
+                  <Trash size={15} />
+                </button>
               </div>
             </Card>
           </Link>

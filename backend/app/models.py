@@ -244,6 +244,9 @@ class Project(Base, TimestampMixin):
     # titles/hooks in the transcript's language.
     language: Mapped[str | None] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, server_default="idle", nullable=False)
+    # Soft delete: non-null means hidden from listings/API; rows and S3
+    # objects are kept so a restore or audit is possible.
+    deleted_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     user_id: Mapped[str] = mapped_column(
         String, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
     )

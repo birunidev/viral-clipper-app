@@ -109,7 +109,7 @@ def test_presign_allowed_when_room_available(client, monkeypatch):
     assert res.json()["key"].startswith("uploads/")
 
 
-def test_delete_project_frees_storage(client, monkeypatch):
+def test_delete_project_soft_deletes(client, monkeypatch):
     register_user(client, email="d@example.com")
     user = db.get_user_by_email("d@example.com")
 
@@ -137,14 +137,15 @@ def test_delete_project_frees_storage(client, monkeypatch):
 
     res = client.delete(f"/api/v1/projects/{project['id']}")
     assert res.status_code == 204
-    # Project + clip rows gone (cascade), storage freed back to zero.
-    assert db.get_project(project["id"]) is None
-    assert db.get_clip(clip_id) is None
-    assert storage.storage_used(user["id"]) == 0
-    # S3 objects deleted: source + rendered clip.
-    keys = [k for _, k in deleted]
-    assert "uploads/abc.mp4" in keys
-    assert "projects/x/clips/c.mp4" in keys
+    # Soft delete: rows kept (deleted_at stamped), storage stays counted,
+    # S3 objects untouched.
+    assert db.get_project(project["id"]) is not None
+    assert db.get_clip(clip_id) is not None
+    assert storage.storage_used(user["id"]) == 35 * MB
+    assert deleted == []
+    # Hidden from listings/detail for the owner.
+    assert db.list_projects_for_user(user["id"]) == []
+    assert db.get_project_detail(project["id"], user["id"]) is None
 
 
 def test_delete_project_requires_auth(client):

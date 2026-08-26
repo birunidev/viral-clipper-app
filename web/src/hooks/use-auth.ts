@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import type { User } from "./types";
 
 const SESSION_KEY = ["auth", "me"] as const;
@@ -12,11 +12,17 @@ export function useSession() {
     queryFn: async () => {
       try {
         return await api.get<User>("/auth/me");
-      } catch {
-        return null;
+      } catch (err) {
+        // Only an explicit 401 means "not logged in". Network errors and
+        // server failures must surface as errors (React Query retries /
+        // keeps previous data) — otherwise a transient blip would clear
+        // the auth state and bounce a still-authenticated user to login.
+        if (err instanceof ApiError && err.status === 401) return null;
+        throw err;
       }
     },
     retry: false,
+    staleTime: 60_000,
   });
 }
 

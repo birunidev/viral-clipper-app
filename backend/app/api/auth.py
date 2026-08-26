@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
+from sqlalchemy.exc import IntegrityError
 
 from .. import db
 from ..schemas import LoginRequest, RegisterRequest, UserResponse
@@ -27,11 +28,16 @@ def register(payload: RegisterRequest, response: Response) -> UserResponse:
     if db.get_user_by_email(email) is not None:
         raise HTTPException(status_code=409, detail="Email already registered")
 
-    user = db.create_user(
-        email=email,
-        password_hash=hash_password(payload.password),
-        name=payload.name,
-    )
+    try:
+        user = db.create_user(
+            email=email,
+            password_hash=hash_password(payload.password),
+            name=payload.name,
+        )
+    except IntegrityError:
+        # Concurrent registration for the same email raced past the
+        # pre-check above; the unique constraint is authoritative.
+        raise HTTPException(status_code=409, detail="Email already registered")
 
     token = new_session_token()
     create_session(user["id"], token)

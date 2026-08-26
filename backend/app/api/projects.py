@@ -221,38 +221,11 @@ def render_clip(
 
 @router.delete("/{project_id}", status_code=204, response_model=None)
 def delete_project(project_id: str, user: SessionUser = Depends(current_user)) -> None:
-    """Delete a project: remove its S3 objects (source video, rendered
-    clips, thumbnails) best-effort, free the user's storage accounting, then
-    drop the DB row (clips/jobs/words cascade)."""
-    from core.s3 import delete_object
-
+    """Soft-delete a project: stamp ``deleted_at`` so it disappears from
+    listings and detail views. Rows and S3 objects are kept (storage usage
+    stays counted) so a restore is possible."""
     project = db.get_project_for_user(project_id, user.id)
     if project is None:
         raise HTTPException(status_code=404, detail="Not found")
 
-    bucket = os.environ.get("S3_BUCKET", "")
-
-    # Collect S3 keys before deleting the rows (we need them to free space).
-    detail = db.get_project_detail(project_id, user.id)
-    keys: list[str] = []
-    if detail:
-        if detail.get("source_key"):
-            keys.append(detail["source_key"])
-        for clip in detail.get("clips", []):
-            if clip.get("video_url"):
-                keys.append(clip["video_url"])
-            if clip.get("thumbnail_url"):
-                keys.append(clip["thumbnail_url"])
-
-    # How much storage the project accounts for. We track a per-project
-    # running total (source + renders + thumbnails) so the whole-project
-    # delete frees exactly the right amount from the user's quota.
-    project_bytes = int(project.get("storage_bytes") or 0)
-
     db.delete_project(project_id)
-    if project_bytes:
-        storage.add_storage(user.id, -project_bytes)
-
-    if bucket:
-        for key in keys:
-            delete_object(bucket, key)

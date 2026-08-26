@@ -27,13 +27,16 @@ const NAV = [
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const { data: user, isLoading } = useSession();
+  const { data: user, isLoading, isError } = useSession();
   const logout = useLogout();
   const billing = useBilling();
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace("/app/login");
-  }, [isLoading, user, router]);
+    // Only bounce to login on a definitive "not authenticated" (null data).
+    // An errored session query (network/server blip) keeps the user in place
+    // — the cookie and DB session are still valid.
+    if (!isLoading && !isError && !user) router.replace("/app/login");
+  }, [isLoading, isError, user, router]);
 
   if (isLoading || !user) return null;
 

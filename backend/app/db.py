@@ -556,16 +556,21 @@ def get_project(project_id: str) -> dict[str, Any] | None:
 
 def get_project_for_user(project_id: str, user_id: str) -> dict[str, Any] | None:
     with session_scope() as db:
-        stmt = select(Project).where(Project.id == project_id, Project.user_id == user_id)
+        stmt = select(Project).where(
+            Project.id == project_id,
+            Project.user_id == user_id,
+            Project.deleted_at.is_(None),
+        )
         return _row(db.execute(stmt).scalar_one_or_none())
 
 
 def list_projects_for_user(user_id: str) -> list[dict[str, Any]]:
-    """Projects for a user, newest first, each with clip_count and latest_job."""
+    """Live (non-deleted) projects for a user, newest first, with clip_count
+    and latest_job."""
     with session_scope() as db:
         stmt = (
             select(Project)
-            .where(Project.user_id == user_id)
+            .where(Project.user_id == user_id, Project.deleted_at.is_(None))
             .order_by(Project.created_at.desc())
         )
         projects = db.execute(stmt).scalars().all()
@@ -586,7 +591,11 @@ def list_projects_for_user(user_id: str) -> list[dict[str, Any]]:
 def get_project_detail(project_id: str, user_id: str) -> dict[str, Any] | None:
     """Project with its clips (oldest first) and jobs (newest first), scoped to ``user_id``."""
     with session_scope() as db:
-        stmt = select(Project).where(Project.id == project_id, Project.user_id == user_id)
+        stmt = select(Project).where(
+            Project.id == project_id,
+            Project.user_id == user_id,
+            Project.deleted_at.is_(None),
+        )
         project = db.execute(stmt).scalar_one_or_none()
         if project is None:
             return None
@@ -601,11 +610,13 @@ def get_project_detail(project_id: str, user_id: str) -> dict[str, Any] | None:
 
 
 def delete_project(project_id: str) -> None:
-    """Delete a project row. Clips/jobs/timeline_words cascade via FKs."""
+    """Soft-delete a project: stamp ``deleted_at`` so it disappears from all
+    listings/API. Rows (clips/jobs/words), storage accounting and S3 objects
+    are left untouched."""
     with session_scope() as db:
         project = db.get(Project, project_id)
-        if project is not None:
-            db.delete(project)
+        if project is not None and project.deleted_at is None:
+            project.deleted_at = func.now()
 
 
 def create_project(user_id: str, title: str, source: str, source_type: str) -> dict:
