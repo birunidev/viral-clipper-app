@@ -335,3 +335,71 @@ def test_project_detail_caption_style_none_for_unrendered(client):
     clip = res.json()["clips"][0]
     assert clip["video_url"] is None
     assert clip["caption_style_id"] is None
+
+
+# ------------------------------------------------- client-side rendering
+
+
+def test_client_render_presign_and_complete(client, monkeypatch):
+    register_user(client)
+    user = db.get_user_by_email("user@example.com")
+    project = _make_project(client)
+    db.update_project(project["id"], source_key="projects/x/source.mp4")
+    clip_id = _make_clip(project["id"])
+
+    monkeypatch.setattr(
+        "core.s3.presign_put_url",
+        lambda key, content_type, expires=3600: f"https://r2.test/{key}?sig",
+    )
+    pres = client.post(
+        f"/api/v1/projects/{project['id']}/clips/{clip_id}/client-render/presign"
+    )
+    assert pres.status_code == 200
+    key = pres.json()["key"]
+    assert key.startswith(f"projects/{project['id']}/clips/") and key.endswith(".mp4")
+
+    # Object must exist before complete() verifies it.
+    monkeypatch.setattr(
+        "core.s3.head_object_size_default_bucket", lambda k: 5 * 1024 * 1024
+    )
+    done = client.post(
+        f"/api/v1/projects/{project['id']}/clips/{clip_id}/client-render/complete",
+        json={"key": key},
+    )
+    assert done.status_code == 200
+    assert done.json()["video_url"] == key
+
+    # Key is single-use.
+    again = client.post(
+        f"/api/v1/projects/{project['id']}/clips/{clip_id}/client-render/complete",
+        json={"key": key},
+    )
+    assert again.status_code == 400
+
+
+def test_client_render_complete_rejects_foreign_key(client):
+    register_user(client)
+    project = _make_project(client)
+    clip_id = _make_clip(project["id"])
+
+    # A key outside this project's namespace (or unledgered) is rejected.
+    res = client.post(
+        f"/api/v1/projects/{project['id']}/clips/{clip_id}/client-render/complete",
+        json={"key": "projects/OTHER/clips/steal.mp4"},
+    )
+    assert res.status_code == 400
+
+
+def test_client_render_other_users_clip_404(client):
+    register_user(client, email="a@example.com")
+    project = _make_project(client)
+    clip_id = _make_clip(project["id"])
+    client.post("/api/v1/auth/logout")
+    register_user(client, email="b@example.com")
+
+    assert (
+        client.post(
+            f"/api/v1/projects/{project['id']}/clips/{clip_id}/client-render/presign"
+        ).status_code
+        == 404
+    )

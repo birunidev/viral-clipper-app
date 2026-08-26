@@ -96,6 +96,13 @@ class ClipResponse(BaseModel):
     caption_style_id: str | None = None
 
 
+class ClientRenderComplete(BaseModel):
+    """Payload for registering a browser-rendered clip file."""
+
+    key: str = Field(min_length=1, max_length=512)
+    size_bytes: int | None = None
+
+
 class CaptionStyleResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

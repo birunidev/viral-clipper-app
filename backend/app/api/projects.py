@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from .. import db
 from ..schemas import (
+    ClientRenderComplete,
+    ClipResponse,
     JobResponse,
     ProjectCreate,
     ProjectDetail,
@@ -284,6 +287,78 @@ def render_clip(
         db.update_job(job["id"], status="failed", error="Queue full — please retry shortly.")
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     return job
+
+
+@router.post(
+    "/{project_id}/clips/{clip_id}/client-render/presign", response_model=dict
+)
+def client_render_presign(
+    project_id: str,
+    clip_id: str,
+    user: SessionUser = Depends(current_user),
+) -> dict:
+    """Presign a PUT for a browser-rendered clip file.
+
+    Client-side rendering (WebCodecs) produces the mp4 in the browser; this
+    hands the page a one-shot upload slot inside THIS clip's namespace and
+    ledgers it, so the follow-up ``complete`` call can prove ownership —
+    same security model as source uploads.
+    """
+    from core.s3 import S3Error, presign_put_url
+
+    if db.get_project_for_user(project_id, user.id) is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    if db.get_clip_for_user(clip_id, user.id) is None:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    key = f"projects/{project_id}/clips/{uuid.uuid4().hex}.mp4"
+    try:
+        url = presign_put_url(key, "video/mp4")
+    except S3Error as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    db.record_upload(key, user.id, "video/mp4")
+    return {"url": url, "key": key}
+
+
+@router.post(
+    "/{project_id}/clips/{clip_id}/client-render/complete",
+    response_model=ClipResponse,
+)
+def client_render_complete(
+    project_id: str,
+    clip_id: str,
+    payload: ClientRenderComplete,
+    user: SessionUser = Depends(current_user),
+) -> dict:
+    """Register a browser-rendered clip file as the clip's rendered video.
+
+    Validates that ``key`` was presigned to THIS user for THIS clip flow
+    (ledger + single-use claim), then stamps ``clip.video_url`` and runs
+    storage accounting exactly like a server render.
+    """
+    if db.get_project_for_user(project_id, user.id) is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    clip = db.get_clip_for_user(clip_id, user.id)
+    if clip is None or clip.get("project_id") != project_id:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    expected_prefix = f"projects/{project_id}/clips/"
+    key = payload.key.strip()
+    if not key.startswith(expected_prefix) or not key.endswith(".mp4"):
+        raise HTTPException(status_code=400, detail="Invalid render key")
+    if not db.claim_upload_for_project(key, user.id, project_id):
+        raise HTTPException(status_code=400, detail="Unknown render upload")
+    from core.s3 import head_object_size_default_bucket
+
+    size = head_object_size_default_bucket(key)
+    if size is None:
+        raise HTTPException(status_code=400, detail="Rendered file not found in storage")
+
+    db.set_clip_video_url(clip_id, key)
+    storage.add_project_storage(project_id, user.id, size)
+    data = db.get_clip_for_user(clip_id, user.id) or {}
+    data["signed_video_url"] = _presigned(key)
+    return data
 
 
 @router.post("/{project_id}/restore", response_model=ProjectListItem, status_code=200)

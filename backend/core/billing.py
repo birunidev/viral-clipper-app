@@ -265,6 +265,10 @@ def billing_status(user_id: str) -> dict:
         "tier_name": entitlement["name"],
         "credits": credit_balance(user_id),
         "byok_enabled": _byok_enabled(),
+        # Client-side rendering flag: the browser renders/downloads clips
+        # via WebCodecs when supported; server queue stays the fallback.
+        "client_render": os.environ.get("CLIENT_RENDER", "1").strip().lower()
+        in ("1", "true", "yes", "on"),
         "limits": {
             k: entitlement.get(k, base.get(k)) for k in limit_keys
         },
