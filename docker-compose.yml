@@ -28,10 +28,19 @@ services:
       retries: 10
     # Hardening: no privilege escalation, no kernel capabilities, no ports
     # published — the DB is reachable only from backend on the internal net.
+    # The official image's entrypoint chowns/chmods its dirs and drops from
+    # root to the `postgres` user, so it keeps exactly the five capabilities
+    # that requires (everything else stays dropped).
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    cap_add:
+      - CHOWN        # take ownership of the data dir at initdb
+      - DAC_OVERRIDE # read/write the data dir regardless of mode bits
+      - FOWNER       # chmod/chown files it owns
+      - SETGID       # switch root -> postgres group
+      - SETUID       # switch root -> postgres user
     deploy:
       resources:
         limits:
@@ -76,7 +85,13 @@ services:
           memory: 4g
           pids: 512
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/api/v1/auth/me', timeout=5)"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/api/v1/auth/me', timeout=5)",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -98,7 +113,7 @@ services:
     init: true
     # Loopback-only publication: host Caddy reaches it at 127.0.0.1:3000.
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:3005:3000"
     depends_on:
       backend:
         condition: service_healthy
@@ -112,7 +127,13 @@ services:
           memory: 1g
           pids: 256
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(0)).catch(()=>process.exit(1))"]
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/').then(r=>process.exit(0)).catch(()=>process.exit(1))",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3

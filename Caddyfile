@@ -2,27 +2,104 @@
 #
 # The docker-compose stack publishes loopback-only ports:
 #   backend -> 127.0.0.1:8000   web -> 127.0.0.1:3000
-# Replace example.com with your real domain.
+#
+# Replace BOTH occurrences of example.com with your real domain.
+# The email below gets Let's Encrypt expiry notices.
+
+{
+	# Don't ship Caddy's version banner anywhere.
+	servers {
+		protocols h1 h2 h3
+	}
+}
 
 example.com {
-	# The browser calls the FastAPI backend directly for auth/CRUD/upload
-	# (same-site so the httpOnly session cookie works across both origins).
+	# Modern TLS only. Caddy handles ACME issuance/renewal automatically;
+	# http:// requests are redirected to https:// by Caddy itself.
+	tls {
+		protocols tls1.2 tls1.3
+	}
+
+	# ─────────────────────────── response headers ───────────────────────────
+	header {
+		# Fingerprinting / framework banners.
+		-Server
+		-X-Powered-By
+		-X-AspNet-Version
+
+		# Browser-enforced protections.
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=(), usb=()"
+		Cross-Origin-Opener-Policy "same-origin"
+
+		# CSP tuned for Next.js + third-party integrations:
+		# - Next.js needs 'unsafe-inline' styles/scripts for its hydration
+		#   bootstrap.
+		# - media/img/connect allow https so presigned S3/R2 video URLs and
+		#   browser PUT-uploads keep working.
+		# - Cloudflare Turnstile: widget script + its verification iframe
+		#   (challenges.cloudflare.com).
+		# - Google Analytics: gtag loader (googletagmanager) + beacon
+		#   endpoints (covered by connect-src https: / img-src https:).
+		# - Google OAuth: Identity Services scripts + the sign-in popup/
+		#   One-Tap iframes (accounts.google.com, apis.google.com).
+		# High-value directives unchanged: frame-ancestors 'none' (click-
+		# jacking), object-src 'none', base-uri 'self'.
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://www.googletagmanager.com https://*.google-analytics.com https://accounts.google.com https://apis.google.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https:; font-src 'self' data:; frame-src https://challenges.cloudflare.com https://accounts.google.com; frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
+	}
+
+	# ────────────────────── probe / scanner path blocking ───────────────────
+	# Return 404 fast for the endless automated scans; never let these reach
+	# the apps or hit the disk.
+	@probes path \
+		/.git* /.env* /.aws* /.ssh* /*.sql /*.bak /*.old /*.swp \
+		/wp-admin* /wp-login.php /xmlrpc.php /phpmyadmin* /pma* \
+		/adminer* /*.php /actuator* /metrics /debug/* \
+		/Dockerfile /docker-compose*.yml /package.json /composer.json
+	respond @probes 404
+
+	# Only the documented HTTP methods are meaningful for this app.
+	@badmethods method TRACE TRACK CONNECT
+	respond @badmethods 405
+
+	# ───────────────────────────── body limits ──────────────────────────────
+	# Real video uploads never touch Caddy — the browser PUTs them straight
+	# to S3/R2 with presigned URLs. Everything proxied here is JSON/forms,
+	# so a modest cap blunts body-based DoS without hurting the product.
+	request_body {
+		max_size 25MB
+	}
+
+	# ─────────────────────────────── routing ────────────────────────────────
+	# The browser calls the FastAPI backend for auth/CRUD/webhooks (same-site
+	# so the httpOnly session cookie works across both origins).
 	handle /api/* {
-		reverse_proxy 127.0.0.1:8000
+		reverse_proxy 127.0.0.1:8000 {
+			# Active health check: stop routing to a wedged backend.
+			health_uri /health
+			health_interval 15s
+			health_timeout 5s
+			header_up X-Real-IP {remote_host}
+		}
 	}
 
 	# Everything else (SSR marketing site + /app/* client app) goes to Next.js.
 	handle {
-		reverse_proxy 127.0.0.1:3000
+		reverse_proxy 127.0.0.1:3000 {
+			health_uri /
+			health_interval 15s
+			health_timeout 5s
+			header_up X-Real-IP {remote_host}
+		}
 	}
+}
 
-	# Reasonable default headers.
-	header {
-		-X-Server
-		-Server
-		X-Content-Type-Options "nosniff"
-		X-Frame-Options "DENY"
-		Referrer-Policy "strict-origin-when-cross-origin"
-		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-	}
+# Catch-all: requests whose Host doesn't match the real domain (scanners,
+# DNS rebinding, direct-IP probing) get an explicit rejection instead of
+# silently hitting the app.
+http://:80, https://:443 {
+	respond 421
 }
