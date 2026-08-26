@@ -402,6 +402,75 @@ def test_analyze_youtube_source_accounting_is_net_on_rerun(client, monkeypatch, 
     assert p["storage_bytes"] == 12 * MB
 
 
+def test_analyze_reuses_stored_source_when_present(client, monkeypatch, tmp_path):
+    """A failed analysis must not re-download the source on retry: when the
+    canonical source already exists in S3, it's pulled from there and the
+    YouTube download / re-upload / re-accounting are all skipped."""
+    from app import pipeline as pl
+    from core import storage
+    from helpers import register_user
+
+    monkeypatch.setenv("LLM_API_KEY", "sk-test")
+    monkeypatch.setenv("ASSEMBLYAI_KEY", "sk-aai")
+    monkeypatch.setenv("TRANSCRIPTION_PROVIDER", "assemblyai")
+
+    register_user(client, email="reuse@example.com")
+    user = db.get_user_by_email("reuse@example.com")
+    project = db.create_project(user["id"], "P", "https://youtu.be/x", "youtube")
+
+    # Simulate a previous run that got through the download stage before
+    # failing: source stored, size known, quota accounted.
+    source_key = "projects/p/source.mp4"
+    db.update_project(
+        project["id"], source_key=source_key, source_size_bytes=10 * MB
+    )
+    storage.add_project_storage(project["id"], user["id"], 10 * MB)
+
+    def boom(*a, **k):
+        raise AssertionError("YouTube must not be touched on retry")
+
+    monkeypatch.setattr("app.pipeline.youtube.get_info", boom)
+    monkeypatch.setattr("app.pipeline.youtube.download", boom)
+    monkeypatch.setattr(
+        "app.pipeline.s3.upload_file_as", boom
+    )  # no re-upload for a reused source
+    monkeypatch.setattr(
+        "app.pipeline.s3.head_object_size_default_bucket",
+        lambda key: 10 * MB if key == source_key else None,
+    )
+
+    def fake_download_object(key, dest):
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "wb") as fh:
+            fh.write(b"0" * (10 * MB))
+        return dest
+
+    class FakeTranscript:
+        text = "hello"
+        words: list[dict] = []
+        language = "en"
+
+    monkeypatch.setattr("app.pipeline.s3.download_object", fake_download_object)
+    monkeypatch.setattr(
+        "app.pipeline.transcriber.transcribe_with_words",
+        lambda *a, **k: FakeTranscript(),
+    )
+    monkeypatch.setattr(
+        "app.pipeline.analyzer.analyze",
+        lambda *a, **k: [{"title": "C", "start": 0.0, "end": 1.0}],
+    )
+
+    job = db.create_job(project["id"], {"max_clips": 5}, job_type="analyze")
+    pl._run_analyze(job["id"])
+
+    assert db.get_job(job["id"])["status"] == "completed"
+    # Storage accounting untouched by the retry (still exactly one copy).
+    assert storage.storage_used(user["id"]) == 10 * MB
+    p = db.get_project(project["id"])
+    assert p["source_size_bytes"] == 10 * MB
+    assert p["storage_bytes"] == 10 * MB
+
+
 def test_render_fails_when_clip_would_exceed_cap(client, monkeypatch, tmp_path):
     """The rendered mp4 is size-checked against the cap BEFORE upload: an
     over-quota render fails fast instead of silently exceeding it."""

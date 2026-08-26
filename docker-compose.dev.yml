@@ -1,4 +1,4 @@
-# Local development: Postgres only.
+# Local development: Postgres (dev + test).
 #
 # Usage:
 #   docker compose -f docker-compose.dev.yml up -d
@@ -7,7 +7,8 @@
 # After the first start, create the schema (from backend/):
 #   poetry run alembic upgrade head
 #
-# Default local dev DB: postgresql://clipforge:clipforge@localhost:5438/clipforge
+# Dev DB:   postgresql://clipforge:clipforge@localhost:5438/clipforge
+# Test DB:  postgresql://clipforge:clipforge@localhost:5439/clipforge_test
 
 services:
   postgres:
@@ -28,5 +29,26 @@ services:
       timeout: 3s
       retries: 10
 
+  # Isolated database for the pytest suite (tests/conftest.py). Wiped and
+  # recreated by every test run — never point the app itself at this one.
+  postgres-test:
+    image: postgres:16-alpine
+    container_name: clipforge-dev-db-test
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: clipforge
+      POSTGRES_PASSWORD: clipforge
+      POSTGRES_DB: clipforge_test
+    ports:
+      - "5439:5432"
+    volumes:
+      - clipforge_pgdata_test:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clipforge"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
 volumes:
   clipforge_pgdata:
+  clipforge_pgdata_test:

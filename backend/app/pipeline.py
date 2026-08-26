@@ -413,29 +413,45 @@ def _run_analyze(job_id: str) -> None:
 
     workdir = tempfile.mkdtemp(prefix="clipforge_analyze_")
     local_video: str | None = None
+    # True when we pulled a fresh copy from YouTube this run (vs reusing
+    # the canonical source already stored in S3 from an earlier attempt).
+    downloaded_fresh = False
     # Spoken-language hint, ISO 639-1. Preferred source: the source video's
     # own metadata (yt-dlp exposes `language` for many YouTube videos, e.g.
     # "id" for Bahasa Indonesia). If unavailable, transcription auto-detects.
     source_language: str | None = None
     try:
         if source_type == "youtube":
-            dl_dir = os.path.join(workdir, "src")
-            # Fetch metadata first so we can pass the video's spoken language
-            # down to the transcription provider as a hint. Persist it right
-            # away (not after a later stage) so it survives even if the
-            # download itself fails afterwards.
-            try:
-                info = youtube.get_info(source)
-                source_language = info.get("language") or info.get("original_language")
-                if source_language:
-                    db.update_project(project_id, language=source_language)
-            except Exception:
-                source_language = None
-            local_video = youtube.download(
-                source,
-                dl_dir,
-                progress=_make_progress(job_id, *ANALYZE_STAGE_RANGES["downloading"]),
-            )
+            existing_key = (project.get("source_key") or "").strip()
+            if existing_key and s3.head_object_size_default_bucket(existing_key) is not None:
+                # A previous run already downloaded and stored the canonical
+                # source video (e.g. transcription/analysis failed after the
+                # download stage). Reuse it instead of hitting YouTube again
+                # — the download is the slowest, most fragile stage and the
+                # video can go stale or get rate-limited between attempts.
+                ext = os.path.splitext(existing_key)[1] or ".mp4"
+                local_video = s3.download_object(
+                    existing_key, os.path.join(workdir, f"src{ext}")
+                )
+            else:
+                downloaded_fresh = True
+                dl_dir = os.path.join(workdir, "src")
+                # Fetch metadata first so we can pass the video's spoken language
+                # down to the transcription provider as a hint. Persist it right
+                # away (not after a later stage) so it survives even if the
+                # download itself fails afterwards.
+                try:
+                    info = youtube.get_info(source)
+                    source_language = info.get("language") or info.get("original_language")
+                    if source_language:
+                        db.update_project(project_id, language=source_language)
+                except Exception:
+                    source_language = None
+                local_video = youtube.download(
+                    source,
+                    dl_dir,
+                    progress=_make_progress(job_id, *ANALYZE_STAGE_RANGES["downloading"]),
+                )
         elif source_type == "upload":
             # Already-uploaded source: it's already the canonical source
             # video in S3 under `source` (the presigned-upload key).
@@ -445,10 +461,12 @@ def _run_analyze(job_id: str) -> None:
         else:
             raise RuntimeError(f"Unknown sourceType: {source_type!r}")
 
-        # Persist the canonical source video so previews can seek it and
-        # render jobs can cut from it later, without re-downloading from
-        # YouTube (which can go stale/rate-limited) each time.
-        if source_type == "youtube":
+        # Persist the canonical source video (only for a freshly downloaded
+        # copy — a reused stored source is already uploaded and accounted)
+        # so previews can seek it and render jobs can cut from it later,
+        # without re-downloading from YouTube (which can go stale/rate-
+        # limited) each time.
+        if source_type == "youtube" and downloaded_fresh:
             ext = os.path.splitext(local_video)[1] or ".mp4"
             source_key = f"projects/{project_id}/source{ext}"
 
