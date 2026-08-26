@@ -172,12 +172,28 @@ def presign_put_url(key: str, content_type: str, expires: int = 3600) -> str:
         raise S3Error(f"S3 presign failed: {exc}") from exc
 
 
-def download_object(key: str, dest: str) -> str:
-    """Download ``key`` from the default bucket to ``dest``."""
+def download_object(key: str, dest: str, progress=None) -> str:
+    """Download ``key`` from the default bucket to ``dest``.
+
+    ``progress`` (optional) receives ``(bytes_transferred, total_bytes)``
+    as chunks arrive.
+    """
     client = _client()
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+    kwargs: dict = {}
+    if progress is not None:
+        from boto3.s3.transfer import TransferConfig
+
+        total = head_object_size(_get_bucket(), key) or 0
+
+        def _cb(bytes_sent: int) -> None:
+            progress((bytes_sent, total))
+
+        kwargs["Callback"] = _cb
+        # Single-threaded transfer so callback bytes arrive in order.
+        kwargs["Config"] = TransferConfig(use_threads=False)
     try:
-        client.download_file(_get_bucket(), key, dest)
+        client.download_file(_get_bucket(), key, dest, **kwargs)
     except Exception as exc:
         raise S3Error(f"S3 download failed for {key!r}: {exc}") from exc
     return dest

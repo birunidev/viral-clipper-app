@@ -45,8 +45,14 @@ const STAGE_LABEL: Record<string, string> = {
 const STAGE_ORDER = ["downloading", "transcribing", "analyzing"] as const;
 
 function PipelineStages({ stage }: { stage: string | null }) {
-  const idx = stage ? STAGE_ORDER.indexOf(stage as (typeof STAGE_ORDER)[number]) : -1;
-  const labels = STAGE_LABEL;
+  // "preparing" = reusing the stored source copy (no YouTube download);
+  // render it in the first step's slot under its own label.
+  const reusing = stage === "preparing";
+  const effectiveStage = reusing ? "downloading" : stage;
+  const idx = effectiveStage
+    ? STAGE_ORDER.indexOf(effectiveStage as (typeof STAGE_ORDER)[number])
+    : -1;
+  const labels = { ...STAGE_LABEL, ...(reusing ? { downloading: "Loading stored source" } : {}) };
 
   return (
     <ol className="flex items-center gap-2">

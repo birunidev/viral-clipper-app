@@ -430,9 +430,21 @@ def _run_analyze(job_id: str) -> None:
                 # download stage). Reuse it instead of hitting YouTube again
                 # — the download is the slowest, most fragile stage and the
                 # video can go stale or get rate-limited between attempts.
+                # Reported as "preparing", not "downloading": no YouTube hit.
                 ext = os.path.splitext(existing_key)[1] or ".mp4"
+                db.update_job(job_id, status="running", stage="preparing", progress=2)
+
+                def _store_progress(t: tuple[int, int]) -> None:
+                    sent, total = t
+                    if total:
+                        db.update_job(
+                            job_id, progress=int(2 + 20 * min(1.0, sent / total))
+                        )
+
                 local_video = s3.download_object(
-                    existing_key, os.path.join(workdir, f"src{ext}")
+                    existing_key,
+                    os.path.join(workdir, f"src{ext}"),
+                    progress=_store_progress,
                 )
             else:
                 downloaded_fresh = True
@@ -494,7 +506,8 @@ def _run_analyze(job_id: str) -> None:
             s3.upload_file_as(local_video, source_key, "video/mp4")
             db.update_project(project_id, source_key=source_key, source_size_bytes=source_size)
             storage.add_project_storage(project_id, project.get("user_id", ""), source_size)
-        else:
+        elif source_type == "upload":
+            # Uploads: the presigned key IS the canonical source location.
             db.update_project(project_id, source_key=source)
 
         db.update_job(job_id, stage="downloading", progress=25)

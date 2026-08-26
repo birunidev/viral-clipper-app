@@ -439,7 +439,7 @@ def test_analyze_reuses_stored_source_when_present(client, monkeypatch, tmp_path
         lambda key: 10 * MB if key == source_key else None,
     )
 
-    def fake_download_object(key, dest):
+    def fake_download_object(key, dest, progress=None):
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         with open(dest, "wb") as fh:
             fh.write(b"0" * (10 * MB))
@@ -469,6 +469,9 @@ def test_analyze_reuses_stored_source_when_present(client, monkeypatch, tmp_path
     p = db.get_project(project["id"])
     assert p["source_size_bytes"] == 10 * MB
     assert p["storage_bytes"] == 10 * MB
+    # The stored S3 key must survive the retry (not be clobbered back to
+    # the YouTube URL).
+    assert p["source_key"] == source_key
 
 
 def test_render_fails_when_clip_would_exceed_cap(client, monkeypatch, tmp_path):
