@@ -112,11 +112,11 @@ services:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://snapclip.mysaas.web.id/api/v1}
     restart: unless-stopped
     init: true
-    # Loopback-only publication: host Caddy reaches web at 127.0.0.1:3005.
-    # Host side is 3005 because 3000 runs another service on this VPS;
-    # inside the container Next still listens on its default 3000.
+    # Loopback-only publication: host Caddy reaches web at 127.0.0.1:3005
+    # (host 3000 runs another service on this VPS). Container and host both
+    # use 3005 — same number inside and out, no translation to reason about.
     ports:
-      - "127.0.0.1:3005:3000"
+      - "127.0.0.1:3005:3005"
     depends_on:
       backend:
         condition: service_healthy
