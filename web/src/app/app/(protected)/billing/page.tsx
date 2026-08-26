@@ -299,7 +299,8 @@ function Feature({ done, children }: { done?: boolean; children: React.ReactNode
 }
 
 function fmtBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(0)}GB`;
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)}MB`;
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(0)}GB`;
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(0)}MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)}KB`;
   return `${bytes}B`;
 }

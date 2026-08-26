@@ -12,7 +12,9 @@ from __future__ import annotations
 import os
 from collections.abc import Generator
 from contextlib import contextmanager
+from pathlib import Path
 
+from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session as OrmSession
 from sqlalchemy.orm import sessionmaker
@@ -30,6 +32,7 @@ def _normalize_dsn(dsn: str) -> str:
 
 
 def get_dsn() -> str:
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
     dsn = os.environ.get("DATABASE_URL", "")
     if not dsn:
         raise RuntimeError("DATABASE_URL environment variable is required.")

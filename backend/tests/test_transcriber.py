@@ -104,6 +104,7 @@ def test_transcribe_success(session, fake_audio):
     submit_kwargs = session.calls[1][2]
     assert submit_kwargs["json"] == {
         "audio_url": "https://cdn.assemblyai.com/u/xyz",
+        "speech_models": ["universal-2"],
         "language_detection": True,
     }
 
@@ -584,6 +585,7 @@ def test_transcribe_assemblyai_uses_language_hint(session, fake_audio):
     submit_kwargs = session.calls[1][2]
     assert submit_kwargs["json"] == {
         "audio_url": "https://cdn.example/u",
+        "speech_models": ["universal-2"],
         "language_code": "id",
     }
 
@@ -603,7 +605,11 @@ def test_transcribe_assemblyai_auto_detects_when_no_hint(session, fake_audio):
     result = transcribe_with_words("video.mp4", "test-key")
 
     submit_kwargs = session.calls[1][2]
-    assert submit_kwargs["json"] == {"audio_url": "https://cdn.example/u", "language_detection": True}
+    assert submit_kwargs["json"] == {
+        "audio_url": "https://cdn.example/u",
+        "speech_models": ["universal-2"],
+        "language_detection": True,
+    }
     assert result.language == "id"
 
 

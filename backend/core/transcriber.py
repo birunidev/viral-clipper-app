@@ -391,7 +391,10 @@ def _upload(session: requests.Session, file_path: str, progress) -> str:
 
 def _submit(session: requests.Session, audio_url: str, progress, language: str | None = None) -> str:
     _report(progress, 0.2)
-    data: dict = {"audio_url": audio_url}
+    data: dict = {
+        "audio_url": audio_url,
+        "speech_models": ["universal-2"],
+    }
     if language:
         # Use the known language code (e.g. "id" from YouTube metadata) so
         # AssemblyAI doesn't have to auto-detect.
