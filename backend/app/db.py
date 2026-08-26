@@ -18,6 +18,7 @@ import datetime as dt
 import uuid
 from typing import Any
 
+import sqlalchemy as sa
 from sqlalchemy import func, or_, select, update
 
 from .database import session_scope
@@ -396,6 +397,64 @@ def create_job(
         db.add(job)
         db.flush()
         return _row(job)
+
+
+def queued_jobs_by_priority() -> list[tuple[str, int, dt.datetime]]:
+    """Pending jobs ordered for the worker: owner's entitlement rank first
+    (Studio > Creator > Starter > Free), FIFO within a tier. Used at pool
+    startup so nothing persisted as ``queued`` is lost across restarts."""
+    from .plans import TIER_ORDER
+
+    tier_rank = sa.case(
+        {tier: -i for i, tier in enumerate(reversed(TIER_ORDER))},
+        value=User.entitlement_tier,
+        else_=-len(TIER_ORDER),
+    )
+    with session_scope() as db:
+        stmt = (
+            select(Job.id, tier_rank, Job.created_at)
+            .join(Project, Job.project_id == Project.id)
+            .join(User, Project.user_id == User.id)
+            .where(Job.status == "queued")
+            .order_by(tier_rank, Job.created_at)
+        )
+        return [
+            (job_id, int(rank or 0), created_at)
+            for job_id, rank, created_at in db.execute(stmt).all()
+        ]
+
+
+def requeue_stale_running_jobs(max_minutes: int = 45) -> int:
+    """Reset jobs stuck in ``running`` (crashed process mid-job) back to
+    ``queued`` so the pool picks them up again. Returns how many were reset."""
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=max_minutes)
+    with session_scope() as db:
+        stmt = (
+            update(Job)
+            .where(Job.status == "running", Job.updated_at < cutoff)
+            .values(status="queued", stage=None)
+        )
+        result = db.execute(stmt)
+        return result.rowcount or 0
+
+
+def job_owner_tier_rank(job_id: str) -> int:
+    """Entitlement rank of the user who owns ``job_id`` (free-tier rank on
+    any lookup failure — priority is best-effort, never a hard dependency)."""
+    from .plans import TIER_ORDER
+
+    with session_scope() as db:
+        stmt = (
+            select(User.entitlement_tier)
+            .join(Project, Project.user_id == User.id)
+            .join(Job, Job.project_id == Project.id)
+            .where(Job.id == job_id)
+        )
+        tier = db.execute(stmt).scalar_one_or_none()
+    try:
+        return TIER_ORDER.index(tier) if tier else 0
+    except ValueError:
+        return 0
 
 
 def find_active_job(project_id: str) -> dict[str, Any] | None:

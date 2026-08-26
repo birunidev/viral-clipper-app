@@ -18,7 +18,7 @@ from ..schemas import (
     TrashListItem,
 )
 from ..security import SessionUser, current_user
-from ..worker import pool
+from ..worker import QueueFull, pool
 from core import billing, storage
 from core.s3 import head_object_size_default_bucket as head_object_size_default_bucket
 
@@ -217,7 +217,14 @@ def start_job(
 
     # In-process enqueue — no HTTP hop to a separate service needed now
     # that the API and the pipeline worker live in the same FastAPI app.
-    pool.submit(job["id"])
+    # Backpressure: a full queue answers 429 instead of accepting unbounded
+    # lag the VPS can't drain.
+    try:
+        pool.submit(job["id"])
+    except QueueFull as exc:
+        db.update_job(job["id"], status="failed", error="Queue full — please retry shortly.")
+        db.update_project(project_id, status="idle")
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
 
     return job
 
@@ -271,7 +278,11 @@ def render_clip(
         options["caption_style_id"] = caption_style_id
 
     job = db.create_job(project_id, options, job_type="render", clip_id=clip_id)
-    pool.submit(job["id"])
+    try:
+        pool.submit(job["id"])
+    except QueueFull as exc:
+        db.update_job(job["id"], status="failed", error="Queue full — please retry shortly.")
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     return job
 
 

@@ -1,16 +1,21 @@
 """Bounded background worker pool for clip jobs.
 
-Local models (whisper.cpp STT, Ollama LLM) are GPU/CPU/RAM-bound and share
-one machine, so jobs must never run unbounded. This module runs a fixed
-number of worker threads (``WORKERS``, default 1) that drain a queue of
-job IDs. Workers pick up a job, run the full pipeline, then look for the
-next one.
+Design goals under traffic:
 
-Model residency is managed by the pipeline itself: whisper.cpp models are
-loaded per job and released immediately after transcription, and the LLM
-(Ollama) is configured with a short ``OLLAMA_KEEP_ALIVE`` so neither model
-stays resident once a job finishes. On a 16GB laptop the two should never
-be in memory at the same time.
+1. **Tier priority** — jobs from higher entitlement tiers (Studio > Creator
+   > Starter > Free) are picked up first; ties break FIFO. Priority is
+   resolved at claim time from the user's permanent tier, so paying users
+   never wait behind a free-tier backlog.
+2. **Restart safety** — the ``jobs`` table is the source of truth. On
+   startup the pool re-enqueues every row still marked ``queued``, and rows
+   stuck in ``running`` longer than STALE_RUNNING_MINUTES (a crashed
+   process mid-job) are reset to ``queued`` so no job is ever lost.
+3. **Backpressure** — the in-memory pending set is capped at
+   ``MAX_QUEUE_DEPTH``. Beyond that, ``submit`` raises :class:`QueueFull`
+   and the API answers 429, instead of silently accepting hours of lag.
+
+Concurrency stays bounded by ``WORKERS`` threads regardless of queue depth,
+so RAM never scales with traffic.
 """
 
 from __future__ import annotations
@@ -18,10 +23,17 @@ from __future__ import annotations
 import os
 import queue
 import threading
+import time
 
 from . import pipeline
 
 DEFAULT_WORKERS = 1
+DEFAULT_MAX_QUEUE_DEPTH = 100
+STALE_RUNNING_MINUTES = 45
+
+
+class QueueFull(Exception):
+    """Raised when the pending-job budget is exhausted (backpressure)."""
 
 
 def _worker_count() -> int:
@@ -33,41 +45,92 @@ def _worker_count() -> int:
     return count if count >= 1 else DEFAULT_WORKERS
 
 
-class WorkerPool:
-    """A pool of daemon threads that run jobs from a FIFO queue.
+def _max_queue_depth() -> int:
+    raw = os.environ.get("MAX_QUEUE_DEPTH", "")
+    try:
+        depth = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_QUEUE_DEPTH
+    return depth if depth >= 1 else DEFAULT_MAX_QUEUE_DEPTH
 
-    Jobs are job IDs as strings. ``submit`` enqueues a job; workers pull
-    from the queue, so only ``WORKERS`` jobs run at a time (default 1 —
-    the right value whenever local models are in play).
+
+class WorkerPool:
+    """Fixed-size thread pool draining a tier-priority job queue.
+
+    Entries are ``(-tier_rank, submit_seq, job_id)``: higher rank first
+    (negated for a min-heap), then submission order. ``submit`` raises
+    :class:`QueueFull` past ``MAX_QUEUE_DEPTH`` pending jobs.
     """
 
     def __init__(self, count: int | None = None, logger=None) -> None:
         self._count = count if count is not None else _worker_count()
-        self._queue: queue.Queue[str] = queue.Queue()
+        self._queue: queue.PriorityQueue = queue.PriorityQueue()
         self._threads: list[threading.Thread] = []
         self._logger = logger
         self._started = False
+        self._seq = 0
 
     def start(self) -> None:
         if self._started:
             return
+        self._recover_from_db()
         self._started = True
         for _ in range(self._count):
             thread = threading.Thread(
                 target=self._loop,
-                name=f"clipforge-worker-{len(self._threads)}",
+                name=f"snapclip-worker-{len(self._threads)}",
                 daemon=True,
             )
             thread.start()
             self._threads.append(thread)
 
+    def _recover_from_db(self) -> None:
+        """Re-enqueue persisted queued jobs; rescue stale running ones.
+
+        Keeps the DB honest after a crash or redeploy: nothing marked
+        ``queued`` is ever forgotten just because the process restarted.
+        """
+        try:
+            from . import db
+
+            stale = db.requeue_stale_running_jobs(STALE_RUNNING_MINUTES)
+            if stale:
+                if self._logger:
+                    self._logger.warning(
+                        "Reset %d stuck 'running' job(s) back to queued", stale
+                    )
+            for job_id, rank, created_at in db.queued_jobs_by_priority():
+                # Recover in priority order; seq keeps FIFO within a tier.
+                self._seq += 1
+                ts = created_at.timestamp() if created_at else time.time()
+                self._queue.put((-rank, ts, self._seq, job_id))
+        except Exception:
+            # Never block startup on recovery; rows stay recoverable next boot.
+            if self._logger:
+                self._logger.exception("Job recovery failed")
+
     def submit(self, job_id: str) -> None:
-        """Enqueue a job ID for processing."""
-        self._queue.put(job_id)
+        """Enqueue a job ID at its owner's tier priority."""
+        if self._queue.qsize() >= _max_queue_depth():
+            raise QueueFull(
+                f"Processing queue is full ({_max_queue_depth()} pending jobs)"
+            )
+        rank = self._priority_for(job_id)
+        self._seq += 1
+        self._queue.put((-rank, time.time(), self._seq, job_id))
+
+    def _priority_for(self, job_id: str) -> int:
+        """Owner's entitlement rank; unknown/failed lookups degrade to free."""
+        try:
+            from . import db
+
+            return db.job_owner_tier_rank(job_id)
+        except Exception:
+            return 0
 
     def _loop(self) -> None:
         while True:
-            job_id = self._queue.get()
+            _, _, _, job_id = self._queue.get()
             try:
                 pipeline.run_job(job_id)
             except Exception as exc:  # pipeline.run_job never raises, but be safe
