@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 # ------------------------------------------------------------------ auth
 
@@ -39,12 +39,26 @@ class ProjectCreate(BaseModel):
     source_size_bytes: int = Field(default=0, ge=0)
 
 
-class JobOptions(BaseModel):
+class ClipDurationRange(BaseModel):
+    """Per-run clip length bounds (seconds) handed to the LLM as the source
+    of truth for how long each found clip should be."""
+
+    min_clip_seconds: int = Field(default=15, ge=5, le=180)
+    max_clip_seconds: int = Field(default=90, ge=10, le=300)
+
+    @model_validator(mode="after")
+    def _min_lte_max(self) -> "ClipDurationRange":
+        if self.min_clip_seconds > self.max_clip_seconds:
+            raise ValueError("min_clip_seconds must be <= max_clip_seconds")
+        return self
+
+
+class JobOptions(ClipDurationRange):
     orientation: str = "portrait"  # portrait | landscape | original
     max_clips: int = Field(default=10, ge=1, le=20)
 
 
-class StartJobRequest(BaseModel):
+class StartJobRequest(ClipDurationRange):
     orientation: str = "portrait"
     max_clips: int = Field(default=10, ge=1, le=20)
 
@@ -199,3 +213,35 @@ class UserSettingsUpdate(BaseModel):
     llm_model: str | None = None
     llm_api_key: str | None = None
     assemblyai_key: str | None = None
+
+
+# ------------------------------------------------------------------ billing
+
+
+class CheckoutRequest(BaseModel):
+    """Start a one-time checkout for a built-in credit pack key.
+
+    ``timezone`` is the browser's IANA zone (e.g. ``Asia/Jakarta``); Indonesian
+    zones route to the Midtrans gateway (IDR), everything else to Paddle.
+    Optional — defaults to Paddle. There is no plan/subscription here: a pack
+    grants prepaid credits (1 = 1 source minute) plus permanent entitlements.
+    """
+
+    plan_key: str = Field(min_length=1, max_length=32)
+    timezone: str | None = Field(default=None, max_length=64)
+
+
+class CheckoutResponse(BaseModel):
+    """Provider-dependent checkout payload.
+
+    - Paddle: ``url`` (hosted redirect).
+    - Midtrans Snap: ``token`` + ``client_key`` + ``snap_js_url`` (the frontend
+      loads snap.js and opens the popup itself — there is no hosted URL).
+    """
+
+    provider: str = "paddle"
+    url: str | None = None
+    token: str | None = None
+    client_key: str | None = None
+    snap_js_url: str | None = None
+

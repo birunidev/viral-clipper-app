@@ -1,8 +1,10 @@
-"""Per-user S3 storage quota (100MB cap).
+"""Per-user S3 storage accounting and quota enforcement.
 
 Storage is accounted as a denormalized running total on ``users``
 (``storage_used_bytes``), updated beside every S3 write in the pipeline and
-API. This module owns the cap constant and the helpers used to enforce it.
+API. The quota itself is plan-based (see :mod:`core.billing`): each plan has a
+``storage_cap_bytes`` and a user's harness comes from their effective plan
+(trial by default, upgraded to their paid plan).
 
 Write sites that must enforce the cap:
 - presigned direct uploads (quota pre-check in the API + client-side size
@@ -20,10 +22,7 @@ file (source_size_bytes = file size).
 from __future__ import annotations
 
 from app import db
-
-# The per-user storage cap in bytes. Single source of truth for the whole
-# app (backend enforcement + the frontend display).
-STORAGE_CAP_BYTES = 100 * 1024 * 1024  # 100 MB
+from core import billing
 
 # Headroom reserved when pre-checking a presigned upload whose final size
 # is unknown: we only reject if the user has less than this much room left,
@@ -32,36 +31,38 @@ UPLOAD_HEADROOM_BYTES = 5 * 1024 * 1024  # 5 MB
 
 
 class StorageQuotaExceeded(Exception):
-    """Raised when an operation would exceed the per-user storage cap."""
+    """Raised when an operation would exceed the user's plan storage cap."""
 
-    def __init__(self, used_bytes: int, cap_bytes: int = STORAGE_CAP_BYTES):
+    def __init__(self, used_bytes: int, cap_bytes: int):
         self.used_bytes = used_bytes
         self.cap_bytes = cap_bytes
         super().__init__(
             f"Storage limit reached ({used_bytes} of {cap_bytes} bytes used). "
-            "Delete a project to free up space."
+            "Delete a project or buy a bigger credit pack to free up space."
         )
 
 
+def storage_cap(user_id: str) -> int:
+    return billing.storage_cap(user_id)
+
+
 def storage_used(user_id: str) -> int:
-    """Current stored bytes for ``user_id`` (0 when the row is missing)."""
-    user = db.get_user(user_id)
-    return int(user.get("storage_used_bytes") or 0) if user else 0
+    return billing.storage_used(user_id)
 
 
 def storage_remaining(user_id: str) -> int:
-    """Bytes of quota left before ``user_id`` hits the cap."""
-    return max(0, STORAGE_CAP_BYTES - storage_used(user_id))
+    return billing.storage_remaining(user_id)
 
 
 def enforce_cap(user_id: str, additional_bytes: int) -> None:
     """Raise ``StorageQuotaExceeded`` if adding ``additional_bytes`` would
-    push ``user_id`` past the cap. Call BEFORE the S3 write."""
+    push ``user_id`` past their plan cap. Call BEFORE the S3 write."""
     if additional_bytes <= 0:
         return
+    cap = storage_cap(user_id)
     used = storage_used(user_id)
-    if used + additional_bytes > STORAGE_CAP_BYTES:
-        raise StorageQuotaExceeded(used + additional_bytes)
+    if used + additional_bytes > cap:
+        raise StorageQuotaExceeded(used + additional_bytes, cap)
 
 
 def add_storage(user_id: str, delta_bytes: int) -> None:
@@ -84,9 +85,10 @@ def add_project_storage(project_id: str, user_id: str, delta_bytes: int) -> None
 
 def has_storage_room(user_id: str, additional_bytes: int) -> bool:
     """Return True if adding ``additional_bytes`` would keep the user under
-    the 100MB cap. Used before uploading thumbnails when rendering is over
+    their plan cap. Used before uploading thumbnails when rendering is over
     cap."""
     if additional_bytes <= 0:
         return True
+    cap = storage_cap(user_id)
     used = storage_used(user_id)
-    return used + additional_bytes <= STORAGE_CAP_BYTES
+    return used + additional_bytes <= cap

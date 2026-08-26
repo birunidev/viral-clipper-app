@@ -27,7 +27,7 @@ import tempfile
 import uuid
 from typing import Callable
 
-from core import analyzer, captions, cutter, s3, storage, transcriber, youtube
+from core import analyzer, billing, captions, cutter, s3, storage, transcriber, youtube
 
 from . import db
 
@@ -47,15 +47,22 @@ def _settings() -> dict:
 
 
 def _user_settings_for(user_id: str) -> dict:
-    """Per-user BYOK settings merged over the env defaults.
+    """Per-user settings merged over the env defaults.
 
-    A user who has set their own keys overrides the app's shared env keys;
+    When BYOK is disabled (the default) every job runs on the operator's
+    managed env keys and per-user keys are ignored. When BYOK is enabled, a
+    user who has set their own keys overrides the app's shared env keys;
     anything unset falls back to env. Returns the same shape as
-    ``_settings()`` but with keys decrypted from at-rest storage.
+    ``_settings()`` but with keys decrypted from at-rest storage when used.
     """
     from core import secrets
 
     settings = _settings()
+    if not billing.byok_enabled():
+        # BYOK is disabled: every job runs on the operator's managed env keys
+        # and per-user overrides are ignored.
+        return settings
+
     row = db.get_user_settings(user_id)
     if not row:
         return settings
@@ -153,6 +160,35 @@ def _extract_thumbnail_offsets(src: str, start: float, end: float, dest: str) ->
         if os.path.exists(attempt):
             os.remove(attempt)
     return False
+
+
+def _probe_duration(video_path: str) -> float:
+    """Return the video duration in seconds via ffprobe (0.0 on failure).
+
+    Used to meter the plan's monthly managed minutes after a successful
+    analyze (the cost of transcription + analysis scales with video length).
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "csv=p=0",
+                video_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            return 0.0
+        return float(result.stdout.strip() or 0.0 or 0)
+    except Exception:
+        return 0.0
 
 
 def _probe_dimensions(video_path: str) -> tuple[int, int] | None:
@@ -341,6 +377,8 @@ def _run_analyze(job_id: str) -> None:
 
     options = job.get("options") or {}
     max_clips = int(options.get("max_clips", 10))
+    min_clip_seconds = int(options.get("min_clip_seconds", 15))
+    max_clip_seconds = int(options.get("max_clip_seconds", 90))
     source = project["source"]
     source_type = project.get("source_type", "youtube")
 
@@ -443,6 +481,17 @@ def _run_analyze(job_id: str) -> None:
         db.update_job(job_id, stage="downloading", progress=25)
 
         db.update_job(job_id, stage="transcribing", progress=28)
+
+        # Authoritative credit enforcement, right before the expensive
+        # transcription (the real API cost) runs. The API pre-checks at
+        # enqueue, but a user can queue several jobs across projects; checking
+        # here against the *actual* video length prevents spending operator
+        # credits past the balance before it is deducted. Managed users (the
+        # default) always pay; BYOK users (flag opt-in) are unmetered.
+        user_id = project.get("user_id", "")
+        if user_id and billing.uses_managed(user_id):
+            billing.enforce_credits(user_id, _probe_duration(local_video))
+
         transcript_result = transcriber.transcribe_with_words(
             local_video,
             assemblyai_key,
@@ -451,6 +500,13 @@ def _run_analyze(job_id: str) -> None:
             language=source_language,
         )
         db.update_job(job_id, stage="transcribing", progress=70)
+
+        # Deduct credits (1 = 1 source minute) for a *managed* job (operator keys)
+        # as soon as transcription completes — the bulk of the cost. Deducting
+        # here (not after analysis) means a job that fails analysis still
+        # costs its source length, since the expensive transcription ran.
+        if user_id and billing.uses_managed(user_id):
+            billing.record_credits(user_id, _probe_duration(local_video))
 
         # Prefer the transcription provider's detected language (ground
         # truth) over the source metadata hint.
@@ -469,6 +525,8 @@ def _run_analyze(job_id: str) -> None:
             llm_base_url,
             llm_model,
             language=detected_language,
+            min_duration=min_clip_seconds,
+            max_duration=max_clip_seconds,
         )
         if len(clips) > max_clips:
             clips = clips[:max_clips]
@@ -552,6 +610,11 @@ def _run_render(job_id: str) -> None:
     orientation = options.get("orientation", "portrait")
     caption_style_id = options.get("caption_style_id")
 
+    # Plan entitlements: cap resolution and stamp watermark on constrained
+    # tiers (e.g. trial). Always allowed, just constrained.
+    _allow, max_resolution, watermark = billing.render_allowed(project.get("user_id", ""))
+    _ = _allow  # rendering is always allowed; only constrained below
+
     # Resolve the caption style preset (if requested) so we can burn it in.
     caption_style = None
     if caption_style_id:
@@ -587,6 +650,8 @@ def _run_render(job_id: str) -> None:
             orientation,
             subtitles_path=ass_path,
             fonts_dir=os.environ.get("CAPTION_FONTS_DIR", "/app/fonts"),
+            max_resolution=max_resolution,
+            watermark=watermark,
         )
         db.update_job(job_id, stage="cutting", progress=90)
 

@@ -1,6 +1,56 @@
 import { Lightning, Play, Scissors, Waveform } from "@phosphor-icons/react/dist/ssr";
 import Link from "next/link";
 
+function PricingTier({
+  name,
+  price,
+  features,
+  cta,
+  highlight,
+}: {
+  name: string;
+  price: string;
+  features: string[];
+  cta: string;
+  highlight: boolean;
+}) {
+  return (
+    <div
+      className={`flex flex-col rounded-xl border p-6 ${
+        highlight
+          ? "border-accent/40 bg-surface-1 shadow-[0_0_0_1px_rgba(0,0,0,0.06),0_10px_30px_-12px_rgba(0,0,0,0.25)]"
+          : "border-line bg-surface-1/60"
+      }`}
+    >
+      <div className="flex items-baseline justify-between">
+        <p className="text-sm font-semibold text-ink">{name}</p>
+        <p className="tabular-nums">
+          <span className="text-2xl font-semibold tracking-tight text-ink">{price}</span>
+          {price !== "$0" && <span className="text-xs text-ink-muted">/mo</span>}
+        </p>
+      </div>
+      <ul className="mt-5 flex flex-col gap-2 text-sm text-ink-tertiary">
+        {features.map((f) => (
+          <li key={f} className="flex items-start gap-2">
+            <span className="mt-[3px] text-accent">✓</span>
+            {f}
+          </li>
+        ))}
+      </ul>
+      <Link
+        href="/app/register"
+        className={`mt-6 inline-flex h-10 items-center justify-center rounded-lg text-sm font-medium transition-colors ${
+          highlight
+            ? "bg-accent text-accent-ink hover:bg-accent-strong"
+            : "border border-line bg-surface-2 text-ink-secondary hover:bg-surface-2 hover:text-ink"
+        }`}
+      >
+        {cta}
+      </Link>
+    </div>
+  );
+}
+
 function ClipPreview() {
   // A real mini-UI specimen rendered inline — the ClipForge signature:
   // timestamp-forward clip cards + pipeline stages. Not a fake screenshot.
@@ -124,6 +174,53 @@ export default function HomePage() {
               <p className="text-sm leading-relaxed text-ink-tertiary pretty">{body}</p>
             </div>
           ))}
+        </div>
+      </section>
+
+      {/* Pricing — pay per clip, no subscriptions */}
+      <section className="border-t border-line bg-surface-1 px-6 py-14 md:px-10">
+        <div className="mx-auto max-w-4xl">
+          <div className="text-center">
+            <p className="inline-flex w-fit items-center gap-2 rounded-full border border-line px-3 py-1 text-xs text-ink-tertiary">
+              Pay per clip — no monthly plans.
+            </p>
+            <h2 className="mt-4 text-2xl font-semibold tracking-tight text-ink sm:text-3xl">
+              Buy credits once. Cut as much as you want.
+            </h2>
+            <p className="mt-2 text-sm text-ink-tertiary">
+              1 credit = 1 minute of source video. Packs never expire.
+            </p>
+          </div>
+
+          <div className="mt-10 grid gap-5 md:grid-cols-3">
+            <PricingTier
+              name="Free"
+              price="$0"
+              features={["5 free credits to start", "200MB storage", "Up to 3 projects", "720p + watermark"]}
+              cta="Start free"
+              highlight={false}
+            />
+            <PricingTier
+              name="Creator"
+              price="$12.90"
+              features={["300 credits one-time", "5GB storage", "Unlimited projects", "1080p, no watermark"]}
+              cta="Buy Creator"
+              highlight={true}
+            />
+            <PricingTier
+              name="Studio"
+              price="$39"
+              features={["1,200 credits one-time", "20GB storage", "Unlimited projects", "Up to 4K, no watermark"]}
+              cta="Buy Studio"
+              highlight={false}
+            />
+          </div>
+
+          <p className="mt-8 text-center text-xs text-ink-muted">
+            Credits never expire and bigger packs permanently unlock more storage, resolution,
+            and project slots. In Indonesia? Pay in rupiah with GoPay, QRIS, bank transfer,
+            or card.
+          </p>
         </div>
       </section>
 

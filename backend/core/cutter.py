@@ -73,6 +73,40 @@ def subtitles_filter_for(ass_path: str, fonts_dir: str | None = None) -> str:
     return ":".join(parts)
 
 
+def _watermark_filter(fonts_dir: str | None = None) -> str:
+    """Build a ``drawtext=`` fragment that stamps the brand watermark.
+
+    Uses the bundled Space Grotesk regular font, small, low opacity, in the
+    bottom-right corner. Applied only on plans whose ``watermark`` is on
+    (e.g. the trial tier).
+    """
+    font_dir = fonts_dir or os.environ.get("CAPTION_FONTS_DIR", "/app/fonts")
+    font = os.path.join(font_dir, "SpaceGrotesk-Regular.ttf")
+    font = font.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+    return (
+        "drawtext=text='ClipForge':"
+        f"fontfile='{font}':"
+        "fontsize=26:fontcolor=white@0.35:"
+        "box=0:"
+        "x=w-tw-24:y=h-th-24"
+    )
+
+
+def _scale_filter(max_resolution: int | None) -> str | None:
+    """Return a ``scale=`` filter that caps the longest side, or None.
+
+    ``max_resolution`` is the tallest export dimension allowed by the plan.
+    Scales the cropped frame down (never up) preserving aspect ratio so no
+    edge exceeds the cap.
+    """
+    if not max_resolution:
+        return None
+    return (
+        "scale=min(iw\\,{max}):min(ih\\,{max}):"
+        "force_original_aspect_ratio=decrease".format(max=max_resolution)
+    )
+
+
 def build_command(
     src: str,
     start: float,
@@ -83,6 +117,8 @@ def build_command(
     orientation: str = PORTRAIT,
     subtitles_path: str | None = None,
     fonts_dir: str | None = None,
+    max_resolution: int | None = None,
+    watermark: bool = False,
 ) -> list[str]:
     """Build the FFmpeg command that trims a clip to the chosen ratio.
 
@@ -93,6 +129,9 @@ def build_command(
     - ``subtitles_path`` (optional): an ASS subtitle file to burn in via
       libass. Combined with the crop filter in one ``-vf`` chain so
       captions are positioned against the already-cropped frame.
+    - ``max_resolution`` (optional): caps the longest output side (downscale
+      only, preserving aspect ratio) — a plan entitlement.
+    - ``watermark`` (optional): stamps the brand watermark (trial tier).
     """
     duration = max(end - start, 0.1)
     filename = f"{slugify(title)}_{index:02d}.mp4"
@@ -116,8 +155,13 @@ def build_command(
     crop_filter = crop_filter_for(orientation)
     if crop_filter:
         filters.append(crop_filter)
+    scale_filter = _scale_filter(max_resolution)
+    if scale_filter:
+        filters.append(scale_filter)
     if subtitles_path:
         filters.append(subtitles_filter_for(subtitles_path, fonts_dir))
+    if watermark:
+        filters.append(_watermark_filter(fonts_dir))
     if filters:
         command += ["-vf", ",".join(filters)]
 
@@ -149,11 +193,14 @@ def cut_clip(
     orientation: str = PORTRAIT,
     subtitles_path: str | None = None,
     fonts_dir: str | None = None,
+    max_resolution: int | None = None,
+    watermark: bool = False,
 ) -> str:
     """Cut a single clip to out_dir and return the output file path.
 
     ``subtitles_path`` (optional) is an ASS file burned in via libass;
     ``fonts_dir`` (optional) is a font directory passed to libass.
+    ``max_resolution``/``watermark`` forward plan entitlements to ffmpeg.
     """
     if not os.path.isfile(src):
         raise CutterError(f"Source video not found: {src}")
@@ -172,6 +219,8 @@ def cut_clip(
         orientation,
         subtitles_path=subtitles_path,
         fonts_dir=fonts_dir,
+        max_resolution=max_resolution,
+        watermark=watermark,
     )
     result = subprocess.run(command, capture_output=True, text=True)
 

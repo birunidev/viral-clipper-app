@@ -7,7 +7,7 @@ import importlib.util
 import pytest
 
 from app import db
-from core import secrets, storage
+from core import billing, secrets, storage
 from helpers import register_user
 
 
@@ -36,7 +36,10 @@ def test_get_settings_defaults_empty(client):
     assert data["has_llm_api_key"] is False
     assert data["has_assemblyai_key"] is False
     assert data["llm_api_key_preview"] is None
-    assert data["storage_cap_bytes"] == storage.STORAGE_CAP_BYTES
+    # A fresh user is on the trial plan, so the storage cap is plan-based.
+    uid = db.get_user_by_email("byok@example.com")["id"]
+    assert data["storage_cap_bytes"] == billing.storage_cap(uid)
+    assert data["storage_remaining_bytes"] == billing.storage_cap(uid)
 
 
 def test_put_saves_settings_and_get_masks_keys(client):

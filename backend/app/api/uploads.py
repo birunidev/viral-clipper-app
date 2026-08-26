@@ -32,8 +32,8 @@ def presign_upload(
             status_code=409,
             detail=(
                 f"Storage limit reached ({storage.storage_used(user.id)} of "
-                f"{storage.STORAGE_CAP_BYTES} bytes used). Delete a project "
-                "to free up space."
+                f"{storage.storage_cap(user.id)} bytes used). Delete a project "
+                "or buy a bigger credit pack to free up space."
             ),
         )
 

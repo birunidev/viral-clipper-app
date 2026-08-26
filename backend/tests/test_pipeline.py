@@ -274,6 +274,7 @@ def _seed_user_with_settings(monkeypatch, **settings):
 def test_user_settings_precedence_user_over_env(monkeypatch):
     from app.pipeline import _user_settings_for
 
+    monkeypatch.setenv("ENABLE_BYOK", "1")
     monkeypatch.setenv("LLM_API_KEY", "env-key")
     monkeypatch.setenv("ASSEMBLYAI_KEY", "env-aai")
     monkeypatch.setenv("TRANSCRIPTION_PROVIDER", "assemblyai")
@@ -296,6 +297,7 @@ def test_user_settings_precedence_user_over_env(monkeypatch):
 def test_user_settings_precedence_falls_back_to_env(monkeypatch):
     from app.pipeline import _user_settings_for
 
+    monkeypatch.setenv("ENABLE_BYOK", "1")
     monkeypatch.setenv("LLM_API_KEY", "env-key")
     monkeypatch.setenv("ASSEMBLYAI_KEY", "env-aai")
     monkeypatch.setenv("TRANSCRIPTION_PROVIDER", "assemblyai")
@@ -326,6 +328,7 @@ def test_user_settings_no_row_uses_env(monkeypatch):
 def test_user_settings_local_provider_overrides_env(monkeypatch):
     from app.pipeline import _user_settings_for
 
+    monkeypatch.setenv("ENABLE_BYOK", "1")
     monkeypatch.setenv("TRANSCRIPTION_PROVIDER", "assemblyai")
     uid = _seed_user_with_settings(monkeypatch, transcription_provider="local")
 
@@ -403,7 +406,7 @@ def test_render_fails_when_clip_would_exceed_cap(client, monkeypatch, tmp_path):
     """The rendered mp4 is size-checked against the cap BEFORE upload: an
     over-quota render fails fast instead of silently exceeding it."""
     from app import pipeline as pl
-    from core import storage
+    from core import billing, storage
     from helpers import register_user
 
     register_user(client, email="rendercap@example.com")
@@ -422,7 +425,7 @@ def test_render_fails_when_clip_would_exceed_cap(client, monkeypatch, tmp_path):
     )
 
     # Fill the user's quota almost to the cap; a 5MB render won't fit.
-    storage.add_storage(user["id"], storage.STORAGE_CAP_BYTES - MB)
+    storage.add_storage(user["id"], billing.storage_cap(user["id"]) - MB)
 
     def fake_download(key, dest):
         os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -455,13 +458,14 @@ def test_render_fails_when_clip_would_exceed_cap(client, monkeypatch, tmp_path):
     assert job_row["status"] == "failed"
     assert "Storage limit reached" in (job_row["error"] or "")
     assert not uploaded
-    assert storage.storage_used(user["id"]) == storage.STORAGE_CAP_BYTES - MB
+    assert storage.storage_used(user["id"]) == billing.storage_cap(user["id"]) - MB
 
 
 def test_upload_thumbnail_skipped_when_no_room(client, tmp_path):
     """At the cap, thumbnails are skipped gracefully (no S3 write, no error)
     so renders still succeed without them."""
     from core import storage
+    from core import billing
     from helpers import register_user
 
     register_user(client, email="thumb@example.com")
@@ -471,7 +475,7 @@ def test_upload_thumbnail_skipped_when_no_room(client, tmp_path):
     thumb = tmp_path / "t.jpg"
     thumb.write_bytes(b"\xff" * 2048)
 
-    storage.add_storage(user["id"], storage.STORAGE_CAP_BYTES)
+    storage.add_storage(user["id"], billing.storage_cap(user["id"]))
     assert _upload_thumbnail(project["id"], str(thumb)) is None
 
 

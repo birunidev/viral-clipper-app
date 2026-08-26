@@ -101,6 +101,73 @@ def test_non_object_responses(bad):
     assert parse_clips(bad) == []
 
 
+# ------------------------------------------------------- duration range clamp
+
+
+def test_clamps_too_long_clip_to_max():
+    raw = '[{"title": "Long", "start": 10, "end": 80}]'
+    clips = parse_clips(raw, min_duration=20, max_duration=30)
+    assert clips[0]["start"] == 10.0
+    assert clips[0]["end"] == 40.0
+
+
+def test_clamps_too_short_clip_to_min():
+    raw = '[{"title": "Short", "start": 100, "end": 105}]'
+    clips = parse_clips(raw, min_duration=20, max_duration=30)
+    assert clips[0]["start"] == 100.0
+    assert clips[0]["end"] == 120.0
+
+
+def test_keeps_clip_inside_range_untouched():
+    raw = '[{"title": "Fit", "start": 5, "end": 27.5}]'
+    clips = parse_clips(raw, min_duration=20, max_duration=30)
+    assert clips[0] == {"title": "Fit", "start": 5.0, "end": 27.5}
+
+
+def test_swapped_range_bounds_are_normalised():
+    raw = '[{"title": "X", "start": 0, "end": 60}]'
+    clips = parse_clips(raw, min_duration=30, max_duration=20)
+    # Bounds are normalised to [20, 30]; a 60s clip clamps to the max.
+    assert clips[0]["end"] == 30.0
+
+
+# ------------------------------------------------------------ duration prompt
+
+
+def test_analyze_injects_duration_range_into_prompt(monkeypatch):
+    calls = []
+    _install_fake_openai(monkeypatch, calls)
+
+    analyze("some transcript text", "fake-key", min_duration=20, max_duration=30)
+
+    system_content = calls[0]["messages"][0]["content"]
+    assert "between 20 and 30 seconds" in system_content
+    assert "15 and 90" not in system_content
+
+
+def test_analyze_clamps_out_of_range_response(monkeypatch):
+    class _RangeCompletions:
+        def create(self, **kwargs):
+            return _FakeCompletion(
+                '{"clips": [{"title": "Big", "start": 3, "end": 48}]}'
+            )
+
+    class _RangeChat:
+        def __init__(self):
+            self.completions = _RangeCompletions()
+
+    class _RangeOpenAI:
+        def __init__(self, base_url=None, api_key=None):
+            self.chat = _RangeChat()
+
+    import openai
+
+    monkeypatch.setattr(openai, "OpenAI", _RangeOpenAI)
+
+    clips = analyze("t", "fake-key", min_duration=20, max_duration=30)
+    assert clips[0]["end"] - clips[0]["start"] == 30.0
+
+
 # ------------------------------------------------------------ language hint
 
 

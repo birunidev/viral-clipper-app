@@ -204,7 +204,13 @@ The backend owns all data and auth. Routes under `/api/v1`:
 | POST | `/auth/login` | verify password + session cookie |
 | POST | `/auth/logout` | revoke session |
 | GET | `/auth/me` | current user |
-| GET/POST | `/projects` | list / create projects |
+| GET | `/settings` | BYOK settings (masked) + storage usage |
+| GET | `/billing/status` | current plan, entitlements, usage meters |
+| POST | `/billing/checkout` | create a Paddle (or Midtrans) checkout for a plan |
+| POST | `/billing/portal` | Paddle customer-portal session URL |
+| POST | `/webhooks/paddle` | Paddle webhook receiver (HMAC-verified) |
+| POST | `/webhooks/midtrans` | Midtrans HTTP notification receiver |
+| GET/POST | `/projects` | list / create projects (plan-gated) |
 | GET | `/projects/{id}` | project + clips + jobs (source + per-clip signed R2 URLs) |
 | POST | `/projects/{id}/start` | create an **analyze** Job and enqueue the pipeline |
 | POST | `/projects/{id}/clips/{clip_id}/render` | create a **render** Job to cut+upload one clip |
@@ -252,6 +258,58 @@ frontend shows progress instead of enqueueing a duplicate.
 
 Jobs run in the background via a bounded worker pool (`WORKERS`, default 1);
 the UI polls progress (stage + %) every couple of seconds with React Query.
+
+## Monetization (paywall)
+
+ClipForge ships as a **sellable SaaS**: an optional paywall with two gateways —
+**Paddle Billing** globally (Merchant of Record: it handles global tax/VAT,
+PayPal, dunning) and **Midtrans Snap** for Indonesia. Subscribe → paid
+plans unlock more managed minutes, storage, projects and resolution; the
+trial plan is configurable and free.
+
+- **Everyone is on a plan.** New signups land on the `trial` plan (limits in
+  `.env`, `TRIAL_*`). `/app/billing` shows usage meters and lets users upgrade.
+- **BYOK is opt-in.** A subscriber who enters their own LLM + AssemblyAI keys
+  in Settings runs on their own credits and does **not** consume the plan's
+  monthly managed minutes. Without keys, jobs run on the operator's managed
+  keys and are **metered** by video minutes.
+- **Soft throttle / read-only.** On a hit limit (minutes out, storage full,
+  project cap, resolution/watermark) existing projects + previews stay open;
+  new **job starts, uploads, and project creation** return `402` and the UI
+  shows an upgrade card until the user upgrades or the period resets.
+
+Plans map to Paddle **price ids** via `PADDLE_PRICE_PRO` /
+`PADDLE_PRICE_SCALE` (set `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`,
+`PADDLE_ENV=production` for live). The render stage caps resolution and
+stamps a brand watermark for tiers whose `watermark` is true (e.g. trial).
+See `backend/.env.example` for all billing/trial settings. Point a Paddle
+notifications destination at `https://<your-domain>/api/v1/webhooks/paddle`.
+
+### Indonesian payments (Midtrans)
+
+Users whose browser reports an Indonesian timezone (Asia/Jakarta, Pontianak,
+Makassar, Jayapura) are routed to **Midtrans Snap** instead of Paddle:
+GoPay / OVO / QRIS / virtual accounts / cards, settled in **IDR** as a
+**fixed-term pass** (default 30 days, `MIDTRANS_TERM_DAYS`) — e-wallet/VA
+methods have no gateway-side auto-renewal, so renewal is simply another
+payment (early renewals extend the term and preserve remaining minutes).
+
+Setup: set `MIDTRANS_SERVER_KEY`, `MIDTRANS_CLIENT_KEY`
+(`MIDTRANS_IS_PRODUCTION=1` for live) and the IDR prices
+(`PRO_PRICE_IDR`, `SCALE_PRICE_IDR`), then configure the **Payment
+Notification URL** in the Midtrans dashboard to
+`https://<your-domain>/api/v1/webhooks/midtrans`.
+
+Security model: notifications are verified two ways before entitlements are
+granted — the `sha512(order_id+status_code+gross_amount+server_key)`
+signature, and the amount matched against what *we* quoted on the
+`payment_orders` row at checkout time (never the notification's word).
+Note Midtrans is a gateway, not a Merchant of Record: Indonesian tax (PPN)
+is your responsibility and is intentionally deferred here.
+
+> Production hardening: set `COOKIE_SECURE=1` so the httpOnly session cookie
+> is HTTPS-only once you're behind Caddy's TLS (default is off to keep local
+> `http://localhost` dev working).
 
 ## Tests
 

@@ -89,7 +89,12 @@ export function useCreateProject() {
 export function useStartJob(projectId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { orientation: string; max_clips: number }) =>
+    mutationFn: (payload: {
+      orientation: string;
+      max_clips: number;
+      min_clip_seconds: number;
+      max_clip_seconds: number;
+    }) =>
       api.post<Job>(`/projects/${projectId}/start`, payload),
     onSuccess: (job) => {
       queryClient.setQueryData(jobKey(job.id), job);

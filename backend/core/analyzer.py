@@ -25,7 +25,8 @@ Rules:
 - hook is a punchy attention-grabbing line (max ~15 words), separate from the title.
 - start and end must be numbers in seconds.
 - end must be strictly greater than start.
-- Clip length should be between 15 and 90 seconds.
+- Clip length should be between {min_duration} and {max_duration} seconds. This
+  range is a hard requirement from the user, not a suggestion.
 - Return between 3 and 8 clips. Prefer moments with strong hooks, emotion, or payoff.
 """
 
@@ -70,6 +71,8 @@ def analyze(
     base_url: str = "https://api.openai.com/v1",
     model: str = "gpt-4o-mini",
     language: str | None = None,
+    min_duration: int = 15,
+    max_duration: int = 90,
 ) -> list[dict]:
     """Send the transcript to the configured LLM and return a list of clips.
 
@@ -78,6 +81,11 @@ def analyze(
     video's metadata or the transcription provider's response. When given,
     it's passed to the model as an explicit instruction so titles/hooks are
     written in that language instead of defaulting to English.
+
+    ``min_duration``/``max_duration`` (seconds) are the user's requested clip
+    length range. They're injected into the system prompt as a hard
+    requirement, and any returned clip outside the range is clamped to the
+    nearest bound.
 
     Each clip is a dict with keys ``title``, ``start``, ``end``. Raises
     AnalysisError if the model output cannot be parsed.
@@ -97,7 +105,12 @@ def analyze(
 
     client = OpenAI(base_url=base_url or None, api_key=api_key)
 
-    system_prompt = SYSTEM_PROMPT
+    if min_duration > max_duration:
+        min_duration, max_duration = max_duration, min_duration
+
+    system_prompt = SYSTEM_PROMPT.replace(
+        "{min_duration}", str(min_duration)
+    ).replace("{max_duration}", str(max_duration))
     if language:
         name = LANGUAGE_NAMES.get(language.lower(), language)
         system_prompt += (
@@ -119,7 +132,7 @@ def analyze(
         raise AnalysisError(f"LLM request failed: {exc}") from exc
 
     raw = (response.choices[0].message.content or "").strip()
-    clips = parse_clips(raw)
+    clips = parse_clips(raw, min_duration=min_duration, max_duration=max_duration)
 
     if not clips:
         raise AnalysisError("The model returned no usable clip timestamps.")
@@ -127,12 +140,17 @@ def analyze(
     return clips
 
 
-def parse_clips(raw: str) -> list[dict]:
+def parse_clips(
+    raw: str,
+    min_duration: int = 15,
+    max_duration: int = 90,
+) -> list[dict]:
     """Robustly parse a JSON response from the LLM into a list of clips.
 
     Handles markdown fenced blocks (```json ... ```), surrounding prose,
     responses shaped as {"clips": [...]}, bare arrays, and objects missing
-    the "clips" wrapper.
+    the "clips" wrapper. Clips whose length falls outside
+    [min_duration, max_duration] are clamped to the nearest bound.
     """
     if not raw:
         return []
@@ -169,7 +187,9 @@ def parse_clips(raw: str) -> list[dict]:
         for item in data:
             if not isinstance(item, dict):
                 continue
-            clip = _coerce_clip(item)
+            clip = _coerce_clip(
+                item, min_duration=min_duration, max_duration=max_duration
+            )
             if clip and _clip_key(clip) not in seen:
                 seen.add(_clip_key(clip))
                 clips.append(clip)
@@ -177,7 +197,11 @@ def parse_clips(raw: str) -> list[dict]:
     return clips
 
 
-def _coerce_clip(item: dict) -> dict | None:
+def _coerce_clip(
+    item: dict,
+    min_duration: int = 15,
+    max_duration: int = 90,
+) -> dict | None:
     title = str(item.get("title", "")).strip()
     if not title:
         return None
@@ -189,6 +213,18 @@ def _coerce_clip(item: dict) -> dict | None:
 
     if not (end > start >= 0):
         return None
+
+    if min_duration > max_duration:
+        min_duration, max_duration = max_duration, min_duration
+
+    # Clamp the clip length into the user's requested range. The prompt
+    # already asks the model to respect it; this enforces it even when the
+    # model drifts (e.g. returns a 45s clip for a 20-30s request).
+    duration = end - start
+    if duration > max_duration:
+        end = start + float(max_duration)
+    elif duration < min_duration:
+        end = start + float(min_duration)
 
     if start > 100000 or end > 100000:
         return None

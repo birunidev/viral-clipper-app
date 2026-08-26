@@ -46,6 +46,7 @@ def _response(user: SessionUser) -> UserSettingsResponse:
 
     used = storage.storage_used(user.id)
     remaining = storage.storage_remaining(user.id)
+    cap = storage.storage_cap(user.id)
     row = db.get_user_settings(user.id)
 
     if row:
@@ -60,14 +61,14 @@ def _response(user: SessionUser) -> UserSettingsResponse:
             has_assemblyai_key=bool(aai_key),
             assemblyai_key_preview=_mask(aai_key),
             storage_used_bytes=used,
-            storage_cap_bytes=storage.STORAGE_CAP_BYTES,
+            storage_cap_bytes=cap,
             storage_remaining_bytes=remaining,
         )
 
     return UserSettingsResponse(
         transcription_provider="assemblyai",
         storage_used_bytes=used,
-        storage_cap_bytes=storage.STORAGE_CAP_BYTES,
+        storage_cap_bytes=cap,
         storage_remaining_bytes=remaining,
     )
 

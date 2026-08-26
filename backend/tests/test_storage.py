@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app import db
-from core import storage
+from core import billing, storage
 from helpers import register_user
 
 MB = 1024 * 1024
@@ -23,8 +23,13 @@ def _make_project(client, source_type="upload", source_size=10 * MB):
     )
 
 
-def test_storage_cap_constant():
-    assert storage.STORAGE_CAP_BYTES == 100 * MB
+def test_trial_storage_cap_is_tier_based(client):
+    """A fresh user is on the free tier; the cap comes from their
+    entitlement tier, not a hardcoded constant."""
+    register_user(client, email="s@example.com")
+    user = db.get_user_by_email("s@example.com")
+    assert billing.storage_cap(user["id"]) == billing.effective_entitlement(user["id"])["storage_cap_bytes"]
+    assert storage.storage_cap(user["id"]) == billing.storage_cap(user["id"])
 
 
 def test_add_and_used_roundtrip(client):
@@ -51,9 +56,10 @@ def test_enforce_cap_ok_when_under(client):
 def test_enforce_cap_raises_when_over(client):
     register_user(client, email="s3@example.com")
     user = db.get_user_by_email("s3@example.com")
-    storage.add_storage(user["id"], 90 * MB)
+    cap = billing.storage_cap(user["id"])
+    storage.add_storage(user["id"], cap)
     with pytest.raises(storage.StorageQuotaExceeded):
-        storage.enforce_cap(user["id"], 20 * MB)
+        storage.enforce_cap(user["id"], 1)
 
 
 def test_uploaded_project_counts_toward_storage(client):
@@ -66,7 +72,9 @@ def test_uploaded_project_counts_toward_storage(client):
 
 def test_uploaded_project_over_cap_rejected(client):
     register_user(client, email="u2@example.com")
-    res = _make_project(client, source_size=101 * MB)
+    uid = db.get_user_by_email("u2@example.com")["id"]
+    over = billing.storage_cap(uid) + 1
+    res = _make_project(client, source_size=over)
     assert res.status_code == 409
     assert "Storage limit" in res.json()["detail"]
     user = db.get_user_by_email("u2@example.com")
@@ -76,7 +84,7 @@ def test_uploaded_project_over_cap_rejected(client):
 def test_presign_rejected_when_near_cap(client, monkeypatch):
     register_user(client, email="u3@example.com")
     user = db.get_user_by_email("u3@example.com")
-    storage.add_storage(user["id"], storage.STORAGE_CAP_BYTES)
+    storage.add_storage(user["id"], billing.storage_cap(user["id"]))
 
     res = client.post(
         "/api/v1/uploads/presign", json={"file_name": "v.mp4", "content_type": "video/mp4"}
@@ -181,7 +189,7 @@ def test_upload_create_rejects_when_real_size_exceeds_cap(client, monkeypatch):
     register_user(client, email="cap@example.com")
     monkeypatch.setattr(
         "app.api.projects.head_object_size_default_bucket",
-        lambda key: storage.STORAGE_CAP_BYTES + 10 * MB,
+        lambda key: billing.storage_cap(db.get_user_by_email("cap@example.com")["id"]) + 10 * MB,
     )
     res = client.post(
         "/api/v1/projects",

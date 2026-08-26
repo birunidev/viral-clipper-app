@@ -17,10 +17,15 @@ from ..schemas import (
 )
 from ..security import SessionUser, current_user
 from ..worker import pool
-from core import storage
+from core import billing, storage
 from core.s3 import head_object_size_default_bucket as head_object_size_default_bucket
 
 router = APIRouter(prefix="/projects", tags=["projects"])
+
+
+def _paywall(exc: billing.PaywallError) -> HTTPException:
+    """Convert a billing soft-throttle into a 402 paywall response."""
+    return HTTPException(status_code=402, detail=str(exc))
 
 
 def _presigned(key: str | None) -> str | None:
@@ -47,6 +52,14 @@ def create_project(payload: ProjectCreate, user: SessionUser = Depends(current_u
     source = payload.source.strip()
     if not source:
         raise HTTPException(status_code=400, detail="source is required")
+
+    # Soft-throttle project creation at the plan's project cap (read access
+    # to existing projects is never blocked).
+    try:
+        billing.enforce_project_cap(user.id)
+    except billing.PaywallError as exc:
+        raise _paywall(exc) from exc
+
     source_type = "upload" if payload.source_type == "upload" else "youtube"
     title = (payload.title or "").strip() or "Untitled"
 
@@ -133,8 +146,22 @@ def start_job(
     if db.find_active_job(project_id) is not None:
         raise HTTPException(status_code=409, detail="A job is already running for this project")
 
+    # Soft-throttle managed jobs once the credit balance runs out. BYOK users
+    # (own keys, opt-in flag) are unmetered and skip this check. The pipeline
+    # enforces the authoritative check again at analyze time.
+    if billing.uses_managed(user.id):
+        try:
+            billing.enforce_credits(user.id)
+        except billing.PaywallError as exc:
+            raise _paywall(exc) from exc
+
     orientation = payload.orientation if payload.orientation in ("portrait", "landscape", "original") else "portrait"
-    options = {"orientation": orientation, "max_clips": payload.max_clips}
+    options = {
+        "orientation": orientation,
+        "max_clips": payload.max_clips,
+        "min_clip_seconds": payload.min_clip_seconds,
+        "max_clip_seconds": payload.max_clip_seconds,
+    }
 
     job = db.create_job(project_id, options, job_type="analyze")
     db.update_project(project_id, status="queued")

@@ -7,6 +7,7 @@ SameSite=Lax cookie named ``clipforge_session``.
 
 from __future__ import annotations
 
+import os
 import secrets
 from dataclasses import dataclass
 
@@ -66,19 +67,30 @@ def create_session(user_id: str, token: str, ttl_days: int = SESSION_DAYS) -> di
 
 
 def set_session_cookie(response: Response, token: str) -> None:
+    # Sets the `Secure` flag so the session cookie is only sent over HTTPS —
+    # required in production (Caddy terminates TLS). Off by default purely to
+    # keep `localhost` http dev working; set COOKIE_SECURE=1 for any real
+    # deployment. (OWASP A07/A02: without Secure, the cookie travels in
+    # cleartext and Trivial.Cookie poisoning / session hijack is possible.)
+    secure = os.environ.get("COOKIE_SECURE", "").strip().lower() in ("1", "true", "yes", "on")
     response.set_cookie(
         SESSION_COOKIE,
         token,
         max_age=SESSION_DAYS * 24 * 3600,
         httponly=True,
         samesite="lax",
-        secure=False,  # set True behind TLS in production (see main.py / Caddy)
+        secure=secure,
         path="/",
     )
 
 
 def clear_session_cookie(response: Response) -> None:
-    response.delete_cookie(SESSION_COOKIE, path="/")
+    # Mirror the Secure flag: with COOKIE_SECURE=1 the clear-cookie response is
+    # only delivered over HTTPS, so it must itself be Secure or the browser
+    # (which only sends Secure cookies over HTTPS) won't process it and the
+    # session won't be cleared on logout.
+    secure = os.environ.get("COOKIE_SECURE", "").strip().lower() in ("1", "true", "yes", "on")
+    response.delete_cookie(SESSION_COOKIE, path="/", secure=secure)
 
 
 def get_user_from_session(session_token: str | None) -> SessionUser | None:

@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Card, EmptyState, Skeleton } from "@/components/ui/card";
 import { StatusPill } from "@/components/ui/status-pill";
 import { SourceTypeIcon } from "@/components/project/source-icon";
+import { UpgradeRequired, isPaywall } from "@/components/upgrade-required";
 import { useCreateProject, usePresignUpload, useProjects } from "@/hooks/use-projects";
 
 export default function DashboardPage() {
@@ -30,11 +31,18 @@ export default function DashboardPage() {
   const [url, setUrl] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState("");
+  const [paywallMessage, setPaywallMessage] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  function fail(err: unknown) {
+    if (isPaywall(err)) setPaywallMessage(err.message);
+    else setError(err instanceof Error ? err.message : "Something went wrong");
+  }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
+    setPaywallMessage("");
 
     if (sourceType === "youtube") {
       if (!url.trim()) {
@@ -45,7 +53,7 @@ export default function DashboardPage() {
         { title, source: url.trim(), source_type: "youtube" },
         {
           onSuccess: (project) => router.push(`/app/projects/${project.id}`),
-          onError: (err) => setError(err.message),
+          onError: fail,
         }
       );
       return;
@@ -82,11 +90,11 @@ export default function DashboardPage() {
         { title, source: key, source_type: "upload", source_size_bytes: file.size },
         {
           onSuccess: (project) => router.push(`/app/projects/${project.id}`),
-          onError: (err) => setError(err.message),
+          onError: fail,
         }
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Upload failed");
+      fail(err);
     }
   }
 
@@ -110,7 +118,9 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {composerOpen && (
+      {paywallMessage ? (
+        <UpgradeRequired message={paywallMessage} />
+      ) : composerOpen && (
         <Card className="p-5">
           <form onSubmit={onSubmit} className="flex flex-col gap-4">
             <div className="flex items-center justify-between">

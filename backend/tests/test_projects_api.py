@@ -106,7 +106,12 @@ def test_start_job_creates_job_and_enqueues(client):
     job = res.json()
     assert job["status"] == "queued"
     assert job["type"] == "analyze"
-    assert job["options"] == {"orientation": "landscape", "max_clips": 5}
+    assert job["options"] == {
+        "orientation": "landscape",
+        "max_clips": 5,
+        "min_clip_seconds": 15,
+        "max_clip_seconds": 90,
+    }
     assert job["id"] in client._submitted_jobs
 
     project_after = client.get(f"/api/v1/projects/{project['id']}").json()

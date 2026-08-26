@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useSettings, useUpdateSettings } from "@/hooks/use-settings";
 import { useProjects, useDeleteProject } from "@/hooks/use-projects";
+import { useBilling } from "@/hooks/use-billing";
 import type { UserSettings } from "@/hooks/types";
 
 const inputClass =
@@ -21,6 +22,8 @@ export default function SettingsPage() {
   const settings = settingsQuery.data;
   const projectsQuery = useProjects();
   const deleteProject = useDeleteProject();
+  const billing = useBilling();
+  const byok = billing.data?.byok_enabled ?? false;
   const [deleteError, setDeleteError] = useState("");
 
   const used = settings?.storage_used_bytes ?? 0;
@@ -32,7 +35,7 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-[22px] font-semibold tracking-tight text-ink">Settings</h1>
         <p className="mt-1 text-sm text-ink-tertiary">
-          Bring your own API keys so ClipForge runs on your own credits.
+          Manage your storage and workspace.
         </p>
       </div>
 
@@ -97,11 +100,13 @@ export default function SettingsPage() {
         )}
       </Card>
 
-      {/* BYOK keys */}
-      <KeysForm
-        key={settings ? "loaded" : "loading"}
-        settings={settings ?? null}
-      />
+      {/* BYOK keys (hidden unless the feature is enabled) */}
+      {byok && (
+        <KeysForm
+          key={settings ? "loaded" : "loading"}
+          settings={settings ?? null}
+        />
+      )}
     </div>
   );
 }

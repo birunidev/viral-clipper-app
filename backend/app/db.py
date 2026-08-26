@@ -18,14 +18,16 @@ import datetime as dt
 import uuid
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from .database import session_scope
 from .models import (
     Account,
+    BillingEvent,
     CaptionStyle,
     Clip,
     Job,
+    PaymentOrder,
     Project,
     Session,
     TimelineWord,
@@ -54,7 +56,17 @@ def _row(obj) -> dict[str, Any] | None:
 
 def create_user(email: str, password_hash: str, name: str | None = None) -> dict:
     with session_scope() as db:
-        user = User(id=_new_id(), email=email.lower().strip(), password_hash=password_hash, name=name)
+        # New accounts get a one-time free credit grant (no subscription).
+        from app.plans import free_credits
+
+        user = User(
+            id=_new_id(),
+            email=email.lower().strip(),
+            password_hash=password_hash,
+            name=name,
+            credits=free_credits(),
+            entitlement_tier="free",
+        )
         db.add(user)
         db.flush()
         return _row(user)
@@ -123,6 +135,101 @@ def get_user_by_email(email: str) -> dict[str, Any] | None:
     with session_scope() as db:
         stmt = select(User).where(User.email == email.lower().strip())
         return _row(db.execute(stmt).scalar_one_or_none())
+
+
+# ------------------------------------------------------------------ billing
+
+
+def count_projects(user_id: str) -> int:
+    with session_scope() as db:
+        stmt = select(func.count(Project.id)).where(Project.user_id == user_id)
+        return int(db.execute(stmt).scalar() or 0)
+
+
+def set_user_billing(user_id: str, **fields: Any) -> None:
+    """Update a user's credit/entitlement columns (provider-agnostic)."""
+    allowed = {
+        "credits",
+        "entitlement_tier",
+        "plan_key",
+        "billing_email",
+    }
+    unknown = set(fields) - allowed
+    if unknown:
+        raise ValueError(f"Unknown billing fields: {unknown}")
+    with session_scope() as db:
+        user = db.get(User, user_id)
+        if user is None:
+            return
+        for key, value in fields.items():
+            setattr(user, key, value)
+
+
+def increment_user_credits(user_id: str, delta_credits: int) -> None:
+    """Atomically add ``delta_credits`` to ``users.credits`` (negative to
+    deduct). Never drops below zero — a concurrent deduction can't overdraw."""
+    if delta_credits == 0:
+        return
+    with session_scope() as db:
+        from sqlalchemy import func as sqlfunc
+        db.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(
+                credits=sqlfunc.greatest(0, User.credits + delta_credits)
+            )
+        )
+
+
+def create_payment_order(
+    user_id: str, provider: str, order_id: str, plan_key: str,
+    gross_amount: int, currency: str,
+) -> dict[str, Any]:
+    """Record a checkout we initiated. ``order_id`` is globally unique so the
+    payment webhook can look up exactly one row (and its quoted amount)."""
+    with session_scope() as db:
+        order = PaymentOrder(
+            id=_new_id(),
+            user_id=user_id,
+            provider=provider,
+            order_id=order_id,
+            plan_key=plan_key,
+            gross_amount=gross_amount,
+            currency=currency,
+            status="pending",
+        )
+        db.add(order)
+        db.flush()
+        return _row(order)
+
+
+def get_payment_order(order_id: str) -> dict[str, Any] | None:
+    with session_scope() as db:
+        stmt = select(PaymentOrder).where(PaymentOrder.order_id == order_id)
+        return _row(db.execute(stmt).scalar_one_or_none())
+
+
+def set_payment_order_status(order_id: str, status: str) -> None:
+    with session_scope() as db:
+        stmt = select(PaymentOrder).where(PaymentOrder.order_id == order_id)
+        order = db.execute(stmt).scalar_one_or_none()
+        if order is not None:
+            order.status = status
+
+
+def billing_event_exists(event_id: str) -> bool:
+    with session_scope() as db:
+        stmt = select(BillingEvent).where(BillingEvent.event_id == event_id)
+        return db.execute(stmt).scalar_one_or_none() is not None
+
+
+def record_billing_event(event_id: str, event_name: str, payload: dict) -> None:
+    with session_scope() as db:
+        db.add(
+            BillingEvent(
+                id=_new_id(), event_id=event_id, event_name=event_name, payload=payload
+            )
+        )
 
 
 # ----------------------------------------------------------------- sessions

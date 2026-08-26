@@ -54,11 +54,27 @@ class User(Base, TimestampMixin):
     image: Mapped[str | None] = mapped_column(String)
     # Running total of the user's stored bytes in S3 (source videos +
     # rendered clips + thumbnails). Enforced against the per-user storage
-    # cap (core/storage.py). Kept denormalized for cheap quota checks; use
-    # bigint so a high cap / many files can't overflow the int API.
+    # cap (core/billing.py, plan-based). Kept denormalized for cheap quota
+    # checks; use bigint so a high cap / many files can't overflow the int API.
     storage_used_bytes: Mapped[int] = mapped_column(
         BigInteger, server_default="0", nullable=False
     )
+
+    # Credit-based billing (pay-per-clip / per-source-minute). There are no
+    # subscriptions or billing periods: ``credits`` is a prepaid balance
+    # deducted as source-video minutes are transcribed+analyzed, and
+    # ``entitlement_tier`` records the highest credit pack the user has ever
+    # bought (permanently unlocks that tier's storage/projects/resolution/
+    # watermark). ``plan_key`` stores the pack key from the user's most recent
+    # settlement purely for audit (mirrors payment_orders); entitlement always
+    # comes from ``entitlement_tier``.
+    entitlement_tier: Mapped[str] = mapped_column(
+        String, server_default="free", nullable=False
+    )
+    # Prepaid credit balance in whole source-minutes.
+    credits: Mapped[int] = mapped_column(BigInteger, server_default="0", nullable=False)
+    plan_key: Mapped[str | None] = mapped_column(String)
+    billing_email: Mapped[str | None] = mapped_column(String)
 
     sessions: Mapped[list["Session"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     accounts: Mapped[list["Account"]] = relationship(back_populates="user", cascade="all, delete-orphan")
@@ -144,6 +160,55 @@ class Verification(Base, TimestampMixin):
     identifier: Mapped[str] = mapped_column(String, index=True, nullable=False)
     value: Mapped[str] = mapped_column(Text, nullable=False)
     expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class BillingEvent(Base):
+    """Idempotency ledger for payment-gateway webhooks (Paddle, Midtrans).
+
+    One row per processed webhook event; ``event_id`` (LS's global unique
+    event id) has a UNIQUE index so a redelivered webhook is a no-op instead
+    of double-syncing the user's subscription.
+    """
+
+    __tablename__ = "billing_events"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    event_id: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    event_name: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class PaymentOrder(Base):
+    """A checkout we initiated (either gateway), for webhook verification.
+
+    Stores the plan and the exact amount *we* quoted at checkout time so a
+    payment notification can never grant entitlements by paying less than the
+    real price (the notification's ``gross_amount`` is attacker-malleable
+    input; this row is ground truth). Also serves as the payment audit trail.
+    """
+
+    __tablename__ = "payment_orders"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    # "paddle" | "midtrans"
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    order_id: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    plan_key: Mapped[str] = mapped_column(String, nullable=False)
+    # Amount in the smallest practical unit of ``currency`` (IDR whole rupiah
+    # or USD cents) — whatever the gateway quoted.
+    gross_amount: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), server_default="USD", nullable=False)
+    # pending | settled | failed | expired | refunded
+    status: Mapped[str] = mapped_column(String, server_default="pending", nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 # ------------------------------------------------------------------- app

@@ -99,3 +99,46 @@ export type ProjectDetail = {
   clips: Clip[];
   jobs: Job[];
 };
+
+// ------------------------------------------------------------------ billing
+
+export type EntitlementLimits = {
+  storage_cap_bytes: number;
+  max_projects: number | null;
+  max_resolution: number | null;
+  watermark: boolean;
+};
+
+/** A purchasable one-time credit pack (1 credit = 1 minute of source video). */
+export type CreditPack = {
+  key: string;
+  name: string;
+  credits: number;
+  /** One-time Paddle (global) price in USD, e.g. 2.9. */
+  price_usd: number;
+  /** One-time Midtrans (Indonesia) price in whole rupiah. */
+  price_idr: number;
+  /** The permanent entitlement limits this pack unlocks when bought. */
+  limits: EntitlementLimits;
+};
+
+/**
+ * The user's credit balance, permanent entitlement tier + usage and the
+ * available packs (GET /billing/status). There are no subscriptions.
+ */
+export type BillingStatus = {
+  /** Highest credit pack ever purchased, or "free". Permanent. */
+  tier: string;
+  tier_name: string;
+  /** Prepaid credit balance (1 = 1 source minute). */
+  credits: number;
+  /** Whether bring-your-own-key is exposed (feature flag). */
+  byok_enabled: boolean;
+  limits: EntitlementLimits;
+  usage: {
+    storage_used_bytes: number;
+    storage_remaining_bytes: number;
+    projects: number;
+  };
+  packs: CreditPack[];
+};

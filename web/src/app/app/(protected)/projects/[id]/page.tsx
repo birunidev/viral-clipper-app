@@ -33,6 +33,7 @@ import { Button } from "@/components/ui/button";
 import { CaptionStylePicker } from "@/components/project/caption-style-picker";
 import { CaptionStyleEditor } from "@/components/project/caption-style-editor";
 import { WordCaptionOverlay } from "@/components/project/word-caption-overlay";
+import { UpgradeRequired, isPaywall } from "@/components/upgrade-required";
 import { DEFAULT_CAPTION_CONFIG } from "@/lib/caption-style-defaults";
 
 const STAGE_LABEL: Record<string, string> = {
@@ -86,7 +87,10 @@ export default function ProjectPage() {
 
   const [orientation, setOrientation] = useState("portrait");
   const [maxClips, setMaxClips] = useState(10);
+  const [minClipSeconds, setMinClipSeconds] = useState(15);
+  const [maxClipSeconds, setMaxClipSeconds] = useState(90);
   const [error, setError] = useState("");
+  const [paywallMessage, setPaywallMessage] = useState("");
 
   const activeJobFromProject = project?.jobs.find(
     (j) => j.type === "analyze" && (j.status === "queued" || j.status === "running")
@@ -101,9 +105,30 @@ export default function ProjectPage() {
 
   function onStart() {
     setError("");
+    setPaywallMessage("");
+    if (
+      !Number.isFinite(minClipSeconds) ||
+      !Number.isFinite(maxClipSeconds) ||
+      minClipSeconds < 5 ||
+      maxClipSeconds > 300 ||
+      minClipSeconds > maxClipSeconds
+    ) {
+      setError("Clip length must be between 5 and 300 seconds, with min ≤ max.");
+      return;
+    }
     startJob.mutate(
-      { orientation, max_clips: maxClips },
-      { onError: (err) => setError(err.message) }
+      {
+        orientation,
+        max_clips: maxClips,
+        min_clip_seconds: minClipSeconds,
+        max_clip_seconds: maxClipSeconds,
+      },
+      {
+        onError: (err) => {
+          if (isPaywall(err)) setPaywallMessage(err.message);
+          else setError(err.message);
+        },
+      }
     );
   }
 
@@ -128,7 +153,9 @@ export default function ProjectPage() {
 
       {/* Pipeline control */}
       <Card className="p-5">
-        {isActive && job ? (
+        {paywallMessage ? (
+          <UpgradeRequired message={paywallMessage} />
+        ) : isActive && job ? (
           <div className="flex flex-col gap-4">
             <div className="flex items-center justify-between gap-4">
               <p className="text-sm font-medium text-ink">
@@ -170,6 +197,30 @@ export default function ProjectPage() {
                   <option value={10}>10</option>
                   <option value={20}>20</option>
                 </select>
+              </label>
+              <label className="flex flex-col gap-1.5 text-sm">
+                <span className="text-ink-secondary">Clip length (sec)</span>
+                <span className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={5}
+                    max={300}
+                    value={minClipSeconds}
+                    onChange={(e) => setMinClipSeconds(Number(e.target.value))}
+                    aria-label="Minimum clip length in seconds"
+                    className="h-10 w-20 rounded-lg border border-line bg-surface-2 px-3 text-sm text-ink tabular-nums outline-none focus:border-accent/50"
+                  />
+                  <span className="text-ink-muted">–</span>
+                  <input
+                    type="number"
+                    min={5}
+                    max={300}
+                    value={maxClipSeconds}
+                    onChange={(e) => setMaxClipSeconds(Number(e.target.value))}
+                    aria-label="Maximum clip length in seconds"
+                    className="h-10 w-20 rounded-lg border border-line bg-surface-2 px-3 text-sm text-ink tabular-nums outline-none focus:border-accent/50"
+                  />
+                </span>
               </label>
             </div>
             <Button onClick={onStart} loading={startJob.isPending} disabled={startJob.isPending}>

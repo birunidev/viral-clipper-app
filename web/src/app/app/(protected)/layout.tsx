@@ -1,10 +1,11 @@
 "use client";
 
-import { GearSix, SignOut, SquaresFour, VideoCamera } from "@phosphor-icons/react";
+import { CreditCard, GearSix, SignOut, SquaresFour, VideoCamera } from "@phosphor-icons/react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { useLogout, useSession } from "@/hooks/use-auth";
+import { useBilling } from "@/hooks/use-billing";
 
 function Logo() {
   return (
@@ -19,6 +20,7 @@ function Logo() {
 
 const NAV = [
   { href: "/app/dashboard", label: "Projects", icon: SquaresFour },
+  { href: "/app/billing", label: "Credits", icon: CreditCard },
   { href: "/app/settings", label: "Settings", icon: GearSix },
 ];
 
@@ -27,6 +29,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { data: user, isLoading } = useSession();
   const logout = useLogout();
+  const billing = useBilling();
 
   useEffect(() => {
     if (!isLoading && !user) router.replace("/app/login");
@@ -72,6 +75,17 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               <p className="truncate text-xs text-ink-muted">{user.email}</p>
             </div>
           </div>
+          <Link
+            href="/app/billing"
+            className="mx-3 mb-1 flex items-center gap-2 rounded-lg border border-line bg-surface-2/60 px-3 py-1.5 text-xs text-ink-secondary transition-colors hover:border-line-strong hover:text-ink"
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${billing.data && billing.data.credits > 0 ? "bg-success" : "bg-accent"}`} />
+            <span className="font-medium">{billing.data?.tier_name ?? "Free"}</span>
+            {billing.data && <span className="text-ink-muted">·</span>}
+            {billing.data && (
+              <span className="text-ink-muted">{billing.data.credits} credits</span>
+            )}
+          </Link>
           <button
             onClick={() => {
               logout.mutate(undefined, {
