@@ -68,6 +68,11 @@ services:
     # the public internet cannot.
     ports:
       - "127.0.0.1:8000:8000"
+    # Local transcription (TRANSCRIPTION_PROVIDER=local): whisper.cpp models
+    # (~150MB-1.5GB) download on first use into this path — persist them so
+    # container recreation doesn't re-download.
+    volumes:
+      - whisper_models:/root/.local/share/pywhispercpp/models
     depends_on:
       postgres:
         condition: service_healthy
@@ -151,3 +156,4 @@ services:
 
 volumes:
   pgdata:
+  whisper_models:

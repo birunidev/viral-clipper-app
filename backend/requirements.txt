@@ -14,6 +14,8 @@ pydantic[email]>=2.0
 argon2-cffi>=23.1
 cryptography>=50.0
 
-# Local-model deployments only (TRANSCRIPTION_PROVIDER=local).
-# Installs whisper.cpp bindings with CPU/Metal/CUDA backends.
-#pywhispercpp>=1.3
+# Local-model deployments (TRANSCRIPTION_PROVIDER=local).
+# whisper.cpp bindings; prebuilt manylinux wheels (no compiler needed).
+# Models are downloaded on first use to /root/.local/share/pywhispercpp/models
+# — persist that path with a volume (see docker-compose.yml).
+pywhispercpp>=1.3
