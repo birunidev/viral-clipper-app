@@ -1,19 +1,28 @@
-# Replace with your domain, e.g.  clipforge.example.com
+# Host-level Caddy for the SnapClip production deployment.
+#
+# The docker-compose stack publishes loopback-only ports:
+#   backend -> 127.0.0.1:8000   web -> 127.0.0.1:3000
+# Replace example.com with your real domain.
+
 example.com {
 	# The browser calls the FastAPI backend directly for auth/CRUD/upload
 	# (same-site so the httpOnly session cookie works across both origins).
 	handle /api/* {
-		reverse_proxy backend:8000
+		reverse_proxy 127.0.0.1:8000
 	}
 
 	# Everything else (SSR marketing site + /app/* client app) goes to Next.js.
 	handle {
-		reverse_proxy web:3000
+		reverse_proxy 127.0.0.1:3000
 	}
 
 	# Reasonable default headers.
 	header {
 		-X-Server
+		-Server
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 	}
 }

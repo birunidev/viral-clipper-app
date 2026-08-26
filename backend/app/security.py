@@ -7,6 +7,7 @@ SameSite=Lax cookie named ``clipforge_session``.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import secrets
 from dataclasses import dataclass
@@ -21,6 +22,16 @@ from .database import session_scope
 
 SESSION_COOKIE = "clipforge_session"
 SESSION_DAYS = 30
+
+
+def hash_token(token: str) -> str:
+    """SHA-256 of a session token — the value stored at rest.
+
+    Session tokens are bearer credentials equivalent to passwords; storing
+    them hashed means a database read leak cannot be replayed as live
+    sessions. Lookup cost is irrelevant (indexed equality on a 64-char hex).
+    """
+    return hashlib.sha256(token.encode()).hexdigest()
 
 _password_hasher = argon2.PasswordHasher(
     time_cost=2,
@@ -57,22 +68,51 @@ def new_session_token() -> str:
 
 
 def create_session(user_id: str, token: str, ttl_days: int = SESSION_DAYS) -> dict:
-    """Persist a session row and return its fields (id, token, expires_at)."""
+    """Persist a session row and return its fields (id, token, expires_at).
+
+    Only the SHA-256 of ``token`` is stored (see :func:`hash_token`); the
+    raw token exists solely in the issued cookie.
+    """
     import datetime as dt
 
     now = dt.datetime.now(dt.timezone.utc)
     expires = now + dt.timedelta(days=ttl_days)
-    session_id = db.create_session_row(user_id=user_id, token=token, expires_at=expires)
+    session_id = db.create_session_row(
+        user_id=user_id, token=hash_token(token), expires_at=expires
+    )
     return {"id": session_id, "token": token, "expires_at": expires}
+
+
+def revoke_session(session_token: str | None) -> None:
+    """Delete the server-side session row for a raw cookie token."""
+    if session_token:
+        db.delete_session_by_token(hash_token(session_token))
+
+
+def _cookie_secure_default() -> bool:
+    """Secure flag ON unless explicitly disabled via COOKIE_SECURE=0.
+
+    Secure keeps the session cookie off cleartext HTTP. It must default to
+    enabled in production (https behind Caddy); local http development opts
+    out explicitly.
+    """
+    raw = os.environ.get("COOKIE_SECURE", "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    # Auto: on when the app itself is served over https.
+    urls = os.environ.get("FRONTEND_URLS", "")
+    return "https://" in urls
 
 
 def set_session_cookie(response: Response, token: str) -> None:
     # Sets the `Secure` flag so the session cookie is only sent over HTTPS —
-    # required in production (Caddy terminates TLS). Off by default purely to
-    # keep `localhost` http dev working; set COOKIE_SECURE=1 for any real
-    # deployment. (OWASP A07/A02: without Secure, the cookie travels in
-    # cleartext and Trivial.Cookie poisoning / session hijack is possible.)
-    secure = os.environ.get("COOKIE_SECURE", "").strip().lower() in ("1", "true", "yes", "on")
+    # required in production (Caddy terminates TLS). Auto-enabled whenever
+    # FRONTEND_URLS is https; local http dev can force it off with
+    # COOKIE_SECURE=0. (OWASP A07/A02: without Secure, the cookie travels in
+    # cleartext and session hijack is possible.)
+    secure = _cookie_secure_default()
     response.set_cookie(
         SESSION_COOKIE,
         token,
@@ -85,11 +125,10 @@ def set_session_cookie(response: Response, token: str) -> None:
 
 
 def clear_session_cookie(response: Response) -> None:
-    # Mirror the Secure flag: with COOKIE_SECURE=1 the clear-cookie response is
-    # only delivered over HTTPS, so it must itself be Secure or the browser
-    # (which only sends Secure cookies over HTTPS) won't process it and the
-    # session won't be cleared on logout.
-    secure = os.environ.get("COOKIE_SECURE", "").strip().lower() in ("1", "true", "yes", "on")
+    # Mirror the Secure flag: with Secure the clear-cookie response is only
+    # delivered over HTTPS, so it must itself be Secure or the browser won't
+    # process it and the session won't be cleared on logout.
+    secure = _cookie_secure_default()
     response.delete_cookie(SESSION_COOKIE, path="/", secure=secure)
 
 
@@ -97,7 +136,7 @@ def get_user_from_session(session_token: str | None) -> SessionUser | None:
     """Resolve a session token to a user, or None if invalid/expired."""
     if not session_token:
         return None
-    row = db.get_session_by_token(session_token)
+    row = db.get_session_by_token(hash_token(session_token))
     if not row:
         return None
     if row["expires_at"] is None:

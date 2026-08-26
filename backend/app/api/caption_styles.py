@@ -25,8 +25,8 @@ _SAMPLE_WORDS = [
 
 @router.get("", response_model=list[CaptionStyleResponse])
 def list_caption_styles(user: SessionUser = Depends(current_user)) -> list[dict]:
-    """Return all caption style presets (built-in + any custom)."""
-    return db.list_caption_styles()
+    """Return the caller's visible presets (built-in + their own customs)."""
+    return db.list_caption_styles(user.id)
 
 
 @router.post("", response_model=CaptionStyleResponse, status_code=201)
@@ -37,7 +37,7 @@ def create_caption_style(
 
     Validated by building a sample ASS file from ``config`` before saving,
     so invalid colors/fields are rejected here rather than failing a render
-    job later.
+    job later. Styles are private to their creator.
     """
     try:
         build_ass(_SAMPLE_WORDS, payload.config, 720, 1280)
@@ -51,4 +51,4 @@ def create_caption_style(
         key = f"{base_key}-{suffix}"
         suffix += 1
 
-    return db.create_caption_style(payload.label, payload.config, key)
+    return db.create_caption_style(payload.label, payload.config, key, user.id)

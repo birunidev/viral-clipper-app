@@ -109,6 +109,11 @@ def _create_schema():
 
 @pytest.fixture(autouse=True)
 def _truncate_tables():
+    from app.ratelimit import limiter
+
+    # Rate-limit counters are process-global; clear them so each test gets
+    # a fresh budget for auth endpoints.
+    limiter._buckets.clear()
     yield
     engine = database.get_engine()
     # caption_styles is seed/reference data, not per-test state — keep it
@@ -116,12 +121,13 @@ def _truncate_tables():
     # Custom (non-builtin) styles created *during* a test (e.g. via
     # POST /caption-styles) are per-test state though, so those are deleted
     # explicitly to avoid key collisions leaking across tests.
-    tables = ", ".join(
-        f'"{t.name}"' for t in reversed(Base.metadata.sorted_tables) if t.name != "caption_styles"
-    )
+    # Truncate everything in ONE statement (FKs between the listed tables
+    # are allowed), then restore built-in caption styles — caption_styles
+    # now carries an FK to users so it can't be skipped from the sweep.
+    tables = ", ".join(f'"{t.name}"' for t in Base.metadata.sorted_tables)
     with engine.begin() as conn:
-        conn.execute(text(f"TRUNCATE {tables} CASCADE"))
-        conn.execute(text("DELETE FROM caption_styles WHERE is_builtin = false"))
+        conn.execute(text(f"TRUNCATE {tables}"))
+    _seed_caption_styles()
 
 
 @pytest.fixture

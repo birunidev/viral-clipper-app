@@ -18,7 +18,7 @@ import datetime as dt
 import uuid
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 
 from .database import session_scope
 from .models import (
@@ -31,6 +31,7 @@ from .models import (
     Project,
     Session,
     TimelineWord,
+    Upload,
     User,
     UserSettings,
     Verification,
@@ -221,6 +222,44 @@ def billing_event_exists(event_id: str) -> bool:
     with session_scope() as db:
         stmt = select(BillingEvent).where(BillingEvent.event_id == event_id)
         return db.execute(stmt).scalar_one_or_none() is not None
+
+
+def claim_billing_event(event_id: str, event_name: str, payload: dict) -> bool:
+    """Atomically reserve an idempotency slot for a webhook event.
+
+    Inserts the ledger row FIRST and returns True only when this call won
+    the right to process the event; False means another delivery already
+    claimed it. This closes the check-then-grant race where two concurrent
+    redeliveries both pass an exists-check and double-grant credits.
+    """
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    with session_scope() as db:
+        stmt = (
+            pg_insert(BillingEvent)
+            .values(id=_new_id(), event_id=event_id, event_name=event_name, payload=payload)
+            .on_conflict_do_nothing(index_elements=[BillingEvent.event_id])
+            .returning(BillingEvent.id)
+        )
+        # RETURNING (not rowcount): psycopg3 reports rowcount -1 for
+        # INSERT .. ON CONFLICT, but yields a row only when the insert won.
+        return db.execute(stmt).scalar_one_or_none() is not None
+
+
+def mark_order_settled(order_id: str) -> bool:
+    """Atomically flip a payment order to ``settled``.
+
+    Returns False when the order was already settled (e.g. Midtrans sends
+    both ``capture`` and ``settlement`` notifications for one card payment),
+    telling the caller to skip the credit grant.
+    """
+    with session_scope() as db:
+        stmt = (
+            update(PaymentOrder)
+            .where(PaymentOrder.order_id == order_id, PaymentOrder.status != "settled")
+            .values(status="settled")
+        )
+        return db.execute(stmt).rowcount == 1
 
 
 def record_billing_event(event_id: str, event_name: str, payload: dict) -> None:
@@ -499,15 +538,30 @@ def get_timeline_words_in_range(project_id: str, start_ms: int, end_ms: int) -> 
 # --------------------------------------------------------- caption styles
 
 
-def list_caption_styles() -> list[dict[str, Any]]:
+def list_caption_styles(user_id: str | None = None) -> list[dict[str, Any]]:
+    """Built-in presets plus (when ``user_id`` is given) that user's own
+    custom styles. Other users' customs are never returned."""
     with session_scope() as db:
         stmt = select(CaptionStyle).order_by(CaptionStyle.label)
+        if user_id:
+            stmt = stmt.where(
+                or_(CaptionStyle.user_id.is_(None), CaptionStyle.user_id == user_id)
+            )
+        else:
+            stmt = stmt.where(CaptionStyle.user_id.is_(None))
         return [_row(s) for s in db.execute(stmt).scalars().all()]
 
 
-def get_caption_style(style_id: str) -> dict[str, Any] | None:
+def get_caption_style_visible_to(style_id: str, user_id: str | None = None) -> dict[str, Any] | None:
+    """A style the given user may use: built-in (unowned) or their own."""
     with session_scope() as db:
-        return _row(db.get(CaptionStyle, style_id))
+        style = db.get(CaptionStyle, style_id)
+        if style is None:
+            return None
+        data = _row(style)
+        if data.get("user_id") in (None, user_id):
+            return data
+        return None
 
 
 def get_caption_style_by_key(key: str) -> dict[str, Any] | None:
@@ -516,19 +570,61 @@ def get_caption_style_by_key(key: str) -> dict[str, Any] | None:
         return _row(db.execute(stmt).scalar_one_or_none())
 
 
-def create_caption_style(label: str, config: dict, key: str) -> dict:
-    """Insert a user-defined (non-builtin) caption style.
+def create_caption_style(label: str, config: dict, key: str, user_id: str) -> dict:
+    """Insert a user-defined (non-builtin) caption style owned by ``user_id``.
 
     ``key`` must already be unique (see ``app/api/caption_styles.py`` for
     the slug-plus-suffix generation that guarantees this).
     """
     with session_scope() as db:
         style = CaptionStyle(
-            id=_new_id(), key=key, label=label, config=config, is_builtin=False
+            id=_new_id(), key=key, label=label, config=config, is_builtin=False,
+            user_id=user_id,
         )
         db.add(style)
         db.flush()
         return _row(style)
+
+
+# ------------------------------------------------------------------ uploads
+
+
+def record_upload(key: str, user_id: str, content_type: str | None = None,
+                  size_bytes: int | None = None) -> None:
+    """Ledger a presigned upload key as owned by ``user_id``."""
+    with session_scope() as db:
+        db.add(Upload(
+            id=_new_id(), key=key, user_id=user_id,
+            content_type=content_type, size_bytes=size_bytes,
+        ))
+
+
+def get_upload(key: str) -> dict[str, Any] | None:
+    with session_scope() as db:
+        return _row(db.execute(
+            select(Upload).where(Upload.key == key)
+        ).scalar_one_or_none())
+
+
+def claim_upload_for_project(key: str, user_id: str, project_id: str) -> bool:
+    """Bind an upload key to a project — single-use and owner-checked.
+
+    Atomically sets ``used_project_id`` only when the key exists, is owned
+    by ``user_id``, and has never been used. Returns False otherwise.
+    """
+    with session_scope() as db:
+        stmt = (
+            update(Upload)
+            .where(
+                Upload.key == key,
+                Upload.user_id == user_id,
+                Upload.used_project_id.is_(None),
+            )
+            .values(used_project_id=project_id)
+        )
+        result = db.execute(stmt)
+        # psycopg3 rowcount is reliable for plain UPDATE.
+        return (result.rowcount or 0) == 1
 
 
 def update_job(job_id: str, **fields: Any) -> None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app import db
-from app.security import hash_password
+from app.security import hash_password, hash_token
 
 from helpers import register_user
 
@@ -29,6 +29,60 @@ def test_register_short_password_422(client):
         json={"name": "x", "email": "a@b.com", "password": "short"},
     )
     assert res.status_code == 422
+
+
+# ------------------------------------------------------- session hardening
+
+
+def test_session_token_stored_hashed_not_plaintext(client):
+    from app.security import (
+        get_user_from_session,
+        new_session_token,
+        create_session,
+    )
+
+    uid = db.get_user_by_email(register_user(client).json()["email"])["id"]
+    raw = new_session_token()
+    session = create_session(uid, raw)
+
+    # Real resolution path: the raw cookie token resolves to the user...
+    resolved = get_user_from_session(raw)
+    assert resolved is not None
+    assert resolved.id == uid
+
+    # ...because the row is stored under the SHA-256 of the token, never
+    # the plaintext.
+    stored = db.get_session_by_token(hash_token(raw))
+    assert stored is not None
+    assert stored["id"] == session["id"]
+    assert stored["token"] == hash_token(raw)
+    assert stored["token"] != raw
+
+
+def test_login_rate_limited_after_repeated_failures(client):
+    register_user(client, email="rl@example.com", password="correct-horse")
+    for _ in range(10):
+        res = client.post(
+            "/api/v1/auth/login",
+            json={"email": "rl@example.com", "password": "wrong-password"},
+        )
+        assert res.status_code in (200, 401)
+    # The 11th attempt for the same ip+email is throttled.
+    res = client.post(
+        "/api/v1/auth/login",
+        json={"email": "rl@example.com", "password": "correct-horse"},
+    )
+    assert res.status_code == 429
+
+
+def test_logout_clears_cookie_even_with_dead_session(client):
+    """Logout must clear the cookie (204) even when the session is already
+    expired/unknown — otherwise a stale cookie rides along forever."""
+    res = client.post(
+        "/api/v1/auth/logout",
+        cookies={"clipforge_session": "bogus-expired-token"},
+    )
+    assert res.status_code == 204
 
 
 def test_login_success_and_wrong_password(client):

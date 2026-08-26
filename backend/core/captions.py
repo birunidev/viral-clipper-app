@@ -49,8 +49,30 @@ def ass_alpha(fraction: float) -> str:
 
 
 def _sanitize_text(text: str) -> str:
-    """Strip characters that would break ASS parsing out of word text."""
-    return text.replace("{", "").replace("}", "").replace("\\", "")
+    """Strip characters that would break ASS parsing out of word text.
+
+    Removes ASS override-tag braces and backslashes, plus newlines/carriage
+    returns — an interior newline would otherwise escape the Dialogue line
+    and let transcript content forge arbitrary ASS events.
+    """
+    cleaned = str(text)
+    for ch in ("{", "}", "\\", "\n", "\r"):
+        cleaned = cleaned.replace(ch, "")
+    return cleaned
+
+
+# Font names must be simple identifiers: letters, digits, spaces, hyphen,
+# underscore. This blocks ASS injection via a crafted ``font`` field
+# (e.g. a newline + forged "[Events]" section) while allowing every real
+# font family name the app ships or users would plausibly pick.
+_FONT_SAFE_RE = re.compile(r"^[A-Za-z0-9 _\-]{1,64}$")
+
+
+def _safe_font_name(value) -> str:
+    name = str(value or "").strip()
+    if not _FONT_SAFE_RE.match(name):
+        return "Arial"
+    return name
 
 
 def _group_words(words: list[dict], max_chars: int) -> list[list[dict]]:
@@ -163,7 +185,7 @@ def _style_section(style: dict, width: int, height: int) -> str:
         "{outline},{back},{bold},{italic},0,0,100,100,0,0,"
         "{border_style},{outline_w},{shadow_w},2,20,20,{margin_v},1"
     ).format(
-        font=str(style.get("font", "Arial")),
+        font=_safe_font_name(style.get("font", "Arial")),
         size=font_size,
         primary=idle,
         outline=outline_color,

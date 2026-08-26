@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from sqlalchemy.exc import IntegrityError
 
 from .. import db
+from ..ratelimit import RateLimitExceeded, limiter
 from ..schemas import LoginRequest, RegisterRequest, UserResponse
 from ..security import (
     SESSION_COOKIE,
@@ -15,15 +16,34 @@ from ..security import (
     current_user,
     hash_password,
     new_session_token,
+    optional_user,
+    revoke_session,
     set_session_cookie,
     verify_password,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+# Online-guessing / spam guards (OWASP A07). Keyed by IP+identifier so one
+# attacker can't lock out a victim's account outright, and a NAT'd office
+# isn't collectively throttled by a single global bucket.
+LOGIN_LIMIT = 10  # attempts per 5 minutes per ip+email
+REGISTER_LIMIT = 5  # registrations per hour per IP
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
 
 @router.post("/register", response_model=UserResponse, status_code=201)
-def register(payload: RegisterRequest, response: Response) -> UserResponse:
+def register(
+    payload: RegisterRequest, request: Request, response: Response
+) -> UserResponse:
+    try:
+        limiter.check(f"register:{_client_ip(request)}", REGISTER_LIMIT, 3600)
+    except RateLimitExceeded:
+        raise HTTPException(status_code=429, detail="Too many signups. Try again later.")
+
     email = payload.email
     if db.get_user_by_email(email) is not None:
         raise HTTPException(status_code=409, detail="Email already registered")
@@ -46,7 +66,18 @@ def register(payload: RegisterRequest, response: Response) -> UserResponse:
 
 
 @router.post("/login", response_model=UserResponse)
-def login(payload: LoginRequest, response: Response) -> UserResponse:
+def login(
+    payload: LoginRequest, request: Request, response: Response
+) -> UserResponse:
+    try:
+        limiter.check(
+            f"login:{_client_ip(request)}:{payload.email.strip().lower()}",
+            LOGIN_LIMIT,
+            300,
+        )
+    except RateLimitExceeded:
+        raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
+
     user = db.get_user_by_email(payload.email)
     if user is None or not verify_password(payload.password, user.get("password_hash")):
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -61,11 +92,15 @@ def login(payload: LoginRequest, response: Response) -> UserResponse:
 def logout(
     response: Response,
     session_token: str = Cookie(default=None, alias=SESSION_COOKIE),
-    user: SessionUser = Depends(current_user),
+    user: SessionUser | None = Depends(optional_user),
 ) -> None:
-    """Revoke the current session server-side and clear the cookie."""
-    if session_token:
-        db.delete_session_by_token(session_token)
+    """Revoke the current session server-side and clear the cookie.
+
+    Uses ``optional_user`` so the cookie is ALWAYS cleared — even when the
+    session is already expired/unknown (otherwise a stale cookie would keep
+    riding along on every request).
+    """
+    revoke_session(session_token)
     clear_session_cookie(response)
 
 

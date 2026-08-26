@@ -11,7 +11,13 @@ from helpers import register_user
 MB = 1024 * 1024
 
 
-def _make_project(client, source_type="upload", source_size=10 * MB):
+def _make_project(client, source_type="upload", source_size=10 * MB, email=None):
+    """Create a project via the API. Upload projects must first ledger the
+    source key as owned (mirroring the real presign flow)."""
+    if source_type == "upload":
+        if email is None:
+            raise ValueError("upload projects need the owner's email")
+        db.record_upload("uploads/abc.mp4", db.get_user_by_email(email)["id"])
     return client.post(
         "/api/v1/projects",
         json={
@@ -64,7 +70,7 @@ def test_enforce_cap_raises_when_over(client):
 
 def test_uploaded_project_counts_toward_storage(client):
     register_user(client, email="u@example.com")
-    res = _make_project(client, source_size=20 * MB)
+    res = _make_project(client, source_size=20 * MB, email="u@example.com")
     assert res.status_code == 201
     user = db.get_user_by_email("u@example.com")
     assert storage.storage_used(user["id"]) == 20 * MB
@@ -74,7 +80,7 @@ def test_uploaded_project_over_cap_rejected(client):
     register_user(client, email="u2@example.com")
     uid = db.get_user_by_email("u2@example.com")["id"]
     over = billing.storage_cap(uid) + 1
-    res = _make_project(client, source_size=over)
+    res = _make_project(client, source_size=over, email="u2@example.com")
     assert res.status_code == 409
     assert "Storage limit" in res.json()["detail"]
     user = db.get_user_by_email("u2@example.com")
@@ -113,7 +119,7 @@ def test_delete_project_soft_deletes(client, monkeypatch):
     register_user(client, email="d@example.com")
     user = db.get_user_by_email("d@example.com")
 
-    project = _make_project(client, source_size=30 * MB).json()
+    project = _make_project(client, source_size=30 * MB, email="d@example.com").json()
     job = db.create_job(project["id"], {}, job_type="analyze")
     clip_id = db.add_clip(
         project_id=project["id"],
@@ -155,7 +161,7 @@ def test_delete_project_requires_auth(client):
 def test_trash_flow_delete_restore(client):
     register_user(client, email="trash@example.com")
     user = db.get_user_by_email("trash@example.com")
-    project = _make_project(client, source_size=5 * MB).json()
+    project = _make_project(client, source_size=5 * MB, email="trash@example.com").json()
 
     # Soft delete → in trash, not in live list.
     res = client.delete(f"/api/v1/projects/{project['id']}")
@@ -182,7 +188,7 @@ def test_trash_flow_delete_restore(client):
 def test_purge_permanently_deletes_and_reclaims_quota(client, monkeypatch):
     register_user(client, email="purge@example.com")
     user = db.get_user_by_email("purge@example.com")
-    project = _make_project(client, source_size=30 * MB).json()
+    project = _make_project(client, source_size=30 * MB, email="purge@example.com").json()
     job = db.create_job(project["id"], {}, job_type="analyze")
     clip_id = db.add_clip(
         project_id=project["id"],
@@ -233,7 +239,7 @@ def test_trash_auto_purges_after_retention(client, monkeypatch):
 
     register_user(client, email="expired@example.com")
     user = db.get_user_by_email("expired@example.com")
-    project = _make_project(client, source_size=10 * MB).json()
+    project = _make_project(client, source_size=10 * MB, email="expired@example.com").json()
     assert client.delete(f"/api/v1/projects/{project['id']}").status_code == 204
 
     # Backdate the deletion past the 30-day retention window.
@@ -248,9 +254,43 @@ def test_trash_auto_purges_after_retention(client, monkeypatch):
     assert storage.storage_used(user["id"]) == 0
 
 
+def test_upload_key_cannot_be_reused_or_stolen(client):
+    """The uploads ledger binds keys to their owner, single-use: another
+    user can't attach someone else's upload, and the owner can't bind the
+    same key to a second project."""
+    register_user(client, email="owner@example.com")
+    db.record_upload("uploads/mine.mp4", db.get_user_by_email("owner@example.com")["id"])
+
+    # First binding works and consumes the key.
+    res = client.post(
+        "/api/v1/projects",
+        json={"title": "P", "source": "uploads/mine.mp4", "source_type": "upload",
+              "source_size_bytes": 1 * MB},
+    )
+    assert res.status_code == 201
+
+    # Same key again → rejected (single-use).
+    res = client.post(
+        "/api/v1/projects",
+        json={"title": "P2", "source": "uploads/mine.mp4", "source_type": "upload",
+              "source_size_bytes": 1 * MB},
+    )
+    assert res.status_code == 400
+
+    # A different user presenting the same key → rejected (ownership).
+    client.post("/api/v1/auth/logout")
+    register_user(client, email="thief@example.com")
+    res = client.post(
+        "/api/v1/projects",
+        json={"title": "Steal", "source": "uploads/mine.mp4", "source_type": "upload",
+              "source_size_bytes": 1 * MB},
+    )
+    assert res.status_code == 400
+
+
 def test_delete_project_other_users_404(client):
     register_user(client, email="a@example.com")
-    project = _make_project(client, source_size=1 * MB).json()
+    project = _make_project(client, source_size=1 * MB, email="a@example.com").json()
     client.post("/api/v1/auth/logout")
     register_user(client, email="b@example.com")
     assert client.delete(f"/api/v1/projects/{project['id']}").status_code == 404
@@ -262,6 +302,7 @@ def test_upload_create_uses_real_s3_size_over_client_claim(client, monkeypatch):
     register_user(client, email="real@example.com")
     user = db.get_user_by_email("real@example.com")
     real = 60 * MB
+    db.record_upload("uploads/abc.mp4", user["id"])
     monkeypatch.setattr(
         "app.api.projects.head_object_size_default_bucket", lambda key: real
     )
@@ -284,6 +325,7 @@ def test_upload_create_rejects_when_real_size_exceeds_cap(client, monkeypatch):
     """Real S3 size above the cap -> 409 even if the client claims a small
     size."""
     register_user(client, email="cap@example.com")
+    db.record_upload("uploads/big.mp4", db.get_user_by_email("cap@example.com")["id"])
     monkeypatch.setattr(
         "app.api.projects.head_object_size_default_bucket",
         lambda key: billing.storage_cap(db.get_user_by_email("cap@example.com")["id"]) + 10 * MB,

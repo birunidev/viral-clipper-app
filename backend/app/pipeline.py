@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -32,6 +33,14 @@ from core import analyzer, billing, captions, cutter, s3, storage, transcriber, 
 from . import db
 
 logger = logging.getLogger(__name__)
+
+# yt-dlp errors embed the full signed CDN URL (and SSRF attempts would embed
+# internal ones). Strip URLs before persisting error text that users see.
+_URL_IN_TEXT_RE = re.compile(r"https?://\S+")
+
+
+def _safe_error(exc: Exception) -> str:
+    return _URL_IN_TEXT_RE.sub("[url removed]", str(exc))
 
 
 def _settings() -> dict:
@@ -356,7 +365,7 @@ def run_job(job_id: str) -> None:
             _run_analyze(job_id)
     except Exception as exc:
         try:
-            db.update_job(job_id, status="failed", stage=None, error=str(exc))
+            db.update_job(job_id, status="failed", stage=None, error=_safe_error(exc))
             job = db.get_job(job_id)
             if job and job_type == "analyze":
                 db.update_project(job["project_id"], status="failed")
@@ -663,7 +672,9 @@ def _run_render(job_id: str) -> None:
     # Resolve the caption style preset (if requested) so we can burn it in.
     caption_style = None
     if caption_style_id:
-        caption_style = db.get_caption_style(caption_style_id)
+        caption_style = db.get_caption_style_visible_to(
+            caption_style_id, project.get("user_id", "")
+        )
         if caption_style is None:
             raise RuntimeError(f"Caption style {caption_style_id!r} not found")
 

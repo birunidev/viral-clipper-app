@@ -90,6 +90,17 @@ def create_project(payload: ProjectCreate, user: SessionUser = Depends(current_u
     source_type = "upload" if payload.source_type == "upload" else "youtube"
     title = (payload.title or "").strip() or "Untitled"
 
+    # SSRF guard: remote sources must be YouTube links resolving to public
+    # addresses. yt-dlp would otherwise fetch any URL from our network
+    # position (cloud metadata, internal services).
+    if source_type != "upload":
+        from core.urlguard import UrlNotAllowed, validate_source_url
+
+        try:
+            validate_source_url(source)
+        except UrlNotAllowed as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     # Determine the authoritative size of the uploaded object in S3, so a
     # client cannot bypass the cap by claiming ``source_size_bytes=0``.
     if source_type == "upload":
@@ -117,6 +128,17 @@ def create_project(payload: ProjectCreate, user: SessionUser = Depends(current_u
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     project = db.create_project(user.id, title, source, source_type)
+
+    if source_type == "upload":
+        # Ownership proof: the key must have been presigned for THIS user
+        # and never bound to another project. Prevents attaching someone
+        # else's object and minting read URLs for it.
+        if not db.claim_upload_for_project(source, user.id, project["id"]):
+            raise HTTPException(
+                status_code=400,
+                detail="Unknown upload key. Re-upload the file and try again.",
+            )
+
     if source_type == "upload" and size_bytes:
         db.update_project(
             project["id"],
@@ -222,10 +244,17 @@ def render_clip(
     if clip is None:
         raise HTTPException(status_code=404, detail="Not found")
 
-    # Validate the caption style exists before enqueueing.
+    # The clip must belong to the project in the path — the two lookups
+    # above are owner-scoped but independent, so a same-user mismatch
+    # would otherwise create a job cutting one video with another's timings.
+    if clip.get("project_id") != project_id:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # Validate the caption style exists AND is visible to this user
+    # (built-in or their own custom style) before enqueueing.
     caption_style_id = payload.caption_style_id
     if caption_style_id:
-        style = db.get_caption_style(caption_style_id)
+        style = db.get_caption_style_visible_to(caption_style_id, user.id)
         if style is None:
             raise HTTPException(status_code=400, detail="Unknown caption style")
 

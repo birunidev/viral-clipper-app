@@ -249,8 +249,16 @@ def _grant_paddle_pack(user_id: str, data: dict, event_type: str) -> None:
     """Grant credits for a paid Paddle transaction.
 
     The pack is resolved from ``custom_data.pack`` (our own token), falling
-    back to the transaction price mapping. Only meaningful for completed/
-    paid one-time transactions.
+    back to the transaction price mapping. Two integrity checks guard it:
+
+    - Price binding: every price id on the transaction's items must map to
+      the SAME pack as ``custom_data.pack``. A signature-valid transaction
+      for the Starter price carrying ``custom_data.pack: "studio"`` (a
+      dashboard test txn or tampered checkout link) must not mint Studio.
+    - Amount sanity: when the transaction reports USD totals they must
+      match the pack's configured USD price. Other currencies are skipped
+      (Paddle local pricing makes exact comparison impossible server-side;
+      the price-id binding above remains authoritative).
     """
     custom = (data.get("custom_data") or {})
     user = db.get_user(user_id) or {}
@@ -271,9 +279,46 @@ def _grant_paddle_pack(user_id: str, data: dict, event_type: str) -> None:
         logger.warning("Paddle %s for user %s carried no resolvable pack", event_type, user_id)
         return
 
-    pack = billing.grant_pack(user_id, pack_key)
-    if pack:
-        logger.info("Granted pack %s to user %s (%s credits)", pack_key, user_id, user.get("email"))
+    # Integrity check 1: item price ids must all bind to the same pack.
+    item_pack_keys = set()
+    for item in data.get("items") or []:
+        price_id = str(((item.get("price") or {}).get("id") or ""))
+        price_pack = pack_for_price(price_id)
+        if price_pack:
+            item_pack_keys.add(price_pack["key"])
+    if item_pack_keys and item_pack_keys != {pack_key}:
+        logger.error(
+            "Paddle %s rejected: pack/price mismatch for user %s "
+            "(claimed pack=%s, item prices=%s)",
+            event_type,
+            user_id,
+            pack_key,
+            sorted(item_pack_keys),
+        )
+        return
+
+    # Integrity check 2: USD totals vs configured price (best-effort).
+    pack = pack_for_key(pack_key) or {}
+    expected_usd_cents = int(pack.get("price_usd") or 0)
+    details = data.get("details") or {}
+    totals = (details.get("totals") or {})
+    currency = str((totals.get("currency_code") or data.get("currency_code") or "")).upper()
+    total_minor = totals.get("total")
+    if expected_usd_cents > 0 and currency == "USD" and isinstance(total_minor, int):
+        if total_minor < expected_usd_cents:
+            logger.error(
+                "Paddle %s rejected: paid %s < list price %s (USD) for user %s",
+                event_type,
+                total_minor,
+                expected_usd_cents,
+                user_id,
+            )
+            return
+
+    billing.grant_pack(user_id, pack_key)
+    logger.info(
+        "Granted pack %s to user %s (%s credits)", pack_key, user_id, user.get("email")
+    )
 
 
 @hooks_router.post("/webhooks/paddle")
@@ -298,7 +343,9 @@ async def paddle_webhook(request: Request) -> dict:
     if not event_id:
         raise HTTPException(status_code=400, detail="Missing event_id")
 
-    if db.billing_event_exists(event_id):
+    # Claim the idempotency slot BEFORE any grant: the insert is atomic
+    # (unique event_id), so concurrent redeliveries can't double-process.
+    if not db.claim_billing_event(event_id, event_type, payload):
         return {"ok": True, "deduplicated": True}
 
     # One-time pack purchases settle under transaction.* lifecycle events.
@@ -313,7 +360,6 @@ async def paddle_webhook(request: Request) -> dict:
             else:
                 logger.warning("Paddle %s for unknown user (txn=%s)", event_type, data.get("id"))
 
-    db.record_billing_event(event_id, event_type, payload)
     return {"ok": True}
 
 
@@ -366,7 +412,9 @@ async def midtrans_webhook(request: Request) -> dict:
     transaction_time = str(payload.get("transaction_time") or "")
 
     event_key = f"{order_id}:{transaction_status}:{transaction_time}"
-    if db.billing_event_exists(event_key):
+    # Claim BEFORE any grant (atomic insert; unique key). Concurrent
+    # duplicate notifications lose the race here.
+    if not db.claim_billing_event(event_key, transaction_status, payload):
         return {"ok": True, "deduplicated": True}
 
     try:
@@ -382,26 +430,32 @@ async def midtrans_webhook(request: Request) -> dict:
             order["gross_amount"],
         )
         db.set_payment_order_status(order_id, "failed")
-        db.record_billing_event(event_key, transaction_status, payload)
         raise HTTPException(status_code=400, detail="Amount mismatch")
 
     if transaction_status in _MT_SETTLE_STATUSES:
         if transaction_status == "capture" and fraud_status == "challenge":
-            db.set_payment_order_status(order_id, "pending")
-            db.record_billing_event(event_key, transaction_status, payload)
+            # Don't downgrade an already-settled order back to pending.
+            if order["status"] != "settled":
+                db.set_payment_order_status(order_id, "pending")
             return {"ok": True, "status": "pending"}
+        # Card payments legitimately produce BOTH a capture and a settlement
+        # notification — two different event keys for one payment. The atomic
+        # status transition below guarantees the pack is granted exactly once.
+        if not db.mark_order_settled(order_id):
+            logger.warning(
+                "Midtrans order %s already settled; skipping duplicate grant", order_id
+            )
+            return {"ok": True, "deduplicated": True}
         billing.grant_pack(order["user_id"], order["plan_key"])
-        db.set_payment_order_status(order_id, "settled")
     elif transaction_status in _MT_FAILURE_STATUSES:
         db.set_payment_order_status(order_id, _MT_FAILURE_STATUSES[transaction_status])
-    elif transaction_status == "refund":
-        db.set_payment_order_status(order_id, "refunded")
-        # Refunding a purchased pack deducts its credits back. The tier is
-        # intentionally left as-is (permanent entitlements are never revoked).
+    elif transaction_status in ("refund", "chargeback"):
+        db.set_payment_order_status(order_id, "refunded" if transaction_status == "refund" else "chargeback")
+        # A refunded/charged-back pack has its credits deducted back. The tier
+        # is intentionally left as-is (permanent entitlements are never revoked).
         pack = pack_for_key(order["plan_key"])
         if pack:
             db.increment_user_credits(order["user_id"], -int(pack["credits"]))
     # "pending" and anything unknown: just record it.
 
-    db.record_billing_event(event_key, transaction_status, payload)
     return {"ok": True}

@@ -180,6 +180,23 @@ def test_settlement_is_idempotent_on_redelivery(client):
     assert billing.credit_balance(uid) < 120
 
 
+def test_capture_then_settlement_grants_exactly_once(client):
+    """Card payments emit BOTH capture and settlement — distinct event keys
+    for one payment. The pack must be granted exactly once."""
+    uid = _register(client, email="capture@example.com")
+    order_id = _create_order(uid)
+
+    capture = _notify(client, order_id, "capture")
+    settle = _notify(client, order_id, "settlement")
+    assert capture.status_code == 200 and settle.status_code == 200
+
+    user = db.get_user(uid)
+    # Starter = 60 credits; a double grant would show 120+ here. The free
+    # signup grant is 5, so exactly one pack means 65.
+    assert user["credits"] == 5 + 60
+    assert db.get_payment_order(order_id)["status"] == "settled"
+
+
 def test_higher_pack_raises_tier_and_keeps_credits(client):
     uid = _register(client, email="upgrade@example.com")
     _notify(client, _create_order(uid, "starter"), "settlement")

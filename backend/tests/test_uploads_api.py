@@ -29,16 +29,24 @@ def test_presign_returns_url_and_key(client, monkeypatch):
     assert data["url"] == f"https://example.com/{data['key']}?sig=abc"
 
 
-def test_presign_defaults_extension_to_bin_when_missing(client, monkeypatch):
+def test_presign_rejects_missing_extension(client):
+    """Extension allowlist: a file with no extension is rejected (400)
+    instead of silently becoming a .bin object in the shared bucket."""
     register_user(client)
+    res = client.post("/api/v1/uploads/presign", json={"file_name": "noext"})
+    assert res.status_code == 400
+    assert "Unsupported file type" in res.json()["detail"]
+
+
+def test_presign_rejects_non_video_extensions(client, monkeypatch):
     monkeypatch.setattr(
         "core.s3.presign_put_url",
         lambda key, content_type, expires=3600: f"https://example.com/{key}",
     )
-
-    res = client.post("/api/v1/uploads/presign", json={"file_name": "noext"})
-    assert res.status_code == 200
-    assert res.json()["key"].endswith(".bin")
+    register_user(client)
+    for name in ("payload.exe", "page.html", "archive.zip"):
+        res = client.post("/api/v1/uploads/presign", json={"file_name": name})
+        assert res.status_code == 400
 
 
 def test_presign_s3_error_returns_500(client, monkeypatch):

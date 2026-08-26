@@ -346,6 +346,9 @@ class CaptionStyle(Base):
     Seeded with built-in presets; config holds the ASS-style primitives the
     caption builder (core/captions.py) needs: font, size, position, colors,
     outline/shadow, and word-grouping rules.
+
+    ``user_id`` NULL = built-in preset visible to everyone; non-NULL =
+    a custom style private to its owner.
     """
 
     __tablename__ = "caption_styles"
@@ -355,6 +358,34 @@ class CaptionStyle(Base):
     label: Mapped[str] = mapped_column(String, nullable=False)
     config: Mapped[dict] = mapped_column(JSON, nullable=False)
     is_builtin: Mapped[bool] = mapped_column(Boolean, server_default="true", nullable=False)
+    user_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class Upload(Base):
+    """Ownership ledger for presigned upload keys.
+
+    Every presigned PUT records (key -> user) here so project creation can
+    prove an upload belongs to the caller. Without this binding, anyone who
+    learns another account's key could attach that object as their own
+    source and mint presigned read URLs for it.
+    """
+
+    __tablename__ = "uploads"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    key: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    content_type: Mapped[str | None] = mapped_column(String)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    # Set when a project binds this key as its source; single-use guard.
+    used_project_id: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

@@ -29,6 +29,18 @@ class DownloadError(Exception):
     """Raised when a remote video cannot be downloaded."""
 
 
+def _validate_source(url: str) -> None:
+    """Defense-in-depth SSRF check before any network fetch (see
+    core/urlguard). Called again here because download()/get_info() may be
+    reached by callers that skipped API-layer validation."""
+    from core.urlguard import UrlNotAllowed, validate_source_url
+
+    try:
+        validate_source_url(url)
+    except UrlNotAllowed as exc:
+        raise DownloadError(str(exc)) from exc
+
+
 def get_info(url: str) -> dict:
     """Fetch remote metadata (no download) for ``url``.
 
@@ -39,6 +51,8 @@ def get_info(url: str) -> dict:
     """
     if yt_dlp is None:
         raise DownloadError("yt-dlp is not installed. Run: poetry install")
+
+    _validate_source(url)
 
     opts = {
         "quiet": True,
@@ -99,6 +113,8 @@ def download(
     """
     if yt_dlp is None:
         raise DownloadError("yt-dlp is not installed. Run: poetry install")
+
+    _validate_source(url)
 
     os.makedirs(out_dir, exist_ok=True)
 

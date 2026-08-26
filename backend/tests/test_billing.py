@@ -287,6 +287,25 @@ def test_webhook_unknown_user_logs_but_ok(client, monkeypatch):
     assert res.status_code == 200
 
 
+def test_webhook_rejects_pack_price_mismatch(client, monkeypatch):
+    """A signature-valid transaction for the STARTER price claiming
+    custom_data.pack=studio must not mint Studio credits."""
+    monkeypatch.setenv("PADDLE_WEBHOOK_SECRET", WEBHOOK_SECRET)
+    # Mirror production: the price->pack map is what checkout itself uses.
+    from app.plans import register_price
+
+    register_price("pri_starter_test", "starter")
+    uid = _register(client, email="mismatch@example.com")
+    payload = _paddle_transaction(uid, pack="studio", price_id="pri_starter_test")
+
+    res = _post_event(client, payload)
+    assert res.status_code == 200
+    user = db.get_user(uid)
+    # Still on free tier with only the signup grant — no Studio pack.
+    assert user["entitlement_tier"] == "free"
+    assert user["credits"] == 5
+
+
 # ---------------------------------------------------------------- status
 
 
