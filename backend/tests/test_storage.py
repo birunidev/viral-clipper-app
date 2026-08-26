@@ -152,6 +152,102 @@ def test_delete_project_requires_auth(client):
     assert client.delete("/api/v1/projects/xyz").status_code == 401
 
 
+def test_trash_flow_delete_restore(client):
+    register_user(client, email="trash@example.com")
+    user = db.get_user_by_email("trash@example.com")
+    project = _make_project(client, source_size=5 * MB).json()
+
+    # Soft delete → in trash, not in live list.
+    res = client.delete(f"/api/v1/projects/{project['id']}")
+    assert res.status_code == 204
+    trash = client.get("/api/v1/projects/trash").json()
+    assert [p["id"] for p in trash] == [project["id"]]
+    assert trash[0]["deleted_at"] is not None
+    assert client.get("/api/v1/projects").json() == []
+
+    # Restore → back in the live list, gone from trash.
+    res = client.post(f"/api/v1/projects/{project['id']}/restore")
+    assert res.status_code == 200
+    live = client.get("/api/v1/projects").json()
+    assert [p["id"] for p in live] == [project["id"]]
+    assert client.get("/api/v1/projects/trash").json() == []
+
+    # Restoring a non-trashed project 404s.
+    assert client.post(f"/api/v1/projects/{project['id']}/restore").status_code == 404
+    # Trash of another user is invisible.
+    register_user(client, email="other@example.com")
+    assert client.get("/api/v1/projects/trash").json() == []
+
+
+def test_purge_permanently_deletes_and_reclaims_quota(client, monkeypatch):
+    register_user(client, email="purge@example.com")
+    user = db.get_user_by_email("purge@example.com")
+    project = _make_project(client, source_size=30 * MB).json()
+    job = db.create_job(project["id"], {}, job_type="analyze")
+    clip_id = db.add_clip(
+        project_id=project["id"],
+        job_id=job["id"],
+        title="C",
+        viral_hook=None,
+        start=0,
+        end=10,
+        video_url="projects/x/clips/c.mp4",
+        thumbnail_url=None,
+    )
+    storage.add_project_storage(project["id"], user["id"], 5 * MB)
+    assert storage.storage_used(user["id"]) == 35 * MB
+
+    deleted = []
+    monkeypatch.setattr(
+        "core.s3.delete_object", lambda bucket, key: deleted.append((bucket, key))
+    )
+    monkeypatch.setenv("S3_BUCKET", "test-bucket")
+
+    # Purge only works on trashed projects.
+    assert (
+        client.delete(f"/api/v1/projects/{project['id']}/purge").status_code == 404
+    )
+
+    assert client.delete(f"/api/v1/projects/{project['id']}").status_code == 204
+    # While trashed: quota (storage + project count) still occupied.
+    assert storage.storage_used(user["id"]) == 35 * MB
+
+    res = client.delete(f"/api/v1/projects/{project['id']}/purge")
+    assert res.status_code == 204
+    # Gone everywhere; rows cascaded; S3 objects removed.
+    assert db.get_project(project["id"]) is None
+    assert db.get_clip(clip_id) is None
+    assert client.get("/api/v1/projects/trash").json() == []
+    keys = {k for _, k in deleted}
+    assert "uploads/abc.mp4" in keys
+    assert "projects/x/clips/c.mp4" in keys
+    # Storage + project quota reclaimed.
+    assert storage.storage_used(user["id"]) == 0
+
+
+def test_trash_auto_purges_after_retention(client, monkeypatch):
+    import datetime as dt
+
+    from app.database import session_scope
+    from app.models import Project
+
+    register_user(client, email="expired@example.com")
+    user = db.get_user_by_email("expired@example.com")
+    project = _make_project(client, source_size=10 * MB).json()
+    assert client.delete(f"/api/v1/projects/{project['id']}").status_code == 204
+
+    # Backdate the deletion past the 30-day retention window.
+    old = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=31)
+    with session_scope() as s:
+        s.get(Project, project["id"]).deleted_at = old
+
+    # Any listing triggers the lazy sweep: the project is gone for good.
+    assert client.get("/api/v1/projects").json() == []
+    assert client.get("/api/v1/projects/trash").json() == []
+    assert db.get_project(project["id"]) is None
+    assert storage.storage_used(user["id"]) == 0
+
+
 def test_delete_project_other_users_404(client):
     register_user(client, email="a@example.com")
     project = _make_project(client, source_size=1 * MB).json()

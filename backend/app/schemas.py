@@ -153,6 +153,12 @@ class ProjectListItem(BaseModel):
     latest_job: dict | None = None
 
 
+class TrashListItem(ProjectListItem):
+    """A soft-deleted project; ``deleted_at`` drives the 30-day countdown."""
+
+    deleted_at: dt.datetime
+
+
 class ProjectDetail(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

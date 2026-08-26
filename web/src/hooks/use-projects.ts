@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { api } from "@/lib/api";
-import type { CaptionStyle, Job, ProjectDetail, ProjectListItem } from "./types";
+import type { CaptionStyle, Job, ProjectDetail, ProjectListItem, TrashProject } from "./types";
 import { settingsKey } from "./use-settings";
 
 export const projectsKey = ["projects"] as const;
@@ -135,13 +135,52 @@ export function useRenderClip(projectId: string) {
   });
 }
 
-/** Delete a project: frees S3 storage + removes the DB row. */
+/** Delete a project: moves it to the trash (soft delete). */
 export function useDeleteProject() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (projectId: string) => api.delete<void>(`/projects/${projectId}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: projectsKey });
+      queryClient.invalidateQueries({ queryKey: trashKey });
+      queryClient.invalidateQueries({ queryKey: settingsKey });
+    },
+  });
+}
+
+export const trashKey = ["projects-trash"] as const;
+
+/** Soft-deleted projects (trash). Auto-purged server-side after 30 days. */
+export function useTrashProjects() {
+  return useQuery<TrashProject[]>({
+    queryKey: trashKey,
+    queryFn: () => api.get<TrashProject[]>("/projects/trash"),
+  });
+}
+
+/** Take a project out of the trash back into the active list. */
+export function useRestoreProject() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string) =>
+      api.post<ProjectListItem>(`/projects/${projectId}/restore`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: projectsKey });
+      queryClient.invalidateQueries({ queryKey: trashKey });
+    },
+  });
+}
+
+/** Permanently delete a trashed project — frees its storage and project
+ * quota. Not undoable; callers should confirm first. */
+export function usePurgeProject() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string) =>
+      api.delete<void>(`/projects/${projectId}/purge`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: projectsKey });
+      queryClient.invalidateQueries({ queryKey: trashKey });
       queryClient.invalidateQueries({ queryKey: settingsKey });
     },
   });

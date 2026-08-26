@@ -85,6 +85,10 @@ export type ProjectListItem = {
   latest_job: { id: string; status: string; progress: number } | null;
 };
 
+export type TrashProject = ProjectListItem & {
+  deleted_at: string;
+};
+
 export type ProjectDetail = {
   id: string;
   title: string;

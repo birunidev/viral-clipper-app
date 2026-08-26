@@ -619,6 +619,95 @@ def delete_project(project_id: str) -> None:
             project.deleted_at = func.now()
 
 
+def get_deleted_project_for_user(project_id: str, user_id: str) -> dict[str, Any] | None:
+    """A soft-deleted (trashed) project owned by ``user_id``, else None."""
+    with session_scope() as db:
+        stmt = select(Project).where(
+            Project.id == project_id,
+            Project.user_id == user_id,
+            Project.deleted_at.is_not(None),
+        )
+        return _row(db.execute(stmt).scalar_one_or_none())
+
+
+def restore_project(project_id: str) -> None:
+    """Take a soft-deleted project out of the trash (clears ``deleted_at``)."""
+    with session_scope() as db:
+        project = db.get(Project, project_id)
+        if project is not None:
+            project.deleted_at = None
+
+
+def list_trash_for_user(user_id: str) -> list[dict[str, Any]]:
+    """Soft-deleted projects for a user, most recently deleted first."""
+    with session_scope() as db:
+        stmt = (
+            select(Project)
+            .where(Project.user_id == user_id, Project.deleted_at.is_not(None))
+            .order_by(Project.deleted_at.desc())
+        )
+        return [_row(p) for p in db.execute(stmt).scalars().all()]
+
+
+def hard_delete_project(project_id: str) -> dict[str, Any] | None:
+    """Permanently remove a project's rows (clips/jobs/words cascade).
+
+    Returns what the caller must clean up outside the DB: the S3 object
+    keys and how many storage bytes to release from the owner's quota
+    (already subtracted here atomically), or None if the project was gone.
+    """
+    with session_scope() as db:
+        project = db.get(Project, project_id)
+        if project is None:
+            return None
+        keys: list[str] = []
+        if project.source_key:
+            keys.append(project.source_key)
+        for clip in project.clips:
+            if clip.video_url:
+                keys.append(clip.video_url)
+            if clip.thumbnail_url:
+                keys.append(clip.thumbnail_url)
+        data = {
+            "keys": keys,
+            "user_id": project.user_id,
+            "storage_bytes": int(project.storage_bytes or 0),
+        }
+        db.delete(project)
+
+    # Release the owner's quota atomically (outside the session transaction,
+    # after the rows are committed).
+    if data["storage_bytes"] > 0:
+        increment_user_storage(data["user_id"], -data["storage_bytes"])
+    return data
+
+
+TRASH_RETENTION_DAYS = 30
+
+
+def purge_expired_trash(retention_days: int = TRASH_RETENTION_DAYS) -> list[dict[str, Any]]:
+    """Permanently delete projects soft-deleted more than ``retention_days``
+    ago. Called lazily from the project list endpoints so trash self-cleans
+    without a scheduler. Returns one entry per purged project (S3 keys +
+    freed byte counts) for the caller to clean up object storage."""
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=retention_days)
+    with session_scope() as db:
+        stmt = select(Project.id).where(
+            Project.deleted_at.is_not(None),
+            Project.deleted_at < cutoff,
+        )
+        expired = [row for row in db.execute(stmt).scalars().all()]
+    # hard_delete_project opens its own transaction per project, so a single
+    # bad row can't roll back the whole sweep.
+    purged = []
+    for project_id in expired:
+        data = hard_delete_project(project_id)
+        if data is not None:
+            data["project_id"] = project_id
+            purged.append(data)
+    return purged
+
+
 def create_project(user_id: str, title: str, source: str, source_type: str) -> dict:
     with session_scope() as db:
         project = Project(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,11 +15,14 @@ from ..schemas import (
     ProjectListItem,
     RenderClipRequest,
     StartJobRequest,
+    TrashListItem,
 )
 from ..security import SessionUser, current_user
 from ..worker import pool
 from core import billing, storage
 from core.s3 import head_object_size_default_bucket as head_object_size_default_bucket
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -44,7 +48,30 @@ def _presigned(key: str | None) -> str | None:
 
 @router.get("", response_model=list[ProjectListItem])
 def list_projects(user: SessionUser = Depends(current_user)) -> list[dict]:
+    # Lazy trash sweep: anything past its 30-day retention is permanently
+    # deleted (rows + S3 objects) before we show the live list.
+    _cleanup_expired_trash()
     return db.list_projects_for_user(user.id)
+
+
+@router.get("/trash", response_model=list[TrashListItem])
+def list_trash(user: SessionUser = Depends(current_user)) -> list[dict]:
+    _cleanup_expired_trash()
+    return db.list_trash_for_user(user.id)
+
+
+def _cleanup_expired_trash() -> None:
+    """Best-effort purge of expired trash; S3 removal is best-effort too."""
+    try:
+        for purged in db.purge_expired_trash():
+            bucket = os.environ.get("S3_BUCKET", "")
+            if bucket:
+                from core.s3 import delete_object
+
+                for key in purged["keys"]:
+                    delete_object(bucket, key)
+    except Exception as exc:  # never block listings on cleanup failures
+        logger.warning("Trash purge failed: %s", exc)
 
 
 @router.post("", response_model=ProjectListItem, status_code=201)
@@ -219,11 +246,47 @@ def render_clip(
     return job
 
 
+@router.post("/{project_id}/restore", response_model=ProjectListItem, status_code=200)
+def restore_project(project_id: str, user: SessionUser = Depends(current_user)) -> dict:
+    """Take a soft-deleted project out of the trash. Storage stays counted
+    and the project keeps occupying the tier's project quota while trashed,
+    so restoring is always possible within the retention window."""
+    if db.get_deleted_project_for_user(project_id, user.id) is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    db.restore_project(project_id)
+    data = db.get_project_for_user(project_id, user.id)
+    if data is None:  # defensive: restored row vanished
+        raise HTTPException(status_code=404, detail="Not found")
+    data["clip_count"] = len(db.get_project_detail(project_id, user.id).get("clips", []))
+    data["latest_job"] = None
+    return data
+
+
+@router.delete("/{project_id}/purge", status_code=204, response_model=None)
+def purge_project(project_id: str, user: SessionUser = Depends(current_user)) -> None:
+    """Permanently delete a trashed project: drop the DB rows (clips/jobs/
+    words cascade), release the owner's storage accounting and remove the
+    S3 objects best-effort. This is how a user reclaims storage and project
+    quota; it is not undoable."""
+    from core.s3 import delete_object
+
+    if db.get_deleted_project_for_user(project_id, user.id) is None:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    purged = db.hard_delete_project(project_id)
+    if purged:
+        bucket = os.environ.get("S3_BUCKET", "")
+        if bucket:
+            for key in purged["keys"]:
+                delete_object(bucket, key)
+
+
 @router.delete("/{project_id}", status_code=204, response_model=None)
 def delete_project(project_id: str, user: SessionUser = Depends(current_user)) -> None:
-    """Soft-delete a project: stamp ``deleted_at`` so it disappears from
-    listings and detail views. Rows and S3 objects are kept (storage usage
-    stays counted) so a restore is possible."""
+    """Soft-delete a project: stamp ``deleted_at`` so it moves to the trash.
+    Rows and S3 objects are kept (storage usage and the project-quota count
+    stay), so the project can be restored for 30 days before the lazy
+    trash sweep purges it permanently."""
     project = db.get_project_for_user(project_id, user.id)
     if project is None:
         raise HTTPException(status_code=404, detail="Not found")

@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  ArrowCounterClockwise,
   CloudArrowUp,
   Clock,
   FilmReel,
@@ -18,14 +19,27 @@ import { Card, EmptyState, Skeleton } from "@/components/ui/card";
 import { StatusPill } from "@/components/ui/status-pill";
 import { SourceTypeIcon } from "@/components/project/source-icon";
 import { UpgradeRequired, isPaywall } from "@/components/upgrade-required";
-import { useCreateProject, useDeleteProject, usePresignUpload, useProjects } from "@/hooks/use-projects";
+import { useCreateProject, useDeleteProject, usePurgeProject, usePresignUpload, useProjects, useRestoreProject, useTrashProjects } from "@/hooks/use-projects";
+
+const TRASH_RETENTION_DAYS = 30;
+
+function daysLeft(deletedAt: string): number {
+  const deleted = new Date(deletedAt).getTime();
+  const elapsed = Date.now() - deleted;
+  const remaining = TRASH_RETENTION_DAYS - Math.floor(elapsed / 86_400_000);
+  return Math.max(0, remaining);
+}
 
 export default function DashboardPage() {
   const router = useRouter();
+  const [view, setView] = useState<"active" | "trash">("active");
   const projectsQuery = useProjects();
+  const trashQuery = useTrashProjects();
   const createProject = useCreateProject();
   const presignUpload = usePresignUpload();
   const deleteProject = useDeleteProject();
+  const restoreProject = useRestoreProject();
+  const purgeProject = usePurgeProject();
 
   const [composerOpen, setComposerOpen] = useState(false);
   const [title, setTitle] = useState("");
@@ -107,17 +121,30 @@ export default function DashboardPage() {
     <div className="mx-auto flex max-w-4xl flex-col gap-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-[22px] font-semibold tracking-tight text-ink">Projects</h1>
+          <h1 className="text-[22px] font-semibold tracking-tight text-ink">
+            {view === "trash" ? "Trash" : "Projects"}
+          </h1>
           <p className="mt-1 text-sm text-ink-tertiary">
-            Paste a YouTube link or upload a video — ClipForge finds the moments worth cutting.
+            {view === "trash"
+              ? `Deleted projects are permanently removed after ${TRASH_RETENTION_DAYS} days.`
+              : "Paste a YouTube link or upload a video — ClipForge finds the moments worth cutting."}
           </p>
         </div>
-        {!composerOpen && (
-          <Button onClick={() => setComposerOpen(true)}>
-            <Plus size={16} weight="bold" />
-            New project
+        <div className="flex items-center gap-2">
+          <Button
+            variant={view === "trash" ? "primary" : "ghost"}
+            onClick={() => setView(view === "trash" ? "active" : "trash")}
+          >
+            <Trash size={16} weight={view === "trash" ? "fill" : "regular"} />
+            Trash
           </Button>
-        )}
+          {view === "active" && !composerOpen && (
+            <Button onClick={() => setComposerOpen(true)}>
+              <Plus size={16} weight="bold" />
+              New project
+            </Button>
+          )}
+        </div>
       </div>
 
       {paywallMessage ? (
@@ -231,6 +258,66 @@ export default function DashboardPage() {
       )}
 
       <div className="flex flex-col gap-3">
+        {view === "trash" ? (
+          <>
+            {trashQuery.isLoading && (
+              <Card className="p-4">
+                <Skeleton className="h-4 w-1/3" />
+              </Card>
+            )}
+            {trashQuery.data?.length === 0 && (
+              <EmptyState
+                icon={<Trash size={28} />}
+                title="Trash is empty"
+                body="Deleted projects stay here and restorable for 30 days."
+              />
+            )}
+            {trashQuery.data?.map((p) => (
+              <Card key={p.id} className="group flex items-center gap-4 p-4">
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-ink-tertiary">
+                  <SourceTypeIcon type={p.source_type} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-ink">{p.title}</p>
+                  {(() => {
+                    const left = daysLeft(p.deleted_at);
+                    const ago = TRASH_RETENTION_DAYS - left;
+                    return (
+                      <p className="mt-0.5 truncate text-xs text-ink-muted">
+                        Deleted {ago} day{ago === 1 ? "" : "s"} ago · permanently removed in {left} day{left === 1 ? "" : "s"}
+                      </p>
+                    );
+                  })()}
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => restoreProject.mutate(p.id, { onError: fail })}
+                    disabled={restoreProject.isPending}
+                    className="flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-ink-secondary transition-colors hover:bg-surface-2 hover:text-ink disabled:opacity-50"
+                    aria-label={`Restore project ${p.title}`}
+                  >
+                    <ArrowCounterClockwise size={14} />
+                    Restore
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!window.confirm(`Permanently delete "${p.title}"? This frees its storage and can't be undone.`)) return;
+                      purgeProject.mutate(p.id, { onError: fail });
+                    }}
+                    disabled={purgeProject.isPending}
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-50"
+                    aria-label={`Permanently delete project ${p.title}`}
+                  >
+                    <X size={15} />
+                  </button>
+                </div>
+              </Card>
+            ))}
+          </>
+        ) : (
+          <>
         {projectsQuery.isLoading && (
           <div className="flex flex-col gap-3">
             {[0, 1, 2].map((i) => (
@@ -281,7 +368,7 @@ export default function DashboardPage() {
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    if (!window.confirm(`Delete "${p.title}"? You can't undo this.`)) return;
+                    if (!window.confirm(`Delete "${p.title}"? It moves to the trash and is restorable for ${TRASH_RETENTION_DAYS} days.`)) return;
                     deleteProject.mutate(p.id, { onError: fail });
                   }}
                   disabled={deleteProject.isPending && deleteProject.variables === p.id}
@@ -294,6 +381,8 @@ export default function DashboardPage() {
             </Card>
           </Link>
         ))}
+          </>
+        )}
       </div>
     </div>
   );
