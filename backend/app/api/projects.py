@@ -478,10 +478,6 @@ async def client_render_upload(
         raise HTTPException(status_code=404, detail="Not found")
     if db.get_clip_for_user(clip_id, user.id) is None:
         raise HTTPException(status_code=404, detail="Not found")
-    if not db.claim_upload_for_project(key, user.id, project_id):
-        outside = key.startswith(expected_prefix)
-        if not outside:
-            raise HTTPException(status_code=400, detail="Unknown render upload")
     body = await request.body()
     if not body:
         raise HTTPException(status_code=400, detail="Empty upload")
@@ -495,8 +491,11 @@ async def client_render_upload(
         client.put_object(Bucket=bucket, Key=key, Body=body, ContentType="video/mp4")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"R2 upload failed: {exc}") from exc
-    if not db.claim_upload_for_project(key, user.id, project_id):
-        raise HTTPException(status_code=400, detail="Unknown render upload")
+    claimed = db.claim_upload_for_project(key, user.id, project_id)
+    if not claimed:
+        existing = db.get_upload(key)
+        if not existing or existing.get("user_id") != user.id or existing.get("used_project_id") not in (None, project_id):
+            raise HTTPException(status_code=400, detail="Unknown render upload")
     db.set_clip_video_url(clip_id, key)
     storage.add_project_storage(project_id, user.id, len(body))
     data = db.get_clip_for_user(clip_id, user.id) or {}
