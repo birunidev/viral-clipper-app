@@ -3,7 +3,7 @@
 # The docker-compose stack publishes loopback-only ports:
 #   backend -> 127.0.0.1:8000   web -> 127.0.0.1:3000
 #
-# Replace BOTH occurrences of example.com with your real domain.
+# Site: https://snapclip.mysaas.web.id (DNS A record -> this VM)
 # The email below gets Let's Encrypt expiry notices.
 
 {
@@ -13,7 +13,7 @@
 	}
 }
 
-example.com {
+snapclip.mysaas.web.id {
 	# Modern TLS only. Caddy handles ACME issuance/renewal automatically;
 	# http:// requests are redirected to https:// by Caddy itself.
 	tls {
@@ -88,7 +88,7 @@ example.com {
 
 	# Everything else (SSR marketing site + /app/* client app) goes to Next.js.
 	handle {
-		reverse_proxy 127.0.0.1:3000 {
+		reverse_proxy 127.0.0.1:3005 {
 			health_uri /
 			health_interval 15s
 			health_timeout 5s

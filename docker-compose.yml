@@ -110,10 +110,12 @@ services:
       args:
         # Browser-facing API origin. With the host Caddy proxying /api/* on
         # the same domain as the web app, this can be a same-origin path.
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://example.com/api/v1}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://snapclip.mysaas.web.id/api/v1}
     restart: unless-stopped
     init: true
-    # Loopback-only publication: host Caddy reaches it at 127.0.0.1:3000.
+    # Loopback-only publication: host Caddy reaches web at 127.0.0.1:3005.
+    # Host side is 3005 because 3000 runs another service on this VPS;
+    # inside the container Next still listens on its default 3000.
     ports:
       - "127.0.0.1:3005:3000"
     depends_on:
