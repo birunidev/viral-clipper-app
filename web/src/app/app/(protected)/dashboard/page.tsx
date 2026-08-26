@@ -128,7 +128,7 @@ export default function DashboardPage() {
           <p className="mt-1 text-sm text-ink-tertiary">
             {view === "trash"
               ? `Deleted projects are permanently removed after ${TRASH_RETENTION_DAYS} days.`
-              : "Paste a YouTube link or upload a video — BandarClip finds the moments worth cutting."}
+              : "Paste a YouTube link or upload a video — SnapClip finds the moments worth cutting."}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -344,7 +344,7 @@ export default function DashboardPage() {
           <EmptyState
             icon={<FilmReel size={28} />}
             title="No projects yet"
-            body="Create your first project and BandarClip will find the moments worth cutting."
+            body="Create your first project and SnapClip will find the moments worth cutting."
             action={
               <Button onClick={() => setComposerOpen(true)}>
                 <Plus size={16} weight="bold" />

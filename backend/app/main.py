@@ -20,7 +20,7 @@ FRONTEND_URLS = [
     if origin.strip()
 ]
 
-app = FastAPI(title="BandarClip Backend")
+app = FastAPI(title="SnapClip Backend")
 
 if FRONTEND_URLS:
     app.add_middleware(

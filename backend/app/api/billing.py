@@ -169,7 +169,7 @@ def _checkout_midtrans(user: SessionUser, pack_key: str) -> CheckoutResponse:
         result = midtrans.create_snap_transaction(
             order_id=order_id,
             gross_amount=gross_amount,
-            plan_name=f"BandarClip {pack['name']} pack",
+            plan_name=f"SnapClip {pack['name']} pack",
             plan_key=pack_key,
             user_id=user.id,
             user_email=user.email,
