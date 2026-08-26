@@ -7,6 +7,7 @@ Ollama, etc.) and parses the returned JSON into structured clip objects.
 from __future__ import annotations
 
 import json
+import os
 import re
 
 SYSTEM_PROMPT = """You are a short-form video analyst. Read the transcript and identify the most
@@ -103,7 +104,14 @@ def analyze(
             "openai package is not installed. Run: poetry install"
         ) from exc
 
-    client = OpenAI(base_url=base_url or None, api_key=api_key)
+    # Hard timeout so a slow/queued provider (free tiers routinely stall on
+    # large prompts) fails the job instead of blocking it for the SDK's
+    # 10-minute default x retries. Env-tunable for slower local models.
+    try:
+        timeout = float(os.environ.get("LLM_TIMEOUT", "180"))
+    except ValueError:
+        timeout = 180.0
+    client = OpenAI(base_url=base_url or None, api_key=api_key, timeout=timeout, max_retries=2)
 
     if min_duration > max_duration:
         min_duration, max_duration = max_duration, min_duration

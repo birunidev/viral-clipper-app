@@ -2,6 +2,7 @@
 
 import {
   ArrowCounterClockwise,
+  ArrowLeft,
   CloudArrowUp,
   Clock,
   FilmReel,
@@ -131,18 +132,24 @@ export default function DashboardPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            variant={view === "trash" ? "primary" : "ghost"}
-            onClick={() => setView(view === "trash" ? "active" : "trash")}
-          >
-            <Trash size={16} weight={view === "trash" ? "fill" : "regular"} />
-            Trash
-          </Button>
-          {view === "active" && !composerOpen && (
-            <Button onClick={() => setComposerOpen(true)}>
-              <Plus size={16} weight="bold" />
-              New project
+          {view === "trash" ? (
+            <Button variant="ghost" onClick={() => setView("active")}>
+              <ArrowLeft size={16} weight="bold" />
+              Back
             </Button>
+          ) : (
+            <>
+              <Button variant="ghost" onClick={() => setView("trash")}>
+                <Trash size={16} />
+                Trash
+              </Button>
+              {!composerOpen && (
+                <Button onClick={() => setComposerOpen(true)}>
+                  <Plus size={16} weight="bold" />
+                  New project
+                </Button>
+              )}
+            </>
           )}
         </div>
       </div>
