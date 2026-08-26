@@ -39,18 +39,22 @@ _DROP = [
 
 
 def upgrade() -> None:
-    op.add_column(
-        "users",
-        sa.Column("entitlement_tier", sa.String(), server_default="free", nullable=False),
-    )
-    op.add_column(
-        "users",
-        sa.Column("credits", sa.BigInteger(), server_default="0", nullable=False),
-    )
-    # Free signup grant is applied at create-time in db.create_user; existing
-    # rows just start at the default balance. New users get the grant.
+    conn = op.get_bind()
+    cols = {c["name"] for c in sa.inspect(conn).get_columns("users")}
+    if "entitlement_tier" not in cols:
+        op.add_column(
+            "users",
+            sa.Column("entitlement_tier", sa.String(), server_default="free", nullable=False),
+        )
+    if "credits" not in cols:
+        op.add_column(
+            "users",
+            sa.Column("credits", sa.BigInteger(), server_default="0", nullable=False),
+        )
+    cols = {c["name"] for c in sa.inspect(conn).get_columns("users")}
     for col in _DROP:
-        op.drop_column("users", col)
+        if col in cols:
+            op.drop_column("users", col)
 
 
 def downgrade() -> None:

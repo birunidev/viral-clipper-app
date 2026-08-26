@@ -22,7 +22,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("projects", sa.Column("deleted_at", sa.DateTime(timezone=True)))
+    conn = op.get_bind()
+    if not any(c["name"] == "deleted_at" for c in sa.inspect(conn).get_columns("projects")):
+        op.add_column("projects", sa.Column("deleted_at", sa.DateTime(timezone=True)))
 
 
 def downgrade() -> None:

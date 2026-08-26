@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import datetime as dt
+
+from sqlalchemy import update as sqlalchemy_update
+
 from app import db
 from helpers import register_user
 
@@ -403,3 +407,104 @@ def test_client_render_other_users_clip_404(client):
         ).status_code
         == 404
     )
+
+
+def test_client_render_presign_rejects_when_storage_full(client, monkeypatch):
+    """Headroom pre-check at presign (mirrors /uploads/presign) so hopeless
+    uploads are rejected before any bytes move."""
+    register_user(client)
+    user = db.get_user_by_email("user@example.com")
+    project = _make_project(client)
+    clip_id = _make_clip(project["id"])
+
+    from core import storage
+
+    storage.add_storage(user["id"], storage.storage_cap(user["id"]))
+    res = client.post(
+        f"/api/v1/projects/{project['id']}/clips/{clip_id}/client-render/presign"
+    )
+    assert res.status_code == 409
+
+
+def test_client_render_complete_enforces_cap(client, monkeypatch):
+    """The authoritative quota check: a rendered file that would push the
+    user past their cap is rejected with 409, the clip is not registered,
+    and the ledger row stays UNCLAIMED so the stale-upload sweep reclaims
+    the orphaned object."""
+    from core import storage
+
+    register_user(client)
+    user = db.get_user_by_email("user@example.com")
+    project = _make_project(client)
+    clip_id = _make_clip(project["id"])
+
+    monkeypatch.setattr(
+        "core.s3.presign_put_url",
+        lambda key, content_type, expires=3600: f"https://r2.test/{key}?sig",
+    )
+    monkeypatch.setattr(
+        "core.s3.head_object_size_default_bucket", lambda k: 10 * 1024 * 1024
+    )
+    pres = client.post(
+        f"/api/v1/projects/{project['id']}/clips/{clip_id}/client-render/presign"
+    )
+    assert pres.status_code == 200
+    key = pres.json()["key"]
+
+    # Leave less room than the (faked) rendered size.
+    storage.add_storage(user["id"], storage.storage_cap(user["id"]) - 5 * 1024 * 1024)
+
+    done = client.post(
+        f"/api/v1/projects/{project['id']}/clips/{clip_id}/client-render/complete",
+        json={"key": key},
+    )
+    assert done.status_code == 409
+    assert db.get_clip_for_user(clip_id, user["id"])["video_url"] is None
+    upload = db.get_upload(key)
+    assert upload is not None and upload["used_project_id"] is None
+
+
+def test_stale_upload_sweep_purges_unclaimed_only(client, monkeypatch):
+    """A client that dies between presign and complete leaves an unclaimed
+    ledger row (and often an orphaned object). The lazy sweep must drop old
+    unclaimed rows + delete their objects, but never touch claimed uploads
+    or fresh ones."""
+    register_user(client)
+    user = db.get_user_by_email("user@example.com")
+
+    # Fresh unclaimed (presign moments ago) — must survive.
+    fresh_key = "projects/p1/clips/fresh.mp4"
+    db.record_upload(fresh_key, user["id"], "video/mp4")
+    # Old unclaimed (dead client render) — must be swept.
+    stale_key = "projects/p1/clips/stale.mp4"
+    db.record_upload(stale_key, user["id"], "video/mp4")
+    with db.session_scope() as session:
+        session.execute(
+            sqlalchemy_update(db.Upload)
+            .where(db.Upload.key == stale_key)
+            .values(created_at=dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=48))
+        )
+    # Old claimed (a real rendered clip) — must survive.
+    claimed_key = "projects/p1/clips/claimed.mp4"
+    db.record_upload(claimed_key, user["id"], "video/mp4")
+    with db.session_scope() as session:
+        session.execute(
+            sqlalchemy_update(db.Upload)
+            .where(db.Upload.key == claimed_key)
+            .values(
+                created_at=dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=48),
+                used_project_id="p1",
+            )
+        )
+
+    deleted = []
+    monkeypatch.setattr(
+        "core.s3.delete_object", lambda bucket, key: deleted.append(key)
+    )
+    res = client.get("/api/v1/projects")
+    assert res.status_code == 200
+
+    assert deleted == [stale_key]
+    assert db.get_upload(fresh_key) is not None
+    assert db.get_upload(claimed_key) is not None
+    assert db.get_upload(stale_key) is None

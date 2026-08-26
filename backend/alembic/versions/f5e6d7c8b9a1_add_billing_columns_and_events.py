@@ -19,25 +19,36 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "billing_events",
-        sa.Column("id", sa.String(), nullable=False),
-        sa.Column("event_id", sa.String(), nullable=False),
-        sa.Column("event_name", sa.String(), nullable=False),
-        sa.Column("payload", sa.JSON(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index(op.f("ix_billing_events_event_id"), "billing_events", ["event_id"], unique=True)
-
-    op.add_column("users", sa.Column("ls_customer_id", sa.String(), nullable=True))
-    op.add_column("users", sa.Column("ls_subscription_id", sa.String(), nullable=True))
-    op.add_column("users", sa.Column("ls_variant_id", sa.String(), nullable=True))
-    op.add_column("users", sa.Column("subscription_status", sa.String(), server_default="none", nullable=False))
-    op.add_column("users", sa.Column("current_period_start", sa.DateTime(timezone=True), nullable=True))
-    op.add_column("users", sa.Column("current_period_end", sa.DateTime(timezone=True), nullable=True))
-    op.add_column("users", sa.Column("minutes_used_current_period", sa.BigInteger(), server_default="0", nullable=False))
-    op.add_column("users", sa.Column("billing_email", sa.String(), nullable=True))
+    conn = op.get_bind()
+    insp = sa.inspect(conn)
+    if not conn.dialect.has_table(conn, "billing_events"):
+        op.create_table(
+            "billing_events",
+            sa.Column("id", sa.String(), nullable=False),
+            sa.Column("event_id", sa.String(), nullable=False),
+            sa.Column("event_name", sa.String(), nullable=False),
+            sa.Column("payload", sa.JSON(), nullable=False),
+            sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+            sa.PrimaryKeyConstraint("id"),
+        )
+    if not any(i["name"] == "ix_billing_events_event_id" for i in insp.get_indexes("billing_events")):
+        try:
+            op.create_index(op.f("ix_billing_events_event_id"), "billing_events", ["event_id"], unique=True)
+        except Exception:
+            pass
+    cols = {c["name"] for c in insp.get_columns("users")}
+    for col, ddl in [
+        ("ls_customer_id", sa.Column("ls_customer_id", sa.String(), nullable=True)),
+        ("ls_subscription_id", sa.Column("ls_subscription_id", sa.String(), nullable=True)),
+        ("ls_variant_id", sa.Column("ls_variant_id", sa.String(), nullable=True)),
+        ("subscription_status", sa.Column("subscription_status", sa.String(), server_default="none", nullable=False)),
+        ("current_period_start", sa.Column("current_period_start", sa.DateTime(timezone=True), nullable=True)),
+        ("current_period_end", sa.Column("current_period_end", sa.DateTime(timezone=True), nullable=True)),
+        ("minutes_used_current_period", sa.Column("minutes_used_current_period", sa.BigInteger(), server_default="0", nullable=False)),
+        ("billing_email", sa.Column("billing_email", sa.String(), nullable=True)),
+    ]:
+        if col not in cols:
+            op.add_column("users", ddl)
 
 
 def downgrade() -> None:

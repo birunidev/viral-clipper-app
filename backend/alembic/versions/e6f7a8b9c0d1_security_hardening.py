@@ -27,43 +27,53 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "uploads",
-        sa.Column("id", sa.String(), primary_key=True),
-        sa.Column("key", sa.String(), nullable=False),
-        sa.Column(
-            "user_id",
-            sa.String(),
-            sa.ForeignKey("users.id", ondelete="CASCADE"),
-            nullable=False,
-        ),
-        sa.Column("content_type", sa.String()),
-        sa.Column("size_bytes", sa.BigInteger()),
-        sa.Column("used_project_id", sa.String()),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.func.now(),
-            nullable=False,
-        ),
-    )
-    op.create_index("ix_uploads_key", "uploads", ["key"], unique=True)
-    op.create_index("ix_uploads_user_id", "uploads", ["user_id"])
+    conn = op.get_bind()
+    insp = sa.inspect(conn)
+    if not conn.dialect.has_table(conn, "uploads"):
+        op.create_table(
+            "uploads",
+            sa.Column("id", sa.String(), primary_key=True),
+            sa.Column("key", sa.String(), nullable=False),
+            sa.Column(
+                "user_id",
+                sa.String(),
+                sa.ForeignKey("users.id", ondelete="CASCADE"),
+                nullable=False,
+            ),
+            sa.Column("content_type", sa.String()),
+            sa.Column("size_bytes", sa.BigInteger()),
+            sa.Column("used_project_id", sa.String()),
+            sa.Column(
+                "created_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.func.now(),
+                nullable=False,
+            ),
+        )
+    if not any(i["name"] == "ix_uploads_key" for i in insp.get_indexes("uploads")):
+        op.create_index("ix_uploads_key", "uploads", ["key"], unique=True)
+    if not any(i["name"] == "ix_uploads_user_id" for i in insp.get_indexes("uploads")):
+        op.create_index("ix_uploads_user_id", "uploads", ["user_id"])
 
-    op.add_column("caption_styles", sa.Column("user_id", sa.String(), nullable=True))
-    op.create_index(
-        "ix_caption_styles_user_id",
-        "caption_styles",
-        ["user_id"],
-    )
-    op.create_foreign_key(
-        "fk_caption_styles_user_id",
-        "caption_styles",
-        "users",
-        ["user_id"],
-        ["id"],
-        ondelete="CASCADE",
-    )
+    if not any(c["name"] == "user_id" for c in insp.get_columns("caption_styles")):
+        op.add_column("caption_styles", sa.Column("user_id", sa.String(), nullable=True))
+    if not any(i["name"] == "ix_caption_styles_user_id" for i in insp.get_indexes("caption_styles")):
+        op.create_index(
+            "ix_caption_styles_user_id",
+            "caption_styles",
+            ["user_id"],
+        )
+    try:
+        op.create_foreign_key(
+            "fk_caption_styles_user_id",
+            "caption_styles",
+            "users",
+            ["user_id"],
+            ["id"],
+            ondelete="CASCADE",
+        )
+    except Exception:
+        pass
 
 
 def downgrade() -> None:

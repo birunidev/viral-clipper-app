@@ -138,6 +138,8 @@ export type BillingStatus = {
   credits: number;
   /** Whether bring-your-own-key is exposed (feature flag). */
   byok_enabled: boolean;
+  /** Server-side flag enabling browser (WebCodecs) clip rendering. */
+  client_render: boolean;
   limits: EntitlementLimits;
   usage: {
     storage_used_bytes: number;

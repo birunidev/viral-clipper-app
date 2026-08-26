@@ -2,9 +2,24 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
-import { api } from "@/lib/api";
-import type { CaptionStyle, Job, ProjectDetail, ProjectListItem, TrashProject } from "./types";
+import { API_URL, api } from "@/lib/api";
+import { renderClipInBrowser } from "@/lib/client-render/renderer";
+import { clientRenderEnabled } from "@/lib/client-render/support";
+import type {
+  BillingStatus,
+  CaptionStyle,
+  Clip,
+  Job,
+  ProjectDetail,
+  ProjectListItem,
+  TrashProject,
+} from "./types";
 import { settingsKey } from "./use-settings";
+
+/** Above this clip length the browser render gets memory-heavy (one
+ * assembled audio buffer + all frames); longer clips go straight to the
+ * server queue. */
+const MAX_CLIENT_RENDER_SECONDS = 120;
 
 export const projectsKey = ["projects"] as const;
 export const projectKey = (id: string) => ["projects", id] as const;
@@ -130,6 +145,149 @@ export function useRenderClip(projectId: string) {
       }),
     onSuccess: (job) => {
       queryClient.setQueryData(jobKey(job.id), job);
+      queryClient.invalidateQueries({ queryKey: projectKey(projectId) });
+    },
+  });
+}
+
+export type SmartRenderPayload = {
+  clip: Clip;
+  sourceUrl: string;
+  orientation: string;
+  captionStyleId?: string | null;
+  /** Resolved style config to burn in (null → no captions, like server). */
+  captionStyleConfig?: Record<string, unknown> | null;
+  watermark?: boolean;
+  maxResolution?: number | null;
+  /** Local progress of the browser render, 0..1 (client path only). */
+  onProgress?: (fraction: number) => void;
+  /** Called if the client render bailed and the server queue took over. */
+  onFallback?: () => void;
+};
+
+export type SmartRenderResult = {
+  mode: "client" | "server";
+  /** Set when mode === "client": the registered clip (with signed URL). */
+  clip?: Clip;
+  /** Set when mode === "server": the queued render job. */
+  job?: Job;
+};
+
+/**
+ * Render a single clip, preferring the browser (WebCodecs via mediabunny)
+ * whenever the backend flag and browser capabilities allow. The client path
+ * renders locally with live progress, auto-downloads the file, uploads it to
+ * R2 via presign/PUT and registers it exactly like a server render. ANY
+ * failure falls back transparently to the untouched server queue mutation.
+ */
+export function useSmartRenderClip(
+  projectId: string,
+  billing: BillingStatus | undefined
+) {
+  const queryClient = useQueryClient();
+  const serverRender = useRenderClip(projectId);
+  return useMutation<SmartRenderResult, Error, SmartRenderPayload>({
+    mutationFn: async (payload) => {
+      const { clip, sourceUrl } = payload;
+      if (
+        clientRenderEnabled(billing) &&
+        sourceUrl &&
+        clip.end_time - clip.start_time <= MAX_CLIENT_RENDER_SECONDS
+      ) {
+        let blob: Blob | null = null;
+        try {
+          let lastReport = 0;
+          blob = await renderClipInBrowser({
+            sourceUrl,
+            fallbackUrl: `${API_URL}/projects/${projectId}/source/stream`,
+            clipStartSeconds: clip.start_time,
+            clipEndSeconds: clip.end_time,
+            orientation: "portrait",
+            captionWords: clip.caption_json,
+            captionStyle: (payload.captionStyleConfig as never) ?? null,
+            watermark: payload.watermark,
+            maxResolution: payload.maxResolution,
+            onProgress: (fraction) => {
+              const now = Date.now();
+              if (fraction >= 1 || now - lastReport >= 250) {
+                lastReport = now;
+                payload.onProgress?.(fraction);
+              }
+            },
+          });
+        } catch (err) {
+          console.warn("client-render: falling back to server render", err);
+          payload.onFallback?.();
+          const job = await serverRender.mutateAsync({
+            clipId: clip.id,
+            orientation: payload.orientation,
+            captionStyleId: payload.captionStyleId ?? null,
+          });
+          return { mode: "server", job };
+        }
+
+        // Local render succeeded — auto-download
+        const objectUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = objectUrl;
+        a.download = `${clip.title.replace(/[^\w]+/g, "-").toLowerCase() || "clip"}.mp4`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+
+        // Upload: presign → PUT (direct R2) → complete. On CORS/network failure,
+        // retry via same-origin proxy. Upload failures MUST NOT fall back to
+        // server render — the local file is already downloaded.
+        const presign = await api.post<{ url: string; key: string }>(
+          `/projects/${projectId}/clips/${clip.id}/client-render/presign`,
+          {}
+        );
+        let uploaded = false;
+        try {
+          const put = await fetch(presign.url, {
+            method: "PUT",
+            headers: { "Content-Type": "video/mp4" },
+            body: blob,
+          });
+          if (!put.ok) throw new Error(`Upload failed (${put.status} ${put.statusText})`);
+          uploaded = true;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          const isCors = msg.includes("Failed to fetch") || msg.includes("CORS") || msg.includes("NetworkError");
+          if (!isCors) throw e;
+          console.warn("client-render: direct PUT failed, retrying via proxy", e);
+        }
+        if (uploaded) {
+          const registered = await api.post<Clip>(
+            `/projects/${projectId}/clips/${clip.id}/client-render/complete`,
+            { key: presign.key, size_bytes: blob.size }
+          );
+          return { mode: "client", clip: registered };
+        }
+        // Proxy upload fallback — same-origin, no CORS
+        const proxyRegistered = await fetch(
+          `${API_URL}/projects/${projectId}/clips/${clip.id}/client-render/upload?key=${encodeURIComponent(presign.key)}`,
+          { method: "POST", credentials: "include", body: blob, headers: { "Content-Type": "video/mp4" } }
+        ).then(async (r) => {
+          if (!r.ok) {
+            const t = await r.text().catch(() => r.statusText);
+            throw new Error(`Proxy upload failed (${r.status} ${t})`);
+          }
+          return r.json() as Promise<Clip>;
+        });
+        return { mode: "client", clip: proxyRegistered };
+      }
+      payload.onFallback?.();
+
+      const job = await serverRender.mutateAsync({
+        clipId: clip.id,
+        orientation: payload.orientation,
+        captionStyleId: payload.captionStyleId ?? null,
+      });
+      return { mode: "server", job };
+    },
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: projectKey(projectId) });
     },
   });

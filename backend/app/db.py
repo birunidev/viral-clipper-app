@@ -686,6 +686,36 @@ def claim_upload_for_project(key: str, user_id: str, project_id: str) -> bool:
         return (result.rowcount or 0) == 1
 
 
+STALE_UPLOAD_HOURS = 24  # presigned PUTs expire after 1h; this is 24x margin
+
+
+def delete_stale_uploads(max_age_hours: int = STALE_UPLOAD_HOURS) -> list[str]:
+    """Drop ledger rows for uploads that were never claimed by a project.
+
+    A client that vanishes between ``presign`` and ``complete`` (tab closed
+    mid browser-render, failed source upload, network death) leaves a ledger
+    row behind — and often an orphaned object in storage that no one can
+    ever attach, since claims are single-use and the key is unguessable.
+    Anything unclaimed after ``max_age_hours`` (presigned PUTs expire after
+    one hour) is safely dead: remove the rows and return their keys so the
+    caller can delete the orphaned objects best-effort. Claimed uploads are
+    never touched — those keys are live clip/source videos.
+    """
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=max_age_hours)
+    with session_scope() as db:
+        stmt = select(Upload).where(
+            Upload.used_project_id.is_(None),
+            Upload.created_at < cutoff,
+        )
+        stale = [row for row in db.execute(stmt).scalars().all()]
+        if not stale:
+            return []
+        keys = [row.key for row in stale]
+        for row in stale:
+            db.delete(row)
+        return keys
+
+
 def update_job(job_id: str, **fields: Any) -> None:
     if not fields:
         return

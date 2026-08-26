@@ -39,9 +39,11 @@ export function cropDimensions(
 }
 
 /** Scale a preset's reference font size to the actual output height
- * (mirrors core.captions._scaled_font_size). */
+ * (mirrors core.captions._scaled_font_size). Non-finite style values fall
+ * back to the defaults so a hostile config can't poison the math with NaN. */
 export function scaledFontSize(style: Partial<CaptionConfig>, height: number): number {
-  const font = Number(style.font_size ?? 64);
+  const raw = Number(style.font_size);
+  const font = Number.isFinite(raw) ? raw : 64;
   return Math.max(10, Math.min(Math.round((font * height) / REFERENCE_HEIGHT), 511));
 }
 
@@ -61,7 +63,8 @@ export function lineCharBudget(
   outWidth: number,
   outHeight: number
 ): number {
-  const presetMax = Number(style.max_chars_per_line ?? 32);
+  const rawMax = Number(style.max_chars_per_line);
+  const presetMax = Number.isFinite(rawMax) ? rawMax : 32;
   const fontSize = scaledFontSize(style, outHeight);
   const widthMax = maxCharsForWidth(outWidth, fontSize);
   return Math.min(presetMax, widthMax);

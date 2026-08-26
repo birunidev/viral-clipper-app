@@ -25,9 +25,10 @@ import {
   useJob,
   useProject,
   useRefreshProjectOnJobDone,
-  useRenderClip,
+  useSmartRenderClip,
   useStartJob,
 } from "@/hooks/use-projects";
+import { useBilling } from "@/hooks/use-billing";
 import type { Clip, ProjectDetail } from "@/hooks/types";
 import { Button } from "@/components/ui/button";
 import { CaptionStylePicker } from "@/components/project/caption-style-picker";
@@ -312,13 +313,31 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
     clip.caption_style_id
   );
   const captionStylesQuery = useCaptionStyles();
-  const renderClip = useRenderClip(project.id);
+  const billingQuery = useBilling();
+  // Client-side (WebCodecs) render first, transparent server fallback.
+  const renderClip = useSmartRenderClip(project.id, billingQuery.data);
+  const [localProgress, setLocalProgress] = useState<number | null>(null);
+  const [renderError, setRenderError] = useState("");
   const renderJobId = clip.render_job?.id;
   const renderJobQuery = useJob(renderJobId ?? "");
   const renderJob = renderJobQuery.data ?? clip.render_job;
   const isRendering = renderJob?.status === "queued" || renderJob?.status === "running";
 
   useRefreshProjectOnJobDone(project.id, renderJobQuery.data);
+
+  // A client-side render lives entirely in this tab's memory — closing or
+  // reloading mid-render loses the work (and any in-flight registration).
+  // Ask before leaving while one is running. The server path needs no
+  // guard: its jobs keep running on the backend regardless.
+  useEffect(() => {
+    if (localProgress === null) return;
+    function onBeforeUnload(e: BeforeUnloadEvent) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [localProgress]);
 
   const duration = clip.end_time - clip.start_time;
   const canPreview = Boolean(project.source_video_url);
@@ -329,9 +348,29 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
   function handleRender(styleId: string | null) {
     setSelectedStyleId(styleId);
     setCaptionsOpen(false);
+    setLocalProgress(0);
+    setRenderError("");
+    const styleConfig = styleId
+      ? (captionStylesQuery.data?.find((s) => s.id === styleId)?.config as
+          | Record<string, unknown>
+          | undefined) ?? null
+      : null;
     renderClip.mutate(
-      { clipId: clip.id, orientation: "portrait", captionStyleId: styleId },
-      { onError: () => {} }
+      {
+        clip,
+        sourceUrl: project.source_video_url ?? "",
+        orientation: "portrait",
+        captionStyleId: styleId,
+        captionStyleConfig: styleConfig,
+        watermark: billingQuery.data?.limits.watermark ?? false,
+        maxResolution: billingQuery.data?.limits.max_resolution ?? null,
+        onProgress: setLocalProgress,
+        onFallback: () => setLocalProgress(null),
+      },
+      {
+        onError: (err) => setRenderError(err.message),
+        onSettled: () => setLocalProgress(null),
+      }
     );
   }
 
@@ -397,10 +436,19 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
           </div>
 
           <div className="mt-2 flex items-center gap-2">
-            {isRendering ? (
+            {isRendering || renderClip.isPending ? (
               <div className="flex flex-1 items-center gap-2 rounded-lg border border-line bg-surface-2 px-3 py-1.5 text-xs text-ink-secondary">
                 <CircleNotch size={13} className="animate-spin" />
-                Rendering… {renderJob?.progress ?? 0}%
+                {localProgress !== null ? (
+                  <>
+                    <span className="whitespace-nowrap">Rendering locally…</span>
+                    <span className="ml-auto tabular-nums">
+                      {Math.round(localProgress * 100)}%
+                    </span>
+                  </>
+                ) : (
+                  <>Rendering… {renderJob?.progress ?? 0}%</>
+                )}
               </div>
             ) : (
               <>
@@ -435,6 +483,13 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
               </>
             )}
           </div>
+
+          {renderError && !renderClip.isPending && (
+            <p className="mt-1 flex items-start gap-1.5 text-xs text-danger">
+              <Warning size={13} weight="fill" className="mt-0.5 shrink-0" />
+              <span className="pretty">{renderError}</span>
+            </p>
+          )}
 
           {captionsOpen && !isRendering && (
             <div className="mt-1 rounded-lg border border-line bg-surface-2 p-3">

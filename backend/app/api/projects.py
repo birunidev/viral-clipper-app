@@ -6,7 +6,7 @@ import logging
 import os
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .. import db
 from ..schemas import (
@@ -49,17 +49,67 @@ def _presigned(key: str | None) -> str | None:
         return None
 
 
+@router.get("/{project_id}/source/stream")
+def stream_source(project_id: str, request: Request, user: SessionUser = Depends(current_user)):
+    """Same-origin proxy for the source video — avoids R2 CORS when bucket CORS
+    is misconfigured. Supports Range requests so mediabunny can stream."""
+    from fastapi.responses import StreamingResponse
+
+    from core.s3 import _client, _get_bucket
+
+    project = db.get_project_for_user(project_id, user.id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    key = project.get("source_key")
+    if not key:
+        raise HTTPException(status_code=404, detail="No source")
+    client = _client()
+    bucket = _get_bucket()
+    range_header = request.headers.get("range")
+    candidates = [key, f"testing-bucket/{key}", key.removeprefix("testing-bucket/")]
+    obj = None
+    last_exc: Exception | None = None
+    status = 200
+    for cand in dict.fromkeys(candidates):
+        try:
+            if range_header:
+                obj = client.get_object(Bucket=bucket, Key=cand, Range=range_header)
+                status = 206
+            else:
+                obj = client.get_object(Bucket=bucket, Key=cand)
+                status = 200
+            break
+        except Exception as exc:
+            last_exc = exc
+            continue
+    if obj is None:
+        raise HTTPException(status_code=404, detail=str(last_exc) if last_exc else "Not found")
+    headers: dict[str, str] = {"Accept-Ranges": "bytes", "Cache-Control": "private, max-age=3600"}
+    if obj.get("ContentRange"):
+        headers["Content-Range"] = obj["ContentRange"]
+    if obj.get("ContentLength") is not None:
+        headers["Content-Length"] = str(obj["ContentLength"])
+    return StreamingResponse(
+        obj["Body"].iter_chunks(chunk_size=1 << 20),
+        status_code=status,
+        media_type=obj.get("ContentType") or "video/mp4",
+        headers=headers,
+    )
+
+
 @router.get("", response_model=list[ProjectListItem])
 def list_projects(user: SessionUser = Depends(current_user)) -> list[dict]:
     # Lazy trash sweep: anything past its 30-day retention is permanently
     # deleted (rows + S3 objects) before we show the live list.
     _cleanup_expired_trash()
+    _cleanup_stale_uploads()
     return db.list_projects_for_user(user.id)
 
 
 @router.get("/trash", response_model=list[TrashListItem])
 def list_trash(user: SessionUser = Depends(current_user)) -> list[dict]:
     _cleanup_expired_trash()
+    _cleanup_stale_uploads()
     return db.list_trash_for_user(user.id)
 
 
@@ -75,6 +125,26 @@ def _cleanup_expired_trash() -> None:
                     delete_object(bucket, key)
     except Exception as exc:  # never block listings on cleanup failures
         logger.warning("Trash purge failed: %s", exc)
+
+
+def _cleanup_stale_uploads() -> None:
+    """Best-effort purge of never-claimed upload keys (dead client renders,
+    abandoned source uploads): drops their ledger rows and deletes any
+    orphaned objects. Runs lazily next to the trash sweep."""
+    try:
+        keys = db.delete_stale_uploads()
+        bucket = os.environ.get("S3_BUCKET", "")
+        if not keys or not bucket:
+            return
+        from core.s3 import delete_object
+
+        for key in keys:
+            try:
+                delete_object(bucket, key)
+            except Exception as exc:  # one bad object can't stop the sweep
+                logger.warning("Stale upload object delete failed (%s): %s", key, exc)
+    except Exception as exc:  # never block listings on cleanup failures
+        logger.warning("Stale upload purge failed: %s", exc)
 
 
 @router.post("", response_model=ProjectListItem, status_code=201)
@@ -311,6 +381,19 @@ def client_render_presign(
     if db.get_clip_for_user(clip_id, user.id) is None:
         raise HTTPException(status_code=404, detail="Not found")
 
+    # The backend never sees the bytes, so this is a headroom pre-check
+    # only (mirrors /uploads/presign); the authoritative cap check happens
+    # at ``complete`` with the real object size.
+    if storage.storage_remaining(user.id) <= storage.UPLOAD_HEADROOM_BYTES:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Storage limit reached ({storage.storage_used(user.id)} of "
+                f"{storage.storage_cap(user.id)} bytes used). Delete a project "
+                "or buy a bigger credit pack to free up space."
+            ),
+        )
+
     key = f"projects/{project_id}/clips/{uuid.uuid4().hex}.mp4"
     try:
         url = presign_put_url(key, "video/mp4")
@@ -346,16 +429,76 @@ def client_render_complete(
     key = payload.key.strip()
     if not key.startswith(expected_prefix) or not key.endswith(".mp4"):
         raise HTTPException(status_code=400, detail="Invalid render key")
-    if not db.claim_upload_for_project(key, user.id, project_id):
-        raise HTTPException(status_code=400, detail="Unknown render upload")
     from core.s3 import head_object_size_default_bucket
 
     size = head_object_size_default_bucket(key)
     if size is None:
         raise HTTPException(status_code=400, detail="Rendered file not found in storage")
 
+    # Authoritative quota check with the real object size — the presign
+    # headroom check can't see bytes. Mirrors the server render's
+    # enforce_cap-before-accounting order (pipeline.py). Deliberately runs
+    # BEFORE the single-use claim: on rejection the ledger row stays
+    # unclaimed so the stale-upload sweep reclaims it along with the object.
+    try:
+        storage.enforce_cap(user.id, size)
+    except storage.StorageQuotaExceeded as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    if not db.claim_upload_for_project(key, user.id, project_id):
+        raise HTTPException(status_code=400, detail="Unknown render upload")
+
     db.set_clip_video_url(clip_id, key)
     storage.add_project_storage(project_id, user.id, size)
+    data = db.get_clip_for_user(clip_id, user.id) or {}
+    data["signed_video_url"] = _presigned(key)
+    return data
+
+
+@router.post("/{project_id}/clips/{clip_id}/client-render/upload")
+async def client_render_upload(
+    project_id: str,
+    clip_id: str,
+    request: Request,
+    user: SessionUser = Depends(current_user),
+):
+    """Same-origin upload fallback for browser-rendered clips — avoids R2 CORS
+    on presigned PUT. Body is raw video/mp4 bytes; query ?key= must match the
+    presigned key. Streams to R2 server-side then completes like the presign
+    path. Used when direct PUT fails with CORS."""
+    from core.s3 import _client, _get_bucket
+
+    key = request.query_params.get("key", "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="Missing key")
+    expected_prefix = f"projects/{project_id}/clips/"
+    if not key.startswith(expected_prefix) or not key.endswith(".mp4"):
+        raise HTTPException(status_code=400, detail="Invalid render key")
+    if db.get_project_for_user(project_id, user.id) is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    if db.get_clip_for_user(clip_id, user.id) is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not db.claim_upload_for_project(key, user.id, project_id):
+        outside = key.startswith(expected_prefix)
+        if not outside:
+            raise HTTPException(status_code=400, detail="Unknown render upload")
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="Empty upload")
+    try:
+        storage.enforce_cap(user.id, len(body))
+    except storage.StorageQuotaExceeded as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    try:
+        client = _client()
+        bucket = _get_bucket()
+        client.put_object(Bucket=bucket, Key=key, Body=body, ContentType="video/mp4")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"R2 upload failed: {exc}") from exc
+    if not db.claim_upload_for_project(key, user.id, project_id):
+        raise HTTPException(status_code=400, detail="Unknown render upload")
+    db.set_clip_video_url(clip_id, key)
+    storage.add_project_storage(project_id, user.id, len(body))
     data = db.get_clip_for_user(clip_id, user.id) or {}
     data["signed_video_url"] = _presigned(key)
     return data

@@ -19,20 +19,22 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Provider-agnostic names: Paddle (and any future MoR gateway) stores its
-    # customer/subscription/price ids in these columns.
-    op.alter_column("users", "ls_customer_id", new_column_name="billing_customer_id")
-    op.alter_column("users", "ls_subscription_id", new_column_name="billing_subscription_id")
-    op.alter_column("users", "ls_variant_id", new_column_name="billing_price_id")
-
-    # Default gateway is now Paddle; migrate any pre-existing LS markers.
-    op.alter_column(
-        "users",
-        "payment_provider",
-        existing_type=sa.String(),
-        server_default="paddle",
-    )
-    op.execute("UPDATE users SET payment_provider = 'paddle' WHERE payment_provider = 'lemonsqueezy'")
+    conn = op.get_bind()
+    cols = {c["name"] for c in sa.inspect(conn).get_columns("users")}
+    if "ls_customer_id" in cols and "billing_customer_id" not in cols:
+        op.alter_column("users", "ls_customer_id", new_column_name="billing_customer_id")
+    if "ls_subscription_id" in cols and "billing_subscription_id" not in cols:
+        op.alter_column("users", "ls_subscription_id", new_column_name="billing_subscription_id")
+    if "ls_variant_id" in cols and "billing_price_id" not in cols:
+        op.alter_column("users", "ls_variant_id", new_column_name="billing_price_id")
+    if "payment_provider" in cols:
+        op.alter_column(
+            "users",
+            "payment_provider",
+            existing_type=sa.String(),
+            server_default="paddle",
+        )
+        op.execute("UPDATE users SET payment_provider = 'paddle' WHERE payment_provider = 'lemonsqueezy'")
 
 
 def downgrade() -> None:
