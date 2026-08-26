@@ -110,6 +110,8 @@ services:
         # Browser-facing API origin. With the host Caddy proxying /api/* on
         # the same domain as the web app, this can be a same-origin path.
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://snapclip.mysaas.web.id/api/v1}
+        # GA4 measurement id (empty = analytics disabled).
+        NEXT_PUBLIC_GA_ID: ${NEXT_PUBLIC_GA_ID:-}
     restart: unless-stopped
     init: true
     # Loopback-only publication: host Caddy reaches web at 127.0.0.1:3005
