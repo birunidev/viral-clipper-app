@@ -13,7 +13,7 @@ function Logo() {
       <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent text-accent-ink">
         <VideoCamera size={16} weight="fill" />
       </span>
-      <span className="text-[15px] font-semibold tracking-tight text-ink">ClipForge</span>
+      <span className="text-[15px] font-semibold tracking-tight text-ink">BandarClip</span>
     </Link>
   );
 }

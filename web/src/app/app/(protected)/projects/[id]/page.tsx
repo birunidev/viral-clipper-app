@@ -52,7 +52,10 @@ function PipelineStages({ stage }: { stage: string | null }) {
   const idx = effectiveStage
     ? STAGE_ORDER.indexOf(effectiveStage as (typeof STAGE_ORDER)[number])
     : -1;
-  const labels = { ...STAGE_LABEL, ...(reusing ? { downloading: "Loading stored source" } : {}) };
+  const labels: Record<string, string> = {
+    ...STAGE_LABEL,
+    ...(reusing ? { downloading: "Loading stored source" } : {}),
+  };
 
   return (
     <ol className="flex items-center gap-2">

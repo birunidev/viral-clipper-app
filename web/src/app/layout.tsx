@@ -13,10 +13,46 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3005";
+
 export const metadata: Metadata = {
-  title: "ClipForge — Turn long videos into viral short clips",
+  metadataBase: new URL(SITE_URL),
+  title: {
+    default: "BandarClip — Turn long videos into viral short clips",
+    template: "%s · BandarClip",
+  },
   description:
-    "Paste a YouTube link or upload a video. ClipForge transcribes it, finds the moments that hook, and cuts them to 9:16 — automatically.",
+    "Paste a YouTube link or upload a video. BandarClip transcribes it, finds the moments that hook, and cuts them to 9:16 — automatically.",
+  applicationName: "BandarClip",
+  keywords: [
+    "video clips",
+    "viral clips",
+    "short clips",
+    "TikTok clips",
+    "Reels",
+    "Shorts",
+    "YouTube to TikTok",
+    "AI video editor",
+    "podcast clips",
+  ],
+  openGraph: {
+    type: "website",
+    siteName: "BandarClip",
+    title: "BandarClip — Turn long videos into viral short clips",
+    description:
+      "Paste a YouTube link or upload a video. BandarClip transcribes it, finds the moments that hook, and cuts them to 9:16 — automatically.",
+    url: SITE_URL,
+    images: [{ url: "/og.png", width: 1200, height: 630, alt: "BandarClip" }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "BandarClip — Turn long videos into viral short clips",
+    description:
+      "Paste a YouTube link or upload a video. BandarClip transcribes it, finds the moments that hook, and cuts them to 9:16 — automatically.",
+    images: ["/og.png"],
+  },
+  alternates: { canonical: "/" },
+  robots: { index: true, follow: true },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -52,7 +52,7 @@ function PricingTier({
 }
 
 function ClipPreview() {
-  // A real mini-UI specimen rendered inline — the ClipForge signature:
+  // A real mini-UI specimen rendered inline — the BandarClip signature:
   // timestamp-forward clip cards + pipeline stages. Not a fake screenshot.
   const clips = [
     { t: "0:42 – 1:18", dur: "36s", title: "The hook that changed everything", hook: "This one sentence is why the video blew up." },
@@ -102,7 +102,7 @@ export default function HomePage() {
           <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent text-accent-ink">
             <Scissors size={15} weight="bold" />
           </span>
-          <span className="text-[15px] font-semibold tracking-tight text-ink">ClipForge</span>
+          <span className="text-[15px] font-semibold tracking-tight text-ink">BandarClip</span>
         </Link>
         <nav className="flex items-center gap-2">
           <Link
@@ -133,7 +133,7 @@ export default function HomePage() {
             <span className="text-ink-tertiary">Viral clips out.</span>
           </h1>
           <p className="max-w-md text-base leading-relaxed text-ink-tertiary pretty">
-            Paste a YouTube link or upload a file. ClipForge transcribes it,
+            Paste a YouTube link or upload a file. BandarClip transcribes it,
             finds the moments that hook, and cuts them to 9:16 — automatically.
           </p>
           <div className="flex items-center gap-3">
@@ -225,7 +225,7 @@ export default function HomePage() {
       </section>
 
       <footer className="flex items-center justify-between border-t border-line px-6 py-5 md:px-10">
-        <span className="text-xs text-ink-muted">ClipForge — private by default, runs locally.</span>
+        <span className="text-xs text-ink-muted">BandarClip — private by default, runs locally.</span>
         <Link href="/app/login" className="text-xs text-ink-tertiary hover:text-ink">
           Sign in
         </Link>
