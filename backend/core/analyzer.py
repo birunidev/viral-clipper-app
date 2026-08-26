@@ -1,7 +1,21 @@
 """OpenAI-compatible LLM analysis wrapper.
 
 Sends a transcript to any OpenAI-compatible endpoint (OpenAI, Groq,
-Ollama, etc.) and parses the returned JSON into structured clip objects.
+Ollama, OpenRouter free tiers, etc.) and parses the returned JSON into
+structured clip objects.
+
+Long-video strategy (map-reduce): raw transcripts easily exceed what
+small/free models can ingest in one request, and a single huge prompt is
+exactly where cheap providers stall or time out. Instead, the word-level
+timeline is grouped into ~30s timestamped blocks ([12s-41s] ...), those
+blocks are packed into chunks under ``LLM_CHUNK_CHARS`` characters, each
+chunk gets its own small completion call, and the per-chunk clip lists
+are merged and de-duplicated at the end. A flaky chunk only costs its own
+moments — the job survives as long as any chunk yields clips.
+
+The timestamp labels matter beyond chunking: they let even a weak model
+anchor clip boundaries to real seconds instead of guessing from text
+position.
 """
 
 from __future__ import annotations
@@ -10,15 +24,19 @@ import json
 import os
 import re
 
-SYSTEM_PROMPT = """You are a short-form video analyst. Read the transcript and identify the most
-viral-worthy moments that would perform well as short vertical clips (TikTok, Reels,
-Shorts). For each clip provide a catchy title, a short one-line viral hook caption,
-and the start/end timestamps in seconds measured from the beginning of the source
-video. Return ONLY a JSON object matching this exact schema and nothing else:
+SYSTEM_PROMPT = """You are a short-form video analyst. Read this portion of a video
+transcript and identify the most viral-worthy moments that would perform well as short
+vertical clips (TikTok, Reels, Shorts). For each clip provide a catchy title, a short
+one-line viral hook caption, and the start/end timestamps in seconds measured from the
+beginning of the source video. Return ONLY a JSON object matching this exact schema and
+nothing else:
 
 {"clips": [{"title": "string", "hook": "string", "start": 12.5, "end": 38.0}]}
 
 Rules:
+- Transcript lines are prefixed with their [startS-endS] second offsets into the FULL
+  video. Use those markers: clip start/end must fall inside the offsets of the lines
+  you picked from.
 - IMPORTANT: write the title and hook in the SAME language as the transcript. Match
   the language of the transcript and the declared language hint. For example, if the
   transcript is in Bahasa Indonesia, write all titles and hooks in Indonesian.
@@ -28,12 +46,18 @@ Rules:
 - end must be strictly greater than start.
 - Clip length should be between {min_duration} and {max_duration} seconds. This
   range is a hard requirement from the user, not a suggestion.
-- Return between 3 and 8 clips. Prefer moments with strong hooks, emotion, or payoff.
+- Return between 1 and 8 clips from THIS portion. Prefer moments with strong hooks,
+  emotion, or payoff. If nothing here is compelling, return {"clips": []}.
 """
 
 JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
 FENCE_RE = re.compile(r"```(?:json)?\s*", re.IGNORECASE)
+
+# Size of one timestamped block and one LLM request payload. Both small so
+# free-tier models (short contexts, aggressive queues) can handle them.
+BLOCK_SECONDS = 30
+DEFAULT_CHUNK_CHARS = 9000
 
 
 class AnalysisError(Exception):
@@ -66,6 +90,70 @@ LANGUAGE_NAMES = {
 }
 
 
+def format_timestamped_words(
+    words: list[dict], block_seconds: int = BLOCK_SECONDS
+) -> list[str]:
+    """Group word timings into ``[startS-endS] text`` lines of ~block_seconds."""
+    lines: list[str] = []
+    block_start: float | None = None
+    block_end = 0.0
+    buf: list[str] = []
+    for w in words:
+        try:
+            start_ms = float(w["start_ms"])
+            end_ms = float(w["end_ms"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        text = str(w.get("text", "")).strip()
+        if not text:
+            continue
+        s, e = start_ms / 1000.0, max(start_ms / 1000.0, end_ms / 1000.0)
+        if block_start is None:
+            block_start = s
+        buf.append(text)
+        block_end = e
+        if block_end - block_start >= block_seconds:
+            lines.append(f"[{int(block_start)}s-{int(block_end)}s] {' '.join(buf)}")
+            buf, block_start = [], None
+    if buf:
+        lines.append(f"[{int(block_start or 0)}s-{int(block_end)}s] {' '.join(buf)}")
+    return lines
+
+
+def chunk_lines(lines: list[str], max_chars: int) -> list[str]:
+    """Pack whole lines into chunks of at most ~max_chars characters."""
+    chunks: list[str] = []
+    cur: list[str] = []
+    size = 0
+    for line in lines:
+        if cur and size + len(line) + 1 > max_chars:
+            chunks.append("\n".join(cur))
+            cur, size = [], 0
+        cur.append(line)
+        size += len(line) + 1
+    if cur:
+        chunks.append("\n".join(cur))
+    return chunks
+
+
+def merge_clips(clips: list[dict]) -> list[dict]:
+    """Sort by start time and drop clips that heavily overlap an earlier one
+    (same moment found by adjacent chunks)."""
+    ordered = sorted(clips, key=lambda c: c["start"])
+    result: list[dict] = []
+    for clip in ordered:
+        dup = False
+        for kept in result:
+            inter = min(kept["end"], clip["end"]) - max(kept["start"], clip["start"])
+            shorter = min(kept["end"] - kept["start"], clip["end"] - clip["start"])
+            if shorter > 0 and inter / shorter > 0.5:
+                dup = True
+                break
+        if not dup:
+            result.append(clip)
+    return result
+
+
 def analyze(
     transcript: str,
     api_key: str,
@@ -74,6 +162,8 @@ def analyze(
     language: str | None = None,
     min_duration: int = 15,
     max_duration: int = 90,
+    words: list[dict] | None = None,
+    progress=None,
 ) -> list[dict]:
     """Send the transcript to the configured LLM and return a list of clips.
 
@@ -88,10 +178,19 @@ def analyze(
     requirement, and any returned clip outside the range is clamped to the
     nearest bound.
 
+    ``words`` (optional) is the word-level timeline
+    (``[{"text", "start_ms", "end_ms"}, ...]``). When given, the transcript
+    is rendered with absolute-second markers and split into small chunks so
+    long videos work on short-context / free-tier models; each chunk is
+    analysed separately and the results merged. Without ``words`` the plain
+    text is sent in a single (truncated) request.
+
+    ``progress`` (optional) receives floats in [0, 1] as chunk calls finish.
+
     Each clip is a dict with keys ``title``, ``start``, ``end``. Raises
-    AnalysisError if the model output cannot be parsed.
+    AnalysisError if no chunk yields usable clips.
     """
-    if not transcript.strip():
+    if not transcript.strip() and not words:
         raise AnalysisError("Transcript is empty; nothing to analyze.")
     if not api_key:
         raise AnalysisError("LLM API key is required.")
@@ -105,7 +204,7 @@ def analyze(
         ) from exc
 
     # Hard timeout so a slow/queued provider (free tiers routinely stall on
-    # large prompts) fails the job instead of blocking it for the SDK's
+    # large prompts) fails the call instead of blocking for the SDK's
     # 10-minute default x retries. Env-tunable for slower local models.
     try:
         timeout = float(os.environ.get("LLM_TIMEOUT", "180"))
@@ -126,26 +225,77 @@ def analyze(
             f"Write every title and hook in {name}, not English."
         )
 
+    # Build the request payloads: small timestamped chunks when we have the
+    # word timeline, one truncated plain-text request otherwise.
+    try:
+        chunk_chars = int(os.environ.get("LLM_CHUNK_CHARS", str(DEFAULT_CHUNK_CHARS)))
+    except ValueError:
+        chunk_chars = DEFAULT_CHUNK_CHARS
+    if words:
+        payloads = chunk_lines(format_timestamped_words(words), chunk_chars) or [""]
+    else:
+        payloads = [transcript[:20000]]
+
+    collected: list[dict] = []
+    total = max(len(payloads), 1)
+    for i, payload in enumerate(payloads):
+        try:
+            collected.extend(
+                _analyze_chunk(
+                    client,
+                    system_prompt,
+                    payload,
+                    model,
+                    min_duration=min_duration,
+                    max_duration=max_duration,
+                )
+            )
+        except (APIError, APIConnectionError, APITimeoutError) as exc:
+            # One dead chunk shouldn't kill hours of transcription on a long
+            # video — but a single-chunk analysis has nothing to fall back
+            # to, so surface the error there.
+            if len(payloads) == 1:
+                raise AnalysisError(f"LLM request failed: {exc}") from exc
+        if progress is not None:
+            progress((i + 1) / total)
+
+    merged = merge_clips(collected)
+    if not merged:
+        raise AnalysisError("The model returned no usable clip timestamps.")
+
+    return merged
+
+
+def _analyze_chunk(
+    client,
+    system_prompt: str,
+    transcript_chunk: str,
+    model: str,
+    min_duration: int,
+    max_duration: int,
+) -> list[dict]:
+    """One LLM call over one transcript chunk → parsed clips."""
     try:
         response = client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": transcript[:20000]},
+                {"role": "user", "content": transcript_chunk[:20000]},
             ],
             response_format={"type": "json_object"},
             temperature=0.4,
         )
-    except (APIError, APIConnectionError, APITimeoutError) as exc:
+    except Exception as exc:
+        # Normalize SDK/network errors so callers can treat all provider
+        # failures uniformly (callers catch APIError family + this).
+        from openai import APIError
+
+        if isinstance(exc, APIError):
+            raise
         raise AnalysisError(f"LLM request failed: {exc}") from exc
 
     raw = (response.choices[0].message.content or "").strip()
-    clips = parse_clips(raw, min_duration=min_duration, max_duration=max_duration)
-
-    if not clips:
-        raise AnalysisError("The model returned no usable clip timestamps.")
-
-    return clips
+    return parse_clips(raw, min_duration=min_duration, max_duration=max_duration)
 
 
 def parse_clips(

@@ -88,7 +88,8 @@ def _user_settings_for(user_id: str) -> dict:
 ANALYZE_STAGE_RANGES = {
     "downloading": (2, 25),
     "transcribing": (28, 70),
-    "analyzing": (72, 99),
+    "analyzing": (72, 90),  # LLM chunk calls
+    "clips": (90, 99),      # thumbnails/caption derivation per clip
 }
 
 # overall progress ranges per stage (out of 100) — render job
@@ -507,24 +508,35 @@ def _run_analyze(job_id: str) -> None:
         # credits past the balance before it is deducted. Managed users (the
         # default) always pay; BYOK users (flag opt-in) are unmetered.
         user_id = project.get("user_id", "")
-        if user_id and billing.uses_managed(user_id):
-            billing.enforce_credits(user_id, _probe_duration(local_video))
+        cached_words = db.get_timeline_words(project_id)
+        if cached_words:
+            # A previous attempt already transcribed this exact source (e.g.
+            # analysis/LLM failed afterwards). Resume from the stored word
+            # timeline instead of paying for — and waiting on — a second
+            # transcription pass.
+            transcript_result = transcriber.TranscriptResult(
+                text=" ".join(w["text"] for w in cached_words),
+                words=cached_words,
+                language=project.get("language"),
+            )
+        else:
+            if user_id and billing.uses_managed(user_id):
+                billing.enforce_credits(user_id, _probe_duration(local_video))
 
-        transcript_result = transcriber.transcribe_with_words(
-            local_video,
-            assemblyai_key,
-            progress=_make_progress(job_id, *ANALYZE_STAGE_RANGES["transcribing"]),
-            provider=transcription_provider,
-            language=source_language,
-        )
-        db.update_job(job_id, stage="transcribing", progress=70)
+            transcript_result = transcriber.transcribe_with_words(
+                local_video,
+                assemblyai_key,
+                progress=_make_progress(job_id, *ANALYZE_STAGE_RANGES["transcribing"]),
+                provider=transcription_provider,
+                language=source_language,
+            )
 
-        # Deduct credits (1 = 1 source minute) for a *managed* job (operator keys)
-        # as soon as transcription completes — the bulk of the cost. Deducting
-        # here (not after analysis) means a job that fails analysis still
-        # costs its source length, since the expensive transcription ran.
-        if user_id and billing.uses_managed(user_id):
-            billing.record_credits(user_id, _probe_duration(local_video))
+            # Deduct credits (1 = 1 source minute) for a *managed* job (operator keys)
+            # as soon as transcription completes — the bulk of the cost. Deducting
+            # here (not after analysis) means a job that fails analysis still
+            # costs its source length, since the expensive transcription ran.
+            if user_id and billing.uses_managed(user_id):
+                billing.record_credits(user_id, _probe_duration(local_video))
 
         # Prefer the transcription provider's detected language (ground
         # truth) over the source metadata hint.
@@ -545,6 +557,8 @@ def _run_analyze(job_id: str) -> None:
             language=detected_language,
             min_duration=min_clip_seconds,
             max_duration=max_clip_seconds,
+            words=transcript_result.words,
+            progress=_make_progress(job_id, *ANALYZE_STAGE_RANGES["analyzing"]),
         )
         if len(clips) > max_clips:
             clips = clips[:max_clips]
@@ -583,7 +597,7 @@ def _run_analyze(job_id: str) -> None:
                 caption_json=caption_json,
             )
 
-            lo, hi = ANALYZE_STAGE_RANGES["analyzing"]
+            lo, hi = ANALYZE_STAGE_RANGES["clips"]
             db.update_job(job_id, stage="analyzing", progress=int(lo + (hi - lo) * i / total))
 
         db.update_job(job_id, status="completed", stage=None, progress=100)

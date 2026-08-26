@@ -157,7 +157,7 @@ def test_analyze_clamps_out_of_range_response(monkeypatch):
             self.completions = _RangeCompletions()
 
     class _RangeOpenAI:
-        def __init__(self, base_url=None, api_key=None):
+        def __init__(self, *args, **kwargs):
             self.chat = _RangeChat()
 
     import openai
@@ -208,7 +208,7 @@ def _install_fake_openai(monkeypatch, capture):
     import openai
 
     class _FakeOpenAI:
-        def __init__(self, base_url=None, api_key=None):
+        def __init__(self, *args, **kwargs):
             self.chat = _FakeChat(capture)
 
     monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
@@ -249,3 +249,180 @@ def test_analyze_unknown_language_code_falls_back_to_raw_code(monkeypatch):
 
 def test_language_names_table_has_indonesian():
     assert LANGUAGE_NAMES["id"] == "Indonesian (Bahasa Indonesia)"
+
+
+# ------------------------------------------------- long-video chunking
+
+
+def _make_words(seconds=300, words_per_second=2):
+    """A synthetic word timeline spanning ``seconds`` seconds."""
+    words = []
+    for i in range(seconds * words_per_second):
+        start_ms = int(i * 1000 / words_per_second)
+        end_ms = start_ms + int(1000 / words_per_second) - 1
+        words.append({"text": f"w{i}", "start_ms": start_ms, "end_ms": end_ms})
+    return words
+
+
+def test_format_timestamped_words_groups_into_blocks():
+    from core.analyzer import format_timestamped_words
+
+    words = [
+        {"text": "hello", "start_ms": 0, "end_ms": 500},
+        {"text": "world", "start_ms": 500, "end_ms": 1000},
+    ]
+    lines = format_timestamped_words(words, block_seconds=30)
+    assert lines == ["[0s-1s] hello world"]
+
+
+def test_format_timestamped_words_splits_long_timeline():
+    from core.analyzer import format_timestamped_words
+
+    lines = format_timestamped_words(_make_words(seconds=90), block_seconds=30)
+    assert len(lines) == 3
+    assert lines[0].startswith("[0s-")
+    # Last block covers the tail of the timeline.
+    assert "89s]" in lines[2]
+    assert "w179" in lines[2]
+
+
+def test_chunk_lines_packs_within_budget():
+    from core.analyzer import chunk_lines
+
+    lines = [f"[{i * 30}s-{i * 30 + 30}s] {'x' * 80}" for i in range(10)]
+    chunks = chunk_lines(lines, max_chars=400)  # ~4 lines per chunk
+    assert len(chunks) == 3
+    for chunk in chunks:
+        assert len(chunk) <= 400
+    # No lines lost.
+    assert sum(c.count("[") for c in chunks) == 10
+
+
+def test_merge_clips_drops_overlapping_duplicates():
+    from core.analyzer import merge_clips
+
+    clips = [
+        {"title": "B", "start": 100.0, "end": 130.0},
+        {"title": "A", "start": 10.0, "end": 40.0},
+        {"title": "dup", "start": 110.0, "end": 140.0},  # overlaps B heavily
+        {"title": "far", "start": 500.0, "end": 530.0},  # disjoint, kept
+    ]
+    merged = merge_clips(clips)
+    assert [c["title"] for c in merged] == ["A", "B", "far"]
+
+
+def test_analyze_with_words_chunks_long_transcript(monkeypatch):
+    calls = []
+
+    class _PerChunkCompletions:
+        def create(self, **kwargs):
+            # Distinct, non-overlapping clip per chunk (30s at the chunk's
+            # own start region) so merge keeps all of them.
+            idx = len(calls)
+            calls.append(kwargs)
+            start = 120 * idx
+            return _FakeCompletion(
+                json.dumps(
+                    {"clips": [{"title": f"C{idx}", "start": start, "end": start + 60}]}
+                )
+            )
+
+    class _PerChunkChat:
+        def __init__(self):
+            self.completions = _PerChunkCompletions()
+
+    class _PerChunkOpenAI:
+        def __init__(self, *args, **kwargs):
+            self.chat = _PerChunkChat()
+
+    import openai
+
+    monkeypatch.setattr(openai, "OpenAI", _PerChunkOpenAI)
+
+    # Tiny chunk budget → several requests over a 5-minute timeline.
+    monkeypatch.setenv("LLM_CHUNK_CHARS", "1500")
+    progresses = []
+    clips = analyze(
+        "irrelevant",
+        "fake-key",
+        min_duration=15,
+        max_duration=90,
+        words=_make_words(seconds=300),
+        progress=progresses.append,
+    )
+
+    assert len(calls) > 1
+    # Early chunks carry the video's opening; later chunks its tail.
+    assert any("[0s-" in c["messages"][1]["content"] for c in calls)
+    import re
+
+    max_label = max(
+        int(m)
+        for c in calls
+        for m in re.findall(r"\[(\d+)s-", c["messages"][1]["content"])
+    )
+    assert max_label > 200
+    # Progress fired once per chunk.
+    assert len(progresses) == len(calls)
+    assert progresses[-1] == 1.0
+    # One kept clip per chunk.
+    assert len(clips) == len(calls)
+
+
+def test_analyze_with_words_survives_one_failed_chunk(monkeypatch):
+    import openai
+
+    calls = []
+
+    class _FlakyCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise openai.APIConnectionError(request=None)
+            return _FakeCompletion(
+                '{"clips": [{"title": "C1", "start": 30, "end": 60}]}'
+            )
+
+    class _FlakyChat:
+        def __init__(self):
+            self.completions = _FlakyCompletions()
+
+    class _FlakyOpenAI:
+        def __init__(self, *args, **kwargs):
+            self.chat = _FlakyChat()
+
+    monkeypatch.setattr(openai, "OpenAI", _FlakyOpenAI)
+    monkeypatch.setenv("LLM_CHUNK_CHARS", "1500")
+
+    clips = analyze(
+        "irrelevant",
+        "fake-key",
+        min_duration=15,
+        max_duration=90,
+        words=_make_words(seconds=180),
+    )
+
+    assert len(calls) >= 2
+    assert clips and clips[0]["title"] == "C1"
+
+
+def test_analyze_single_chunk_still_raises_on_failure(monkeypatch):
+    import openai
+    from core.analyzer import AnalysisError
+
+    class _DeadCompletions:
+        def create(self, **kwargs):
+            raise openai.APIConnectionError(request=None)
+
+    class _DeadChat:
+        def __init__(self):
+            self.completions = _DeadCompletions()
+
+    class _DeadOpenAI:
+        def __init__(self, *args, **kwargs):
+            self.chat = _DeadChat()
+
+    monkeypatch.setattr(openai, "OpenAI", _DeadOpenAI)
+
+    with pytest.raises(AnalysisError):
+        analyze("some transcript text", "fake-key")
