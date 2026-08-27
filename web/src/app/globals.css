@@ -206,3 +206,35 @@ body {
   --dur-base: 180ms;
   --dur-slow: 280ms;
 }
+
+/* ---------------------------------------------------------------------------
+   Reels marquee — vertical, GPU-only, respects reduced-motion
+   ------------------------------------------------------------------------- */
+@keyframes marquee-up {
+  from { transform: translateY(0); }
+  to { transform: translateY(-50%); }
+}
+@keyframes marquee-down {
+  from { transform: translateY(-50%); }
+  to { transform: translateY(0); }
+}
+@keyframes marquee-x {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .animate-marquee-up {
+    animation: marquee-up 38s linear infinite;
+  }
+  .animate-marquee-down {
+    animation: marquee-down 42s linear infinite;
+  }
+  .animate-marquee-x {
+    animation: marquee-x 22s linear infinite;
+  }
+  .animate-marquee-up:hover,
+  .animate-marquee-down:hover,
+  .animate-marquee-x:hover {
+    animation-play-state: paused;
+  }
+}
