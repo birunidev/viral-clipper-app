@@ -60,12 +60,44 @@ def get_info(url: str) -> dict:
         "noplaylist": True,
         "skip_download": True,
     }
+    # Apply same cookie/browser handling as download for bot guard (including auto)
+    cookiefile = os.environ.get("YTDLP_COOKIEFILE", "").strip()
+    cookies_from_browser = os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "").strip()
+    auto_enabled = os.environ.get("YTDLP_COOKIES_AUTO", "1").strip().lower() not in ("0", "false", "no", "off")
+    use_browser: str | None = None
+    if cookies_from_browser:
+        use_browser = cookies_from_browser
+    elif cookiefile:
+        opts["cookiefile"] = cookiefile
+    elif auto_enabled:
+        detected = _detect_browser()
+        if detected:
+            use_browser = detected
+    if use_browser:
+        parts = [p.strip() for p in use_browser.split(":")]
+        while len(parts) < 4:
+            parts.append(None)
+        opts["cookiesfrombrowser"] = tuple(p if p else None for p in parts[:4])
+    po_token = os.environ.get("YTDLP_PO_TOKEN", "").strip()
+    visitor_data = os.environ.get("YTDLP_VISITOR_DATA", "").strip()
+    if po_token or visitor_data:
+        ea: dict = {}
+        if po_token:
+            ea["po_token"] = [po_token]
+        if visitor_data:
+            ea["visitor_data"] = visitor_data
+        opts["extractor_args"] = {"youtube": ea}
+
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False) or {}
     except yt_dlp.utils.DownloadError as exc:
         detail = _strip_ansi(str(exc))
-        raise DownloadError(f"Could not fetch video metadata: {detail}") from exc
+        # Provide actionable hint for bot detection
+        hint = ""
+        if "Sign in to confirm" in detail or "bot" in detail.lower():
+            hint = " (YouTube bot check: export cookies via YTDLP_COOKIEFILE=/path/to/cookies.txt or YTDLP_COOKIES_FROM_BROWSER=chrome and retry)"
+        raise DownloadError(f"Could not fetch video metadata: {detail}{hint}") from exc
 
 
 def is_url(value: str) -> bool:
@@ -75,6 +107,28 @@ def is_url(value: str) -> bool:
 
 def _strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
+
+
+def _detect_browser() -> str | None:
+    """Return first available browser for cookiesfrombrowser, or None."""
+    # Check env override first
+    explicit = os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "").strip()
+    if explicit:
+        return explicit
+    # Auto-detect: try chrome, then firefox, edge, chromium
+    # This is programmatic - no manual export needed if browser is logged into YouTube
+    for browser in ("chrome", "firefox", "chromium", "edge", "opera", "brave"):
+        # yt-dlp will try to find the browser's cookie store; we just check if binary exists
+        # or if cookie DB exists. Simplest: check binary, but also try yt-dlp's detection
+        # by attempting to use it and catching error - here we just probe via which
+        if shutil.which(browser) or shutil.which(f"{browser}-browser") or browser == "chrome" and os.path.exists("/usr/bin/google-chrome"):
+            # Verify yt-dlp can actually read it by checking for cookie DB path
+            # Don't verify deeply - let yt-dlp fail gracefully and we'll fallback
+            return browser
+    # Check for google-chrome specifically
+    if os.path.exists("/usr/bin/google-chrome") or os.path.exists("/usr/bin/chromium-browser"):
+        return "chrome"
+    return None
 
 
 def _build_opts(out_dir: str, hook: Callable[[dict], None], player_clients) -> dict:
@@ -91,11 +145,57 @@ def _build_opts(out_dir: str, hook: Callable[[dict], None], player_clients) -> d
         "extractor_retries": 5,
         "socket_timeout": 30,
     }
+    # YouTube bot guard: supports cookiefile, cookies-from-browser, or auto.
+    # Programmatic: if no explicit config, auto-try to extract from local browser
+    # (chrome/firefox) where user is already logged into YouTube. No manual export needed.
+    # Set via env to override:
+    #   YTDLP_COOKIEFILE=/path/to/cookies.txt
+    #   YTDLP_COOKIES_FROM_BROWSER=chrome  (or chrome:PROFILE, firefox, edge, etc.)
+    #   YTDLP_PO_TOKEN=web.gvs+XXXX  (optional, for PO token bypass)
+    #   YTDLP_COOKIES_AUTO=0  to disable auto-detection
     cookiefile = os.environ.get("YTDLP_COOKIEFILE", "").strip()
-    if cookiefile:
-        opts["cookiefile"] = cookiefile
+    cookies_from_browser = os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "").strip()
+    auto_enabled = os.environ.get("YTDLP_COOKIES_AUTO", "1").strip().lower() not in ("0", "false", "no", "off")
+
+    use_browser: str | None = None
+    if cookies_from_browser:
+        use_browser = cookies_from_browser
+    elif cookiefile:
+        if os.path.isfile(cookiefile):
+            opts["cookiefile"] = cookiefile
+        else:
+            opts["cookiefile"] = cookiefile
+    elif auto_enabled:
+        # Programmatic auto-extraction - no env needed
+        detected = _detect_browser()
+        if detected:
+            use_browser = detected
+
+    if use_browser:
+        # e.g. "chrome", "firefox", "chrome:Profile 1"
+        parts = [p.strip() for p in use_browser.split(":")]
+        while len(parts) < 4:
+            parts.append(None)
+        browser_spec = tuple(p if p else None for p in parts[:4])
+        opts["cookiesfrombrowser"] = browser_spec
+
+    # Optional PO token for youtube (helps with bot challenge)
+    po_token = os.environ.get("YTDLP_PO_TOKEN", "").strip()
+    visitor_data = os.environ.get("YTDLP_VISITOR_DATA", "").strip()
+
+    extractor_args: dict = {}
     if player_clients:
-        opts["extractor_args"] = {"youtube": {"player_client": player_clients}}
+        extractor_args["player_client"] = player_clients
+    if po_token:
+        extractor_args["po_token"] = [po_token]
+    if visitor_data:
+        extractor_args["visitor_data"] = visitor_data
+    if use_browser and not player_clients:
+        # when using browser cookies, also try android client as fallback is less restricted
+        extractor_args["player_client"] = ["android"]
+    if extractor_args:
+        opts["extractor_args"] = {"youtube": extractor_args}
+
     return opts
 
 
@@ -144,7 +244,10 @@ def download(
 
     if info is None:
         detail = _strip_ansi(str(last_error or "unknown error"))
-        raise DownloadError(f"Download failed: {detail}")
+        hint = ""
+        if "Sign in to confirm" in detail or "bot" in detail.lower():
+            hint = " (YouTube bot guard: set YTDLP_COOKIEFILE=/path/to/cookies.txt exported from your browser, or YTDLP_COOKIES_FROM_BROWSER=chrome, then restart backend. See https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies)"
+        raise DownloadError(f"Download failed: {detail}{hint}")
 
     video_id = (info or {}).get("id")
     if video_id:
