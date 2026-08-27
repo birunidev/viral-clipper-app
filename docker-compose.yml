@@ -51,6 +51,42 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # PO token provider sidecar (bgutil-ytdlp-pot-provider)
+  # Self-hosted JS challenge solver for YouTube's Proof-of-Origin tokens.
+  # Partial mitigation: improves format availability more than outright bot-blocks.
+  # See https://github.com/Brainicism/bgutil-ytdlp-pot-provider
+  pot:
+    image: brainicism/bgutil-ytdlp-pot-provider:latest
+    restart: unless-stopped
+    init: true
+    # No ports published – backend reaches it on internal network at http://pot:4416
+    expose:
+      - "4416"
+    environment:
+      # Optional: set a custom port inside container (default 4416)
+      PORT: "4416"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://127.0.0.1:4416/ping',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))\" || node -e \"require('http').get('http://127.0.0.1:4416/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Hardened: no privileges, read-only-ish
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          pids: 128
+
   backend:
     build: ./backend
     restart: unless-stopped
@@ -64,6 +100,11 @@ services:
       # Always talk to the internal postgres, never whatever localhost/dev
       # URL happens to be in backend/.env (compose overrides env_file).
       DATABASE_URL: postgresql://${POSTGRES_USER:-clipforge}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipforge}
+      # PO token sidecar (bgutil). Backend's yt-dlp plugin contacts this to fetch
+      # Proof-of-Origin tokens. Disabled by default (empty = no POT); set to
+      # http://pot:4416 to enable. Can also be overridden in backend/.env via
+      # POT_PROVIDER_URL / BGUTIL_URL.
+      POT_PROVIDER_URL: ${POT_PROVIDER_URL:-http://pot:4416}
       # YouTube: safe prod uses YOUTUBE_API_KEY + ENABLE_YTDLP=0 (no cookies).
       # Legacy yt-dlp vars (YTDLP_COOKIEFILE etc.) are read from backend/.env
       # via env_file above – do not duplicate here (would mask env_file).
@@ -85,6 +126,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      pot:
+        condition: service_started
     # ffmpeg + transcriber stage scratch files in /tmp; give them RAM-backed
     # space so a runaway render can't fill the disk.
     tmpfs:

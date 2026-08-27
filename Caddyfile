@@ -5,7 +5,6 @@
 #
 # Site: https://snapclip.mysaas.web.id (DNS A record -> this VM)
 # The email below gets Let's Encrypt expiry notices.
-
 {
 	# Don't ship Caddy's version banner anywhere.
 	servers {
@@ -48,17 +47,17 @@ snapclip.mysaas.web.id {
 		#   One-Tap iframes (accounts.google.com, apis.google.com).
 		# High-value directives unchanged: frame-ancestors 'none' (click-
 		# jacking), object-src 'none', base-uri 'self'.
-		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://www.googletagmanager.com https://*.google-analytics.com https://accounts.google.com https://apis.google.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https:; font-src 'self' data:; frame-src https://challenges.cloudflare.com https://accounts.google.com; frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://challenges.cloudflare.com https://www.googletagmanager.com https://*.google-analytics.com https://accounts.google.com https://apis.google.com https://www.youtube.com https://s.youtube.com https://*.youtube.com https://*.ytimg.com https://cdn.jsdelivr.net https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https: blob:; font-src 'self' data:; frame-src https://challenges.cloudflare.com https://accounts.google.com https://www.youtube.com https://www.youtube-nocookie.com https://*.youtube.com https://*.youtube-nocookie.com https://*.ytimg.com; worker-src 'self' blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
 	}
 
 	# ────────────────────── probe / scanner path blocking ───────────────────
 	# Return 404 fast for the endless automated scans; never let these reach
 	# the apps or hit the disk.
 	@probes path \
-		/.git* /.env* /.aws* /.ssh* /*.sql /*.bak /*.old /*.swp \
-		/wp-admin* /wp-login.php /xmlrpc.php /phpmyadmin* /pma* \
-		/adminer* /*.php /actuator* /metrics /debug/* \
-		/Dockerfile /docker-compose*.yml /package.json /composer.json
+ /.git* /.env* /.aws* /.ssh* /*.sql /*.bak /*.old /*.swp \
+ /wp-admin* /wp-login.php /xmlrpc.php /phpmyadmin* /pma* \
+ /adminer* /*.php /actuator* /metrics /debug/* \
+ /Dockerfile /docker-compose*.yml /package.json /composer.json
 	respond @probes 404
 
 	# Only the documented HTTP methods are meaningful for this app.

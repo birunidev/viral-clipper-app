@@ -202,6 +202,22 @@ def create_project(payload: ProjectCreate, user: SessionUser = Depends(current_u
 
     project = db.create_project(user.id, title, source, source_type)
 
+    # Per-request YouTube cookies from client after cookie-consent opt-in
+    # (SO 75426272: must include HttpOnly via chrome.cookies). Stored
+    # ephemerally as /tmp/youtube_cookies_{project_id}.txt for this single
+    # analysis job and deleted after download (never persisted in DB).
+    if source_type == "youtube" and getattr(payload, "youtube_cookies", None):
+        cookies = (payload.youtube_cookies or "").strip()
+        if cookies and ("youtube.com" in cookies.lower() or "youtu.be" in cookies.lower() or "# Netscape" in cookies):
+            try:
+                import pathlib
+
+                p = pathlib.Path(f"/tmp/youtube_cookies_{project['id']}.txt")
+                p.write_text(cookies, encoding="utf-8")
+                p.chmod(0o600)
+            except Exception as exc:
+                logger.warning("Failed to store client cookies for %s: %s", project["id"], exc)
+
     if source_type == "upload":
         # Ownership proof: the key must have been presigned for THIS user
         # and never bound to another project. Prevents attaching someone

@@ -39,6 +39,42 @@ export default function SettingsPage() {
         </p>
       </div>
 
+      {/* Cookie consent */}
+      <Card className="p-5">
+        <p className="text-sm font-medium text-ink">Cookies</p>
+        <p className="mt-1 text-xs leading-relaxed text-ink-tertiary">
+          Necessary cookies keep you signed in. YouTube session cookies are optional — when enabled, your browser’s YouTube cookies are sent once per YouTube download to bypass bot checks and are never stored.
+        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              try {
+                localStorage.removeItem("snapclip_cookie_consent");
+                localStorage.removeItem("snapclip_youtube_cookie_consent");
+                document.cookie = "cookie_consent=; path=/; max-age=0";
+                window.location.reload();
+              } catch {}
+            }}
+            className="h-9 rounded-full border border-line bg-surface-2 px-4 text-sm font-medium text-ink hover:bg-surface-1"
+          >
+            Reset consent
+          </button>
+          <span className="text-xs text-ink-muted">
+            Current: {(() => {
+              try {
+                const raw = localStorage.getItem("snapclip_cookie_consent");
+                const c = raw ? JSON.parse(raw) : null;
+                if (!c) return "not decided";
+                return c.youtube ? "YouTube allowed" : c.analytics ? "Analytics only" : "Necessary only";
+              } catch {
+                return "not decided";
+              }
+            })()}
+          </span>
+        </div>
+      </Card>
+
       {/* Storage */}
       <Card className="p-5">
         <div className="flex items-center gap-2 text-sm font-medium text-ink">

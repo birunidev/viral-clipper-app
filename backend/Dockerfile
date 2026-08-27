@@ -30,5 +30,8 @@ RUN fc-cache -f /app/fonts
 
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Ensure yt-dlp is at latest at build time (complements runtime auto-update)
+RUN pip install --no-cache-dir -U yt-dlp || true
+
 EXPOSE 8000
 CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]

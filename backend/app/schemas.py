@@ -45,6 +45,11 @@ class ProjectCreate(BaseModel):
     # the storage cap can be enforced/accounted without the backend ever
     # reading the object. 0/omitted = unknown (no accounting).
     source_size_bytes: int = Field(default=0, ge=0)
+    # Optional per-request YouTube cookies (Netscape format) supplied by the
+    # client after cookie-consent opt-in. Used once for this project's
+    # download and never stored — bypasses datacenter bot guard with the
+    # user's own residential session (SO 75426272: must include HttpOnly).
+    youtube_cookies: str | None = Field(default=None, max_length=200_000)
 
 
 class ClipDurationRange(BaseModel):
