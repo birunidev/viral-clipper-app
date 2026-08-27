@@ -5,7 +5,10 @@ FROM python:3.12-slim
 # fontconfig + fonts-dejavu-core provide a safe fallback if a preset's font
 # name can't be resolved from the bundled fonts below.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-dejavu-core \
+    && apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-dejavu-core curl unzip \
+    && curl -fsSL https://deno.land/install.sh | sh \
+    && mv /root/.deno/bin/deno /usr/local/bin/deno \
+    && rm -rf /root/.deno \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

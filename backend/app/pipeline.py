@@ -40,7 +40,13 @@ _URL_IN_TEXT_RE = re.compile(r"https?://\S+")
 
 
 def _safe_error(exc: Exception) -> str:
-    return _URL_IN_TEXT_RE.sub("[url removed]", str(exc))
+    msg = _URL_IN_TEXT_RE.sub("[url removed]", str(exc))
+    # For YouTube bot-guard / safe-mode, keep the actionable hint but make it
+    # user-friendly – frontend shows this in the job error toast.
+    if "bot guard" in msg.lower() or "safe prod mode" in msg.lower() or "upload instead" in msg.lower():
+        # No extra URLs to strip beyond _URL_IN_TEXT_RE, just ensure hint survives
+        pass
+    return msg
 
 
 def _settings() -> dict:

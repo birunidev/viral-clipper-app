@@ -6,6 +6,11 @@ plain local video file. Progress is reported via an optional callback.
 YouTube sometimes rejects the default player client with HTTP 403
 (bot detection). When that happens we retry once with alternate player
 clients (android/tv/ios), which are generally allowed.
+
+Safe prod mode: set YOUTUBE_API_KEY and ENABLE_YTDLP=0 (default). Then
+get_info() uses the official YouTube Data API v3 (no cookies, ToS-
+compliant) and download() requires user upload (source_type="upload").
+This avoids shared Google session hijack on the server.
 """
 
 from __future__ import annotations
@@ -25,7 +30,9 @@ logger = logging.getLogger(__name__)
 
 URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-FALLBACK_CLIENTS = ["android_vr", "tv", "ios"]
+# Ordered fallback when web client is bot-blocked. android/ios/mweb work
+# without PO token more often than web; tv/android_vr as last resort.
+FALLBACK_CLIENTS = ["android", "ios", "mweb", "tv", "android_vr"]
 
 # Shared hint for bot-guard failures — keep in one place so get_info()
 # and download() stay consistent. Includes Docker mount hint.
@@ -33,6 +40,13 @@ _BOT_GUARD_HINT = (
     " (YouTube bot guard: set YTDLP_COOKIEFILE=/path/to/cookies.txt exported from your browser, "
     "or YTDLP_COOKIES_FROM_BROWSER=chrome, then restart backend. "
     "See https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies)"
+)
+
+# Safe-mode hint when yt-dlp is disabled – direct users to upload.
+_UPLOAD_HINT = (
+    " (YouTube downloads disabled in safe prod mode: please use Upload instead, "
+    "or set YOUTUBE_API_KEY for metadata and ENABLE_YTDLP=1 for legacy yt-dlp "
+    "with your own cookies. See backend/.env.example)"
 )
 
 
@@ -73,6 +87,20 @@ def _apply_cookie_and_po_opts(opts: dict, *, player_clients=None) -> None:
         use_browser = cookies_from_browser
     elif cookiefile:
         if os.path.isfile(cookiefile):
+            # Placeholder detection: real cookies.txt must contain youtube.com
+            try:
+                with open(cookiefile, "r", encoding="utf-8", errors="ignore") as fh:
+                    content = fh.read(8192)
+                    is_placeholder = "youtube.com" not in content.lower() and "youtu.be" not in content.lower()
+            except OSError:
+                is_placeholder = True
+            if is_placeholder and os.path.getsize(cookiefile) < 2048:
+                logger.warning(
+                    "YTDLP_COOKIEFILE=%r looks like a placeholder (no youtube.com cookies) — "
+                    "bot guard will fail until you replace ./cookies.txt with a real export. "
+                    "See https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies",
+                    cookiefile,
+                )
             opts["cookiefile"] = cookiefile
         else:
             # File missing (common in Docker when volume not mounted) — log
@@ -107,6 +135,11 @@ def _apply_cookie_and_po_opts(opts: dict, *, player_clients=None) -> None:
         opts["extractor_args"] = {**existing, "youtube": youtube_args}
 
 
+def _is_ytdlp_enabled() -> bool:
+    """Gate for legacy yt-dlp. Safe prod default is OFF (0)."""
+    return os.environ.get("ENABLE_YTDLP", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def get_info(url: str) -> dict:
     """Fetch remote metadata (no download) for ``url``.
 
@@ -115,12 +148,31 @@ def get_info(url: str) -> dict:
     spoken language as an ISO 639-1 code where available). Raises
     DownloadError if yt-dlp is missing or metadata cannot be fetched.
 
-    Retries once with FALLBACK_CLIENTS on bot/403 errors, mirroring download().
+    Prefers official YouTube Data API v3 when YOUTUBE_API_KEY is set (safe,
+    no cookies). Falls back to yt-dlp only if ENABLE_YTDLP=1. Retries once
+    with FALLBACK_CLIENTS on bot/403 errors, mirroring download().
     """
+    _validate_source(url)
+
+    # 1) Official API (safe, no cookies) – preferred
+    try:
+        from core.youtube_api import get_info_official
+
+        official = get_info_official(url)
+        if official is not None:
+            logger.info("get_info via official YouTube Data API for %s", url[:80])
+            return official
+    except Exception as exc:  # pragma: no cover – never block on official API failure
+        logger.warning("Official API get_info failed, falling back to yt-dlp: %s", exc)
+
+    # 2) Legacy yt-dlp – gated
+    if not _is_ytdlp_enabled():
+        raise DownloadError(
+            f"Could not fetch video metadata: YouTube downloads disabled in safe prod mode (ENABLE_YTDLP=0) and no YOUTUBE_API_KEY or API returned no result for {url[:60]}. "
+            + _UPLOAD_HINT
+        )
     if yt_dlp is None:
         raise DownloadError("yt-dlp is not installed. Run: poetry install")
-
-    _validate_source(url)
 
     last_error: Exception | None = None
     for player_clients in (None, FALLBACK_CLIENTS):
@@ -218,7 +270,18 @@ def download(
     On a download-stage failure it retries once with alternate YouTube
     player clients. Raises DownloadError when yt-dlp is missing, the URL
     cannot be fetched, or the output file is not produced.
+
+    In safe prod mode (ENABLE_YTDLP=0, default) this raises with
+    _UPLOAD_HINT – callers should prompt user to Upload instead. This
+    keeps the shared prod Google session out of scope and is ToS-compliant.
     """
+    if not _is_ytdlp_enabled():
+        raise DownloadError(
+            f"Download failed: YouTube downloads disabled in safe prod mode (ENABLE_YTDLP=0) for {url[:60]}. "
+            "Please download the video yourself and use Upload instead, "
+            "or set YOUTUBE_API_KEY for metadata and ENABLE_YTDLP=1 with your own cookies for legacy mode."
+            + _UPLOAD_HINT
+        )
     if yt_dlp is None:
         raise DownloadError("yt-dlp is not installed. Run: poetry install")
 

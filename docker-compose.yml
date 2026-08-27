@@ -64,10 +64,10 @@ services:
       # Always talk to the internal postgres, never whatever localhost/dev
       # URL happens to be in backend/.env (compose overrides env_file).
       DATABASE_URL: postgresql://${POSTGRES_USER:-clipforge}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipforge}
-      # YouTube bot-guard vars are read from backend/.env via env_file above
-      # (YTDLP_COOKIEFILE, YTDLP_COOKIES_FROM_BROWSER, etc.). No need to
-      # duplicate them here — compose would mask backend/.env with empty
-      # values. See backend/.env.example for docs.
+      # YouTube: safe prod uses YOUTUBE_API_KEY + ENABLE_YTDLP=0 (no cookies).
+      # Legacy yt-dlp vars (YTDLP_COOKIEFILE etc.) are read from backend/.env
+      # via env_file above – do not duplicate here (would mask env_file).
+      # See backend/.env.example for docs.
     # Loopback-only publication: the host Caddy reaches it at 127.0.0.1:8000;
     # the public internet cannot.
     ports:
@@ -77,12 +77,11 @@ services:
     # container recreation doesn't re-download.
     volumes:
       - whisper_models:/root/.local/share/pywhispercpp/models
-      # YouTube cookies (bot-guard). If YTDLP_COOKIEFILE is set (e.g.
-      # /tmp/cookies.txt), mount the host file read-only. Create the file
-      # BEFORE `docker compose up` or this will create a directory instead.
-      # Example:  YTDLP_COOKIEFILE=/tmp/cookies.txt  +  ./cookies.txt:/tmp/cookies.txt:ro
-      # Uncomment and adjust if you keep cookies at the compose root:
-      # - ./cookies.txt:/tmp/cookies.txt:ro
+      # Legacy yt-dlp cookies – only needed if ENABLE_YTDLP=1 (unsafe, dev only).
+      # For safe prod (ENABLE_YTDLP=0) this mount is ignored. If you must use
+      # legacy mode, place cookies at ./cookies.txt and set YTDLP_COOKIEFILE=/app/cookies.txt.
+      # Note: /tmp is tmpfs, so do not mount cookies there.
+      - ./cookies.txt:/app/cookies.txt
     depends_on:
       postgres:
         condition: service_healthy
@@ -94,6 +93,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    cap_add:
+      - DAC_OVERRIDE # allow read/write cookies.txt regardless of host uid/gid (placeholder is 1000:1001)
     deploy:
       resources:
         limits:

@@ -9,6 +9,8 @@ outputs/
 .env
 backend/.env
 web/.env
+cookies.txt
+**/cookies.txt
 
 # node
 node_modules/

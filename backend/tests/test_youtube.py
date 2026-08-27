@@ -74,9 +74,13 @@ class FakeYtdlp:
 
 
 @pytest.fixture(autouse=True)
-def _clear_calls():
+def _clear_calls(monkeypatch):
     FakeYDL.calls = []
     FakeYDLRetry._failures_left = 1
+    # Safe prod defaults to ENABLE_YTDLP=0, but unit tests exercise the
+    # legacy yt-dlp path – enable it for the test process.
+    monkeypatch.setenv("ENABLE_YTDLP", "1")
+    monkeypatch.setenv("YOUTUBE_API_KEY", "")
 
 
 @pytest.fixture
