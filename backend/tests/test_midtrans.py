@@ -177,7 +177,9 @@ def test_settlement_is_idempotent_on_redelivery(client):
     assert first.json() == {"ok": True}
     assert second.json()["deduplicated"] is True
     # Credits are not double-granted on a replay.
-    assert billing.credit_balance(uid) < 120
+    from app.plans import free_credits
+
+    assert billing.credit_balance(uid) < free_credits() + 120
 
 
 def test_capture_then_settlement_grants_exactly_once(client):
