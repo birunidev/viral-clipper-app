@@ -21,6 +21,19 @@ scripts/sync-cookies.sh
 node_modules/
 .next/
 npm-debug.log*
+electron/node_modules/
+electron/dist/
+electron/release/
+electron/renderer/node_modules/
+electron/renderer/dist/
+electron/.data/
+electron/renderer/.vite/
+web/out/
+*.AppImage
+*.deb
+*.exe
+*.dmg
+*.msi
 
 # prisma
 web/prisma/dev.db

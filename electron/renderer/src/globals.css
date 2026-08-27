@@ -1,0 +1,248 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+   Caption preset fonts (bundled from backend/assets/fonts — same files
+   fontconfig registers for libass at render time, so the live caption
+   preview/editor matches the burned-in render as closely as a browser can).
+   ------------------------------------------------------------------------- */
+@font-face {
+  font-family: "Anton";
+  src: url("/fonts/Anton-Regular.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("/fonts/SpaceGrotesk-Regular.ttf") format("truetype");
+  font-weight: 400 700;
+  font-display: swap;
+}
+
+/* ---------------------------------------------------------------------------
+   ClipForge design tokens
+   ---------------------------------------------------------------------------
+   Dark-mode-first precision-tool system. Near-black base, one signal-red
+   accent (the "recording" red native to video tools), amber for
+   processing, emerald for complete. Geist for UI text, Geist Mono for all
+   numeric/timestamp data.
+
+   Elevation (whisper-quiet, border-led — interface-design §Craft):
+     surface-0 = page canvas
+     surface-1 = panels/cards        (border only)
+     surface-2 = raised (dropdowns)  (border + 1 step lighter)
+     surface-3 = overlay (modals)    (border + 2 steps lighter)
+   Light mode swaps depth for layered translucent shadows.
+   ------------------------------------------------------------------------- */
+
+:root {
+  /* neutrals — warm-dark, never pure black (zinc family) */
+  --canvas: #0a0a0b;
+  --surface-1: #101012;
+  --surface-2: #161618;
+  --surface-3: #1d1d20;
+
+  --text-primary: #f4f4f5;
+  --text-secondary: #a1a1aa;
+  --text-tertiary: #71717a;
+  --text-muted: #52525b;
+
+  --border-soft: rgba(255, 255, 255, 0.06);
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.14);
+
+  /* accent — signal red, desaturated enough for AA on dark */
+  --accent: #f6403f;
+  --accent-strong: #ff5a52;
+  --accent-ink: #1a0505;
+  --accent-soft: rgba(246, 64, 63, 0.12);
+
+  /* semantic */
+  --success: #34d399;
+  --success-soft: rgba(52, 211, 153, 0.12);
+  --warning: #fbbf24;
+  --warning-soft: rgba(251, 191, 36, 0.12);
+  --danger: #f87171;
+  --danger-soft: rgba(248, 113, 113, 0.12);
+
+  /* focus ring */
+  --ring: rgba(246, 64, 63, 0.45);
+
+  /* fonts */
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", monospace;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --canvas: #fafafa;
+    --surface-1: #ffffff;
+    --surface-2: #ffffff;
+    --surface-3: #ffffff;
+
+    --text-primary: #18181b;
+    --text-secondary: #52525b;
+    --text-tertiary: #71717a;
+    --text-muted: #a1a1aa;
+
+    --border-soft: rgba(0, 0, 0, 0.06);
+    --border: rgba(0, 0, 0, 0.09);
+    --border-strong: rgba(0, 0, 0, 0.14);
+
+    --accent: #e3342f;
+    --accent-strong: #c0261f;
+    --accent-ink: #ffffff;
+    --accent-soft: rgba(227, 52, 47, 0.1);
+
+    --success: #059669;
+    --success-soft: rgba(5, 150, 105, 0.1);
+    --warning: #b45309;
+    --warning-soft: rgba(180, 83, 9, 0.1);
+    --danger: #dc2626;
+    --danger-soft: rgba(220, 38, 38, 0.1);
+
+    --ring: rgba(227, 52, 47, 0.4);
+  }
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+
+  --color-ink: var(--text-primary);
+  --color-ink-secondary: var(--text-secondary);
+  --color-ink-tertiary: var(--text-tertiary);
+  --color-ink-muted: var(--text-muted);
+
+  --color-line: var(--border);
+  --color-line-soft: var(--border-soft);
+  --color-line-strong: var(--border-strong);
+
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+/* ---------------------------------------------------------------------------
+   Base
+   ------------------------------------------------------------------------- */
+
+html {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  background: var(--canvas);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* tabular numbers everywhere numeric data is shown */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* text-wrap niceties */
+.balance {
+  text-wrap: balance;
+}
+.pretty {
+  text-wrap: pretty;
+}
+
+/* subtle grain — pointer-events-none, fixed, never on scroll containers */
+.grain::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  opacity: 0.04;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 120 120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* focus-visible — system-wide ring, never outline-none without replacement */
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* reduced motion — collapse everything to instant */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Motion tokens
+   ------------------------------------------------------------------------- */
+
+:root {
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-slow: 280ms;
+}
+
+/* ---------------------------------------------------------------------------
+   Reels marquee — GPU-only, respects reduced-motion
+   ------------------------------------------------------------------------- */
+@keyframes marquee-up {
+  from { transform: translateY(0); }
+  to { transform: translateY(-50%); }
+}
+@keyframes marquee-down {
+  from { transform: translateY(-50%); }
+  to { transform: translateY(0); }
+}
+@keyframes marquee-x {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+@keyframes marquee-x-reverse {
+  from { transform: translateX(-50%); }
+  to { transform: translateX(0); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .animate-marquee-up {
+    animation: marquee-up 38s linear infinite;
+  }
+  .animate-marquee-down {
+    animation: marquee-down 42s linear infinite;
+  }
+  .animate-marquee-x {
+    animation: marquee-x 28s linear infinite;
+  }
+  .animate-marquee-x-reverse {
+    animation: marquee-x-reverse 32s linear infinite;
+  }
+  .animate-marquee-up:hover,
+  .animate-marquee-down:hover,
+  .animate-marquee-x:hover,
+  .animate-marquee-x-reverse:hover {
+    animation-play-state: paused;
+  }
+}

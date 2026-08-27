@@ -1,0 +1,34 @@
+appId: com.clipforge.desktop
+productName: ClipForge
+directories:
+  output: release
+  buildResources: resources
+files:
+  - dist/**/*
+  - renderer/dist/**/*
+  - ../web/out/**/*
+  - resources/**/*
+  - package.json
+extraResources:
+  - from: resources/bin
+    to: bin
+    filter: ["**/*"]
+win:
+  target: nsis
+  icon: resources/icon.ico
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+linux:
+  target:
+    - AppImage
+  icon: resources/icon.png
+  category: Video
+  maintainer: ClipForge <hello@clipforge.com>
+  description: ClipForge Desktop - fully local viral clip engine
+publish:
+  provider: github
+  owner: clipforge
+  repo: clipforge
+  private: false

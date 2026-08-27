@@ -112,7 +112,7 @@ export default function HomePage() {
             <Link href="/app/login" className="inline-flex h-11 items-center justify-center rounded-full border border-line bg-surface-1 px-6 text-sm font-medium text-ink-secondary transition-colors hover:bg-surface-2 hover:text-ink">
               Sign in
             </Link>
-            <span className="text-xs text-ink-muted">No credit card · 100 free credits</span>
+            <span className="text-xs text-ink-muted">One-time $49 · unlimited forever</span>
           </div>
           <div className="flex items-center gap-3 pt-1 text-xs text-ink-muted">
             <span className="inline-flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-success" /> Pay per minute, not per month</span>
@@ -185,7 +185,7 @@ export default function HomePage() {
             <div className="rounded-[20px] border border-line bg-canvas p-6">
               <p className="text-sm font-semibold text-ink">You keep the source</p>
               <p className="mt-2 text-sm leading-relaxed text-ink-tertiary pretty">We store the canonical source in R2. Previews seek it; renders cut from it. No re-downloading YouTube on every clip.</p>
-              <p className="mt-3 font-mono text-xs text-ink-muted tabular-nums">500MB free · 5GB Creator · 20GB Studio</p>
+              <p className="mt-3 font-mono text-xs text-ink-muted tabular-nums">100% local · unlimited storage</p>
             </div>
           </div>
         </div>
@@ -230,17 +230,15 @@ export default function HomePage() {
       <section className="border-t border-line bg-surface-1/40 px-6 py-14 md:px-10">
         <div className="mx-auto max-w-[1400px]">
           <div className="mx-auto max-w-2xl text-center">
-            <p className="inline-flex items-center gap-2 rounded-full border border-line bg-surface-1 px-3 py-1 text-xs text-ink-tertiary">Pay per clip — no monthly plans</p>
-            <h2 className="mt-3 text-2xl font-semibold tracking-tight text-ink sm:text-3xl">Buy credits once. Cut as much as you want.</h2>
-            <p className="mt-2 text-sm text-ink-tertiary">1 credit = 1 minute of source video. Packs never expire.</p>
+            <p className="inline-flex items-center gap-2 rounded-full border border-line bg-surface-1 px-3 py-1 text-xs text-ink-tertiary">One-time purchase · Desktop app</p>
+            <h2 className="mt-3 text-2xl font-semibold tracking-tight text-ink sm:text-3xl">Buy once. Clip forever.</h2>
+            <p className="mt-2 text-sm text-ink-tertiary">Unlimited projects, clips & exports. Runs 100% on your PC — no credits, no limits.</p>
           </div>
-          <div className="mx-auto mt-10 grid max-w-4xl gap-5 md:grid-cols-3">
-            <PricingTier name="Free" price="$0" sub="Start free, watermarked 720p" features={["100 free credits to start", "500MB storage", "Up to 3 projects", "720p + watermark"]} cta="Start free" highlight={false} />
-            <PricingTier name="Creator" price="$12.90" sub="Most popular — clean 1080p" features={["300 credits one-time", "5GB storage", "Unlimited projects", "1080p, no watermark"]} cta="Buy Creator" highlight={true} />
-            <PricingTier name="Studio" price="$39" sub="For teams & heavy uploaders" features={["1,200 credits one-time", "20GB storage", "Unlimited projects", "Up to 4K, no watermark"]} cta="Buy Studio" highlight={false} />
+          <div className="mx-auto mt-10 flex max-w-xl justify-center">
+            <PricingTier name="ClipForge Desktop" price="$49" sub="One-time purchase — lifetime updates" features={["Unlimited projects & clips", "Unlimited local storage & exports", "4K + no watermark", "Whisper + Qwen auto-picked for your RAM", "Works fully offline after activation"]} cta="Buy ClipForge" highlight={true} />
           </div>
           <p className="mx-auto mt-8 max-w-2xl text-center text-xs leading-relaxed text-ink-muted pretty">
-            Credits never expire and bigger packs permanently unlock more storage, resolution, and project slots. In Indonesia? Pay in rupiah with GoPay, QRIS, bank transfer, or card.
+            One license unlocks everything. In Indonesia? Pay in rupiah via GoPay, QRIS, bank transfer, or card — same one-time price, localized checkout.
           </p>
         </div>
       </section>
