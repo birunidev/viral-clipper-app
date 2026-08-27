@@ -1,5 +1,6 @@
 import { ArrowRight, Check, Lightning, Play, Scissors, Sparkle, Star, Waveform } from "@phosphor-icons/react/dist/ssr";
 import Link from "next/link";
+import { HeroReel } from "@/components/landing/hero-reel";
 import { ReelsWall } from "@/components/landing/reels-wall";
 import { TestimonialMasonry } from "@/components/landing/testimonial-masonry";
 
@@ -60,62 +61,7 @@ function PricingTier({
   );
 }
 
-function HeroPhone() {
-  return (
-    <div className="relative mx-auto w-[300px] sm:w-[340px] lg:ml-auto lg:mr-0">
-      {/* phone shell */}
-      <div className="rounded-[28px] border border-line bg-surface-1 p-2 shadow-[0_20px_60px_-20px_rgba(0,0,0,0.5)]">
-        <div className="overflow-hidden rounded-[20px] border border-line-soft bg-canvas">
-          <div className="aspect-[9/16] relative">
-            <img
-              src="https://picsum.photos/seed/hero-reel/360/640"
-              alt="Generated 9:16 clip preview"
-              className="absolute inset-0 h-full w-full object-cover"
-            />
-            <video
-              poster="https://picsum.photos/seed/hero-reel/360/640"
-              src="https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4"
-              muted
-              loop
-              autoPlay
-              playsInline
-              preload="metadata"
-              className="absolute inset-0 h-full w-full object-cover"
-            />
-            <div className="absolute left-3 right-3 top-3 flex items-center justify-between">
-              <span className="rounded-full bg-black/60 px-2.5 py-1 text-[10px] font-medium tracking-wide text-white backdrop-blur">Hook · 0:06</span>
-              <span className="rounded-full bg-accent px-2.5 py-1 text-[10px] font-semibold text-accent-ink">9:16 ready</span>
-            </div>
-            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-4 pt-12">
-              <p className="text-sm font-medium leading-tight text-white">The hook that made it blow up</p>
-              <p className="mt-1 text-xs leading-relaxed text-white/75">This one sentence is why the video tripled. We cut it, captioned it, shipped it.</p>
-              <div className="mt-3 flex items-center gap-2">
-                <span className="h-1.5 w-1.5 rounded-full bg-success shadow-[0_0_8px_rgba(52,211,153,0.9)]" />
-                <span className="font-mono text-[11px] text-white/70 tabular-nums">2.4M views · 892 saves</span>
-              </div>
-            </div>
-            <div className="absolute left-1/2 top-1/2 flex h-10 w-10 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white/90 text-ink shadow-lg backdrop-blur">
-              <Play size={16} weight="fill" className="ml-0.5" />
-            </div>
-          </div>
-        </div>
-      </div>
-      {/* floating stat */}
-      <div className="absolute -left-4 bottom-6 hidden rounded-2xl border border-line bg-surface-1 px-4 py-3 shadow-xl md:flex md:items-center md:gap-3">
-        <span className="flex h-8 w-8 items-center justify-center rounded-full bg-success-soft text-success">
-          <Sparkle size={14} weight="fill" />
-        </span>
-        <div>
-          <p className="font-mono text-xs font-semibold text-ink tabular-nums">3 clips in 2:41</p>
-          <p className="text-xs text-ink-muted">from a 47 min source</p>
-        </div>
-      </div>
-      <div className="absolute -right-2 top-8 hidden rounded-full border border-line bg-surface-1 px-3 py-1.5 text-xs font-medium text-ink shadow-lg md:inline-flex md:items-center md:gap-1.5">
-        <span className="h-2 w-2 rounded-full bg-accent" /> Transcribed · Analyzed · Cut
-      </div>
-    </div>
-  );
-}
+
 
 export default function HomePage() {
   return (
@@ -174,7 +120,7 @@ export default function HomePage() {
             <span>Private by default · runs locally</span>
           </div>
         </div>
-        <HeroPhone />
+        <HeroReel />
       </section>
 
       {/* Reels wall — the proof, auto-scrolling 9:16 */}

@@ -17,3 +17,8 @@ npm-debug.log*
 
 # prisma
 web/prisma/dev.db
+
+# large generated reels - served via R2 presigned, not git (139M)
+web/public/reels/*.mp4
+web/public/reels/posters/
+web/public/reels/youtube-upload.csv
