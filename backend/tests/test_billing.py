@@ -33,8 +33,11 @@ def test_signup_grants_one_time_free_credits(client):
 
 def test_record_credits_rounds_up_stays_non_negative(client):
     uid = _register(client)
+    from app.plans import free_credits
+
+    start = free_credits()
     billing.record_credits(uid, 61)  # 61s -> 2 (ceil)
-    assert billing.credit_balance(uid) == 3
+    assert billing.credit_balance(uid) == start - 2
     # Deducting more than the balance bottoms out at 0, never negative.
     billing.record_credits(uid, 1_000_000)
     assert billing.credit_balance(uid) == 0
