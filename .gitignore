@@ -11,6 +11,11 @@ backend/.env
 web/.env
 cookies.txt
 **/cookies.txt
+/tmp/clipforge-cookies.txt
+
+# local cookie sync (contains VPS host assumption, not for repo)
+scripts/export_cookies.py
+scripts/sync-cookies.sh
 
 # node
 node_modules/
