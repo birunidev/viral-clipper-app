@@ -86,6 +86,7 @@ def get_info(url: str) -> dict:
             ea["po_token"] = [po_token]
         if visitor_data:
             ea["visitor_data"] = visitor_data
+        # Don't force player_client here - let yt-dlp handle default
         opts["extractor_args"] = {"youtube": ea}
 
     try:
@@ -190,9 +191,6 @@ def _build_opts(out_dir: str, hook: Callable[[dict], None], player_clients) -> d
         extractor_args["po_token"] = [po_token]
     if visitor_data:
         extractor_args["visitor_data"] = visitor_data
-    if use_browser and not player_clients:
-        # when using browser cookies, also try android client as fallback is less restricted
-        extractor_args["player_client"] = ["android"]
     if extractor_args:
         opts["extractor_args"] = {"youtube": extractor_args}
 
