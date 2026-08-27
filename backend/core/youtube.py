@@ -59,6 +59,7 @@ def get_info(url: str) -> dict:
         "no_warnings": True,
         "noplaylist": True,
         "skip_download": True,
+        "remote_components": ["ejs:github"],
     }
     # Apply same cookie/browser handling as download for bot guard (including auto)
     cookiefile = os.environ.get("YTDLP_COOKIEFILE", "").strip()
@@ -145,6 +146,7 @@ def _build_opts(out_dir: str, hook: Callable[[dict], None], player_clients) -> d
         "fragment_retries": 5,
         "extractor_retries": 5,
         "socket_timeout": 30,
+        "remote_components": ["ejs:github"],
     }
     # YouTube bot guard: supports cookiefile, cookies-from-browser, or auto.
     # Programmatic: if no explicit config, auto-try to extract from local browser
