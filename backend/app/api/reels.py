@@ -19,12 +19,23 @@ router = APIRouter(prefix="/reels", tags=["reels"])
 PRESIGNED_TTL = 7 * 24 * 3600
 
 
+def _get_reels_bucket() -> str:
+    """Reels bucket: dedicated `testing-bucket` for landing videos, fallback to main S3_BUCKET."""
+    return (
+        os.environ.get("REELS_BUCKET", "").strip()
+        or os.environ.get("R2_REELS_BUCKET", "").strip()
+        or os.environ.get("S3_REELS_BUCKET", "").strip()
+        or os.environ.get("S3_BUCKET", "").strip()
+        or "testing-bucket"
+    )
+
+
 def _presigned(key: str | None) -> str | None:
     if not key:
         return None
     from core.s3 import presigned_get_url
 
-    bucket = os.environ.get("S3_BUCKET", "")
+    bucket = _get_reels_bucket()
     if not bucket:
         return None
     try:
@@ -40,10 +51,13 @@ def list_reels() -> list[dict]:
     Reads `reels/reels.json` from R2 (the manifest uploaded with the videos)
     and generates presigned GET URLs for each file/poster. Falls back to
     listing objects if manifest is missing.
-    """
-    from core.s3 import _client, _get_bucket
 
-    bucket = _get_bucket()
+    Uses dedicated `testing-bucket` (REELS_BUCKET) for reels, separate from
+    main app bucket `snapclip-prod-bucket`.
+    """
+    from core.s3 import _client
+
+    bucket = _get_reels_bucket()
 
     # Try to fetch manifest from R2
     manifest = None

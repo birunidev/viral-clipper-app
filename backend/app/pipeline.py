@@ -34,6 +34,43 @@ from . import db
 
 logger = logging.getLogger(__name__)
 
+# Browser capture produces WebM (VP8/9 + Opus) via MediaRecorder – transcode to
+# MP4/H.264+AAC before handing to clipper (more compatible for ffmpeg pipeline
+# and previews). Keep local; S3 source may stay WebM but pipeline works on MP4.
+def _maybe_transcode_to_mp4(src: str) -> str:
+    """If src is WebM, transcode to MP4/H.264+AAC via ffmpeg and return new path."""
+    lower = src.lower()
+    if lower.endswith(".mp4"):
+        return src
+    # also treat .webm, .mkv, or unknown ext with webm content
+    needs = lower.endswith(".webm") or lower.endswith(".mkv") or lower.endswith(".mov")
+    # Probe fallback: if ffprobe says not h264, transcode anyway – cheaper to just check ext
+    if not needs:
+        # check via ffprobe codec? skip – rely on ext for now
+        return src
+    dst = os.path.splitext(src)[0] + ".mp4"
+    if dst == src:
+        dst = src + ".mp4"
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", src, "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", dst],
+            capture_output=True, text=True, timeout=300,
+        )
+        if result.returncode == 0 and os.path.isfile(dst) and os.path.getsize(dst) > 0:
+            logger.info("Transcoded %s (%s) -> %s for pipeline", src, os.path.splitext(src)[1], dst)
+            # Replace original to save temp space; pipeline uses MP4 from here
+            try:
+                os.remove(src)
+            except Exception:
+                pass
+            return dst
+        else:
+            logger.warning("WebM -> MP4 transcode failed (%s): %s", result.returncode, (result.stderr or "")[:400])
+            return src
+    except Exception as exc:
+        logger.warning("Transcode error for %s: %s", src, exc)
+        return src
+
 # yt-dlp errors embed the full signed CDN URL (and SSRF attempts would embed
 # internal ones). Strip URLs before persisting error text that users see.
 _URL_IN_TEXT_RE = re.compile(r"https?://\S+")
@@ -469,23 +506,79 @@ def _run_analyze(job_id: str) -> None:
                 # away (not after a later stage) so it survives even if the
                 # download itself fails afterwards.
                 try:
+                    # Pass per-request client cookies if opted in (ephemeral file)
+                    _cookies_path = f"/tmp/youtube_cookies_{project_id}.txt"
+                    _has_cookies = os.path.isfile(_cookies_path)
+                    # get_info prefers official API, but may fallback to yt-dlp
+                    # which benefits from cookies on bot-guarded videos
                     info = youtube.get_info(source)
                     source_language = info.get("language") or info.get("original_language")
                     if source_language:
                         db.update_project(project_id, language=source_language)
                 except Exception:
                     source_language = None
-                local_video = youtube.download(
-                    source,
-                    dl_dir,
-                    progress=_make_progress(job_id, *ANALYZE_STAGE_RANGES["downloading"]),
-                )
+                    _has_cookies = os.path.isfile(f"/tmp/youtube_cookies_{project_id}.txt")
+                # Resilient download via clean abstraction: download_video(url) -> {video_path, method_used, format}
+                # Delegates to core.downloader with fallback chain (android,ios,tv,tv_embedded,web_embedded,web),
+                # timeout, bot-signature detection, PO token sidecar, pacing & rate limiter.
+                try:
+                    from core.downloader import download_video as _download_video
+
+                    _dl_result = _download_video(
+                        source,
+                        dl_dir,
+                        progress=_make_progress(job_id, *ANALYZE_STAGE_RANGES["downloading"]),
+                        project_id=project_id,
+                    )
+                    local_video = _dl_result.video_path
+                    logger.info(
+                        "YouTube download succeeded via %s (pot=%s format=%s) for project %s",
+                        _dl_result.method_used,
+                        _dl_result.with_pot,
+                        _dl_result.format,
+                        project_id,
+                    )
+                    # Persist method for per-job observability (visible via GET /jobs/{id})
+                    try:
+                        existing_opts = (job.get("options") or {}).copy()
+                        existing_opts["download_method"] = _dl_result.method_used
+                        existing_opts["download_pot"] = _dl_result.with_pot
+                        existing_opts["download_format"] = _dl_result.format
+                        db.update_job(job_id, options=existing_opts)
+                    except Exception:
+                        pass
+                except Exception as _dl_exc:
+                    # If downloader abstraction fails, surface directly (it already wraps DownloadError)
+                    # Fallback to legacy wrapper only for import errors
+                    if "DownloadError" in type(_dl_exc).__name__ or "download" in str(_dl_exc).lower():
+                        raise
+                    local_video = youtube.download(
+                        source,
+                        dl_dir,
+                        progress=_make_progress(job_id, *ANALYZE_STAGE_RANGES["downloading"]),
+                        project_id=project_id,
+                    )
+                # Clean up ephemeral client cookies after successful download
+                try:
+                    if os.path.isfile(f"/tmp/youtube_cookies_{project_id}.txt"):
+                        os.remove(f"/tmp/youtube_cookies_{project_id}.txt")
+                except Exception:
+                    pass
+                # Ensure MP4 for downstream pipeline (covers rare webm/**)
+                local_video = _maybe_transcode_to_mp4(local_video)
         elif source_type == "upload":
             # Already-uploaded source: it's already the canonical source
             # video in S3 under `source` (the presigned-upload key).
+            # Preserve original extension so WebM from tab capture keeps its suffix
+            # for correct probe, then transcode to MP4 if needed.
+            orig_ext = os.path.splitext(source)[1] or ".mp4"
+            if orig_ext.lower() not in (".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v"):
+                orig_ext = ".mp4"
             local_video = s3.download_object(
-                source, os.path.join(workdir, "src.mp4")
+                source, os.path.join(workdir, f"src{orig_ext}")
             )
+            # Capture path yields WebM – convert before clipper pipeline
+            local_video = _maybe_transcode_to_mp4(local_video)
         else:
             raise RuntimeError(f"Unknown sourceType: {source_type!r}")
 
@@ -632,6 +725,13 @@ def _run_analyze(job_id: str) -> None:
         db.update_project(project_id, status="completed")
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+        # Ephemeral client cookies (consent opt-in) — always delete after job
+        try:
+            _ck = f"/tmp/youtube_cookies_{project_id}.txt"
+            if os.path.isfile(_ck):
+                os.remove(_ck)
+        except Exception:
+            pass
 
 
 # ------------------------------------------------------------------- render

@@ -30,9 +30,12 @@ logger = logging.getLogger(__name__)
 
 URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-# Ordered fallback when web client is bot-blocked. android/ios/mweb work
-# without PO token more often than web; tv/android_vr as last resort.
-FALLBACK_CLIENTS = ["android", "ios", "mweb", "tv", "android_vr"]
+# Spec-ordered fallback chain: android -> ios -> tv -> tv_embedded -> web_embedded -> web
+# This order is tuned for datacenter IPs (android/ios bypass bot-check most often).
+# Exposed for observability; the resilient downloader iterates them one-by-one.
+FALLBACK_CLIENTS = ["android", "ios", "tv", "tv_embedded", "web_embedded", "web"]
+# Alias used by downloader
+PLAYER_CLIENTS_ORDER = FALLBACK_CLIENTS
 
 # Shared hint for bot-guard failures — keep in one place so get_info()
 # and download() stay consistent. Includes Docker mount hint.
@@ -66,13 +69,23 @@ def _validate_source(url: str) -> None:
         raise DownloadError(str(exc)) from exc
 
 
-def _apply_cookie_and_po_opts(opts: dict, *, player_clients=None) -> None:
+def _apply_cookie_and_po_opts(opts: dict, *, player_clients=None, client_cookies_path: str | None = None) -> None:
     """Mutate ``opts`` with cookie / PO-token / browser handling.
 
     Centralised so get_info() and download() (_build_opts) stay in sync.
     Safe to call multiple times; never raises — missing cookiefile is
     logged as warning and still passed to yt-dlp so the error is visible.
+
+    `client_cookies_path` — per-request Netscape cookies file supplied by the
+    browser after cookie-consent opt-in (SO 75426272: must be HttpOnly-aware
+    via chrome.cookies). Takes precedence over server YTDLP_COOKIEFILE and
+    is used ephemerally for this single download.
     """
+    # Per-request client cookies (consent opt-in) take absolute precedence
+    if client_cookies_path and os.path.isfile(client_cookies_path):
+        opts["cookiefile"] = client_cookies_path
+        return
+
     cookiefile = os.environ.get("YTDLP_COOKIEFILE", "").strip()
     cookies_from_browser = os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "").strip()
     auto_enabled = os.environ.get("YTDLP_COOKIES_AUTO", "1").strip().lower() not in (
@@ -149,8 +162,9 @@ def get_info(url: str) -> dict:
     DownloadError if yt-dlp is missing or metadata cannot be fetched.
 
     Prefers official YouTube Data API v3 when YOUTUBE_API_KEY is set (safe,
-    no cookies). Falls back to yt-dlp only if ENABLE_YTDLP=1. Retries once
-    with FALLBACK_CLIENTS on bot/403 errors, mirroring download().
+    no cookies). Falls back to the resilient downloader's fallback chain
+    (android -> ios -> tv -> tv_embedded -> web_embedded -> web) via
+    ``core.downloader.get_info_resilient``.
     """
     _validate_source(url)
 
@@ -165,7 +179,7 @@ def get_info(url: str) -> dict:
     except Exception as exc:  # pragma: no cover – never block on official API failure
         logger.warning("Official API get_info failed, falling back to yt-dlp: %s", exc)
 
-    # 2) Legacy yt-dlp – gated
+    # 2) Resilient yt-dlp – gated
     if not _is_ytdlp_enabled():
         raise DownloadError(
             f"Could not fetch video metadata: YouTube downloads disabled in safe prod mode (ENABLE_YTDLP=0) and no YOUTUBE_API_KEY or API returned no result for {url[:60]}. "
@@ -174,37 +188,15 @@ def get_info(url: str) -> dict:
     if yt_dlp is None:
         raise DownloadError("yt-dlp is not installed. Run: poetry install")
 
-    last_error: Exception | None = None
-    for player_clients in (None, FALLBACK_CLIENTS):
-        opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "skip_download": True,
-            "remote_components": ["ejs:github"],
-        }
-        _apply_cookie_and_po_opts(opts, player_clients=player_clients)
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                return ydl.extract_info(url, download=False) or {}
-        except yt_dlp.utils.DownloadError as exc:
-            last_error = exc
-            detail = _strip_ansi(str(exc))
-            # Only retry with fallback clients for bot/403-ish errors; other
-            # failures (private video, etc.) should fail fast without retry.
-            is_bot = "Sign in to confirm" in detail or "bot" in detail.lower() or "403" in detail or "Forbidden" in detail
-            if player_clients is None and is_bot:
-                logger.info("get_info retrying with fallback clients after: %s", detail[:200])
-                continue
-            hint = _BOT_GUARD_HINT if is_bot else ""
-            raise DownloadError(f"Could not fetch video metadata: {detail}{hint}") from exc
+    # Delegate to resilient downloader (handles fallback chain, timeout, PO token, pacing, logging)
+    try:
+        from core.downloader import get_info_resilient
 
-    # Exhausted fallback — surface last error with hint
-    detail = _strip_ansi(str(last_error or "unknown error"))
-    hint = ""
-    if "Sign in to confirm" in detail or "bot" in detail.lower():
-        hint = _BOT_GUARD_HINT
-    raise DownloadError(f"Could not fetch video metadata: {detail}{hint}") from last_error
+        return get_info_resilient(url)
+    except DownloadError:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise DownloadError(f"Could not fetch video metadata: {_strip_ansi(str(exc))}") from exc
 
 
 def is_url(value: str) -> bool:
@@ -238,9 +230,13 @@ def _detect_browser() -> str | None:
     return None
 
 
-def _build_opts(out_dir: str, hook: Callable[[dict], None], player_clients) -> dict:
+def _build_opts(out_dir: str, hook: Callable[[dict], None], player_clients, client_cookies_path: str | None = None) -> dict:
+    # Prefer H.264 (broadest compatibility) → VP9 → AV1 fallback (per Fetchr
+    # note: AV1 is often served but browser/device support is inconsistent).
+    # Instagram serves separate DASH video+audio – the `+ba` merge handles it
+    # (previous Fetchr bug was silent Instagram files).
     opts = {
-        "format": "bv*[height<=1080]+ba/b[height<=1080]/b",
+        "format": "bestvideo[vcodec^=avc][height<=1080]+bestaudio/bv*[vcodec^=avc][height<=1080]+ba/bv*[vcodec^=vp9][height<=1080]+ba/bv*[height<=1080]+ba/b[height<=1080]/b",
         "outtmpl": os.path.join(out_dir, "%(id)s.%(ext)s"),
         "merge_output_format": "mp4",
         "quiet": True,
@@ -255,25 +251,42 @@ def _build_opts(out_dir: str, hook: Callable[[dict], None], player_clients) -> d
     }
     # YouTube bot guard: supports cookiefile, cookies-from-browser, or auto.
     # See _apply_cookie_and_po_opts() — single source of truth.
-    _apply_cookie_and_po_opts(opts, player_clients=player_clients)
+    _apply_cookie_and_po_opts(opts, player_clients=player_clients, client_cookies_path=client_cookies_path)
     return opts
+
+
+def _client_cookies_path_for(project_id: str | None) -> str | None:
+    """Resolve per-project client cookies file (from opt-in consent).
+
+    When the frontend sends youtube_cookies with ProjectCreate, the API
+    writes it to /tmp/youtube_cookies_{project_id}.txt for this single
+    job. Returns path if file exists, else None.
+    """
+    if not project_id:
+        return None
+    p = f"/tmp/youtube_cookies_{project_id}.txt"
+    return p if os.path.isfile(p) else None
 
 
 def download(
     url: str,
     out_dir: str,
     progress: Callable[[float], None] | None = None,
+    client_cookies_path: str | None = None,
+    project_id: str | None = None,
 ) -> str:
     """Download ``url`` into ``out_dir`` and return the local file path.
 
-    Downloads the best available quality and merges audio/video to MP4.
-    On a download-stage failure it retries once with alternate YouTube
-    player clients. Raises DownloadError when yt-dlp is missing, the URL
-    cannot be fetched, or the output file is not produced.
+    Thin wrapper over ``core.downloader.download_video`` which implements the
+    full fallback chain (android -> ios -> tv -> tv_embedded -> web_embedded -> web),
+    timeout wrapping, bot-signature detection, PO token sidecar, pacing and
+    success logging. This wrapper preserves the legacy ``download(...) -> str``
+    contract so existing callers (pipeline, tests) need not change.
+
+    For the richer abstraction use ``from core.downloader import download_video``.
 
     In safe prod mode (ENABLE_YTDLP=0, default) this raises with
-    _UPLOAD_HINT – callers should prompt user to Upload instead. This
-    keeps the shared prod Google session out of scope and is ToS-compliant.
+    _UPLOAD_HINT – callers should prompt user to Upload instead.
     """
     if not _is_ytdlp_enabled():
         raise DownloadError(
@@ -285,52 +298,23 @@ def download(
     if yt_dlp is None:
         raise DownloadError("yt-dlp is not installed. Run: poetry install")
 
-    _validate_source(url)
+    # Delegate to resilient downloader (handles validation, pacing, PO token, retries)
+    from core.downloader import download_video as _dlv
 
-    os.makedirs(out_dir, exist_ok=True)
-
-    def _hook(data: dict) -> None:
-        if progress is None:
-            return
-        status = data.get("status")
-        if status == "downloading":
-            total = data.get("total_bytes") or data.get("total_bytes_estimate") or 0
-            done = data.get("downloaded_bytes") or 0
-            if total:
-                progress(0.05 + 0.25 * done / total)
-        elif status == "finished":
-            progress(0.3)
-
-    info = None
-    last_error: Exception | None = None
-
-    for player_clients in (None, FALLBACK_CLIENTS):
-        try:
-            with yt_dlp.YoutubeDL(_build_opts(out_dir, _hook, player_clients)) as ydl:
-                info = ydl.extract_info(url, download=True)
-            break
-        except yt_dlp.utils.DownloadError as exc:
-            last_error = exc
-            _clean_out_dir(out_dir)
-
-    if info is None:
-        detail = _strip_ansi(str(last_error or "unknown error"))
-        hint = ""
-        if "Sign in to confirm" in detail or "bot" in detail.lower():
-            hint = _BOT_GUARD_HINT
-        raise DownloadError(f"Download failed: {detail}{hint}")
-
-    video_id = (info or {}).get("id")
-    if video_id:
-        path = os.path.join(out_dir, f"{video_id}.mp4")
-        if os.path.isfile(path):
-            return path
-
-        for name in os.listdir(out_dir):
-            if name.startswith(str(video_id)):
-                return os.path.join(out_dir, name)
-
-    raise DownloadError("Download finished but no output file was found.")
+    result = _dlv(
+        url,
+        out_dir,
+        progress=progress,
+        client_cookies_path=client_cookies_path,
+        project_id=project_id,
+    )
+    logger.info(
+        "download() succeeded via method=%s pot=%s path=%s",
+        result.method_used,
+        result.with_pot,
+        result.video_path,
+    )
+    return result.video_path
 
 
 def _clean_out_dir(out_dir: str) -> None:
@@ -343,3 +327,10 @@ def _clean_out_dir(out_dir: str) -> None:
                 os.remove(path)
         except OSError:
             pass
+
+
+# Re-export resilient abstraction for callers that want the richer contract.
+try:
+    from core.downloader import DownloadResult, download_video  # noqa: F401
+except ImportError:
+    pass

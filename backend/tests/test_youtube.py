@@ -81,12 +81,18 @@ def _clear_calls(monkeypatch):
     # legacy yt-dlp path – enable it for the test process.
     monkeypatch.setenv("ENABLE_YTDLP", "1")
     monkeypatch.setenv("YOUTUBE_API_KEY", "")
+    # Disable rate limiter and POT for deterministic tests
+    monkeypatch.setenv("YTDLP_RATE_INTERVAL", "0")
+    monkeypatch.setenv("POT_PROVIDER_URL", "")
+    monkeypatch.setenv("YTDLP_ATTEMPT_TIMEOUT", "5")
 
 
 @pytest.fixture
 def fake_ytdlp(monkeypatch):
     def _set(ydl_cls):
-        monkeypatch.setattr("core.youtube.yt_dlp", FakeYtdlp(ydl_cls), raising=False)
+        fake = FakeYtdlp(ydl_cls)
+        monkeypatch.setattr("core.youtube.yt_dlp", fake, raising=False)
+        monkeypatch.setattr("core.downloader.yt_dlp", fake, raising=False)
     return _set
 
 
@@ -120,7 +126,7 @@ def test_download_reports_progress(tmp_path, fake_ytdlp):
         progress=steps.append,
     )
 
-    assert steps and steps[-1] == 0.3
+    assert steps and steps[-1] in (0.3, 1.0)  # resilient path ends at 1.0, legacy at 0.3
     assert all(0.0 <= step <= 1.0 for step in steps)
 
 
@@ -134,7 +140,8 @@ def test_download_retries_with_fallback_clients(tmp_path, fake_ytdlp):
     assert len(FakeYDL.calls) == 2
     fallback_opts = FakeYDL.calls[1]
     clients = fallback_opts["extractor_args"]["youtube"]["player_client"]
-    assert clients == FALLBACK_CLIENTS
+    # Resilient chain tries single client per attempt: second attempt is 'android' (first in FALLBACK_CLIENTS)
+    assert clients == FALLBACK_CLIENTS[0]
 
 
 def test_download_failure(tmp_path, fake_ytdlp):

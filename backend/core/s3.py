@@ -42,19 +42,81 @@ class S3Upload:
 
 
 def _client_kwargs() -> dict:
-    kwargs = {}
-    endpoint = os.environ.get(ENDPOINT_ENV, "").strip()
+    kwargs: dict = {}
+    # Support both S3_* aliases (S3_ENDPOINT, S3_REGION, S3_ACCESS_KEY_ID, etc.)
+    # and standard AWS_* names. Boto3 only reads AWS_*, so map S3_* explicitly.
+    endpoint = (
+        os.environ.get(ENDPOINT_ENV, "").strip()
+        or os.environ.get("S3_ENDPOINT", "").strip()
+    ).rstrip("/")
+    # Also handle legacy var name S3_ENDPOINT_URL without prefix? Already covered.
+    # Credentials: prefer AWS_*, fallback to S3_*
+    access_key = os.environ.get("AWS_ACCESS_KEY_ID", "").strip() or os.environ.get(
+        "S3_ACCESS_KEY_ID", ""
+    ).strip()
+    secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip() or os.environ.get(
+        "S3_SECRET_ACCESS_KEY", ""
+    ).strip()
+    session_token = os.environ.get("AWS_SESSION_TOKEN", "").strip() or os.environ.get(
+        "S3_SESSION_TOKEN", ""
+    ).strip()
+    if access_key:
+        kwargs["aws_access_key_id"] = access_key
+    if secret_key:
+        kwargs["aws_secret_access_key"] = secret_key
+    if session_token:
+        kwargs["aws_session_token"] = session_token
+
     if endpoint:
+        # R2 endpoint must be just the host (https://<account>.r2.cloudflarestorage.com).
+        # Users commonly paste it with a bucket/path suffix (e.g. .../snapclip or
+        # .../snapclip-prod-bucket or .../closingku-media) which makes boto3 sign
+        # the wrong canonical URI (`/bucket/key` becomes `/snapclip/bucket/key`) and
+        # R2 returns SignatureDoesNotMatch on every object operation. Strip any path/query.
+        from urllib.parse import urlparse
+
+        parsed = urlparse(endpoint)
+        if parsed.scheme and parsed.netloc and parsed.path not in ("", "/"):
+            endpoint = f"{parsed.scheme}://{parsed.netloc}"
         kwargs["endpoint_url"] = endpoint
-        region = os.environ.get(REGION_ENV, "").strip() or os.environ.get(
-            DEFAULT_REGION_ENV, ""
-        ).strip()
+        region = (
+            os.environ.get(REGION_ENV, "").strip()
+            or os.environ.get(DEFAULT_REGION_ENV, "").strip()
+            or os.environ.get("S3_REGION", "").strip()
+            or os.environ.get("AWS_DEFAULT_REGION", "").strip()
+        )
         kwargs["region_name"] = region or "auto"
+        # Force SigV4 + path-style for R2 (endpoint is not AWS). Virtual-hosted
+        # (`bucket.endpoint`) is NOT supported by R2 for custom domains and
+        # causes signature mismatches on some operations.
+        try:
+            from botocore.config import Config
+
+            kwargs["config"] = Config(
+                signature_version="s3v4",
+                s3={"addressing_style": "path"},
+            )
+        except Exception:
+            pass
+    else:
+        # Non-R2 (pure AWS) – still ensure region if provided via S3_REGION
+        region = (
+            os.environ.get(REGION_ENV, "").strip()
+            or os.environ.get(DEFAULT_REGION_ENV, "").strip()
+            or os.environ.get("S3_REGION", "").strip()
+        )
+        if region:
+            kwargs["region_name"] = region
     return kwargs
 
 
 def _get_bucket() -> str:
-    bucket = os.environ.get(BUCKET_ENV, "").strip()
+    # Support S3_BUCKET (primary) and fallback aliases for UX
+    bucket = (
+        os.environ.get(BUCKET_ENV, "").strip()
+        or os.environ.get("S3_BUCKET", "").strip()
+        or os.environ.get("BUCKET_NAME", "").strip()
+    )
     if not bucket:
         raise S3Error(
             f"{BUCKET_ENV} environment variable is required for S3 uploads."
