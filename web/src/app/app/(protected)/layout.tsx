@@ -86,7 +86,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <span className="font-medium">{billing.data?.tier_name ?? "Free"}</span>
             {billing.data && <span className="text-ink-muted">·</span>}
             {billing.data && (
-              <span className="text-ink-muted">{billing.data.credits} credits</span>
+              <span className="text-ink-muted">{billing.data.credits.toLocaleString("en-US")} credits</span>
             )}
           </Link>
           <button

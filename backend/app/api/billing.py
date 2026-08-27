@@ -29,6 +29,7 @@ import hmac
 import logging
 import os
 import time
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -36,7 +37,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from .. import db
 from ..schemas import CheckoutRequest, CheckoutResponse
 from ..security import SessionUser, current_user
-from app.plans import pack_for_key, pack_for_price, price_for_pack_key
+from app.plans import (
+    is_topup_key,
+    pack_for_key,
+    pack_for_price,
+    price_for_pack_key,
+    purchasable_for_key,
+    topup_for_key,
+)
 from core import billing, midtrans
 
 logger = logging.getLogger(__name__)
@@ -71,6 +79,26 @@ def billing_status(user: SessionUser = Depends(current_user)) -> dict:
     return billing.billing_status(user.id)
 
 
+@router.get("/billing/transactions", response_model=list[dict])
+def list_transactions(user: SessionUser = Depends(current_user)) -> list[dict]:
+    orders = db.list_payment_orders(user.id, limit=50)
+    out: list[dict] = []
+    for o in orders:
+        pack = purchasable_for_key(o.get("plan_key")) or {}
+        out.append({
+            "order_id": o.get("order_id"),
+            "plan_key": o.get("plan_key"),
+            "plan_name": pack.get("name") or o.get("plan_key"),
+            "credits": pack.get("credits") or 0,
+            "provider": o.get("provider"),
+            "gross_amount": o.get("gross_amount"),
+            "currency": o.get("currency"),
+            "status": o.get("status"),
+            "created_at": (o.get("created_at").isoformat() if o.get("created_at") else None),
+        })
+    return out
+
+
 # ---------------------------------------------------------------- checkout
 
 # IANA zones covering Indonesian time (WIB/WITA/WIT). A browser reporting one
@@ -83,28 +111,81 @@ INDONESIA_TIMEZONES = {
 }
 
 
-def provider_for(timezone: str | None) -> str:
-    """Pick the payment gateway for a user (Midtrans only when configured)."""
+def provider_for(timezone: str | None, *, forced: str | None = None) -> str:
+    """Pick the payment gateway for a user (Midtrans only when configured).
+
+    ``forced`` (``paddle`` | ``midtrans``) is an explicit user override from
+    the checkout UI — it wins over the timezone heuristic so an Indonesian
+    user whose browser reports a non-ID zone can still choose QRIS/GoPay.
+    """
+    f = (forced or "").strip().lower()
+    if f in ("midtrans", "paddle"):
+        if f == "midtrans" and not midtrans.is_configured():
+            logger.warning("Forced midtrans but gateway not configured; falling back to paddle")
+            return "paddle"
+        logger.info("Checkout provider forced=%s (tz=%r, midtrans_configured=%s)", f, timezone, midtrans.is_configured())
+        return f
     tz = (timezone or "").strip()
-    if tz in INDONESIA_TIMEZONES and midtrans.is_configured():
-        return "midtrans"
-    return "paddle"
+    provider = "midtrans" if tz in INDONESIA_TIMEZONES and midtrans.is_configured() else "paddle"
+    logger.info("Checkout provider auto=%s (tz=%r, forced=%r, midtrans_configured=%s)", provider, tz, f, midtrans.is_configured())
+    return provider
 
 
 def _checkout_paddle(user: SessionUser, pack_key: str) -> CheckoutResponse:
-    """Create a Paddle Billing one-time transaction for a credit pack.
+    """Create a Paddle Billing one-time transaction for a credit pack or top-up.
 
-    ``custom_data.user_id`` rides on the transaction so the settlement
-    webhook can map the purchase back to the buyer without trusting input.
+    Supports two modes per item: catalog ``price_id`` if ``PADDLE_PRICE_<KEY>``
+    is configured, otherwise a non-catalog custom price built from the pack's
+    ``price_usd`` — no price ids needed. ``custom_data.user_id`` rides on the
+    transaction so the settlement webhook can map the purchase back to the buyer.
     """
-    price_id = price_for_pack_key(pack_key)
-    if not price_id:
+    pack = purchasable_for_key(pack_key)
+    if pack is None:
         raise HTTPException(status_code=400, detail=f"Unknown pack: {pack_key!r}")
+    price_id = price_for_pack_key(pack_key)
+    if price_id:
+        items = [{"quantity": 1, "price_id": price_id}]
+    else:
+        amount = str(int(pack.get("price_usd") or 0))
+        if int(amount) <= 0:
+            raise HTTPException(status_code=503, detail=f"Price for {pack_key!r} is not configured.")
+        product_id = os.environ.get("PADDLE_PRODUCT_ID", "").strip()
+        if product_id:
+            price_obj = {
+                "description": f"ClipForge {pack['name']} — {pack['credits']} min",
+                "name": pack["name"],
+                "billing_cycle": None,
+                "unit_price": {"amount": amount, "currency_code": "USD"},
+                "product_id": product_id,
+            }
+        else:
+            price_obj = {
+                "description": f"ClipForge {pack['name']} — {pack['credits']} min",
+                "name": pack["name"],
+                "billing_cycle": None,
+                "unit_price": {"amount": amount, "currency_code": "USD"},
+                "product": {"name": "ClipForge Credits", "description": "Pay-as-you-go credits", "tax_category": "standard"},
+            }
+        items = [{"quantity": 1, "price": price_obj}]
+
+    # Create audit order for Paddle too so transaction history is unified
+    paddle_order_id = f"PDL-{user.id[:8]}-{pack_key}-{int(time.time() * 1000)}"
+    try:
+        db.create_payment_order(
+            user_id=user.id,
+            provider="paddle",
+            order_id=paddle_order_id,
+            plan_key=pack_key,
+            gross_amount=int(pack.get("price_usd") or 0),
+            currency="USD",
+        )
+    except Exception:
+        pass
 
     body = {
-        "items": [{"quantity": 1, "price_id": price_id}],
-        "collection_mode": "default",  # automatic self-serve checkout
-        "custom_data": {"user_id": user.id, "pack": pack_key},
+        "items": items,
+        "collection_mode": "automatic",
+        "custom_data": {"user_id": user.id, "pack": pack_key, "order_id": paddle_order_id},
     }
 
     try:
@@ -135,13 +216,13 @@ def _checkout_paddle(user: SessionUser, pack_key: str) -> CheckoutResponse:
 
 
 def _checkout_midtrans(user: SessionUser, pack_key: str) -> CheckoutResponse:
-    """Create a Midtrans Snap one-time transaction (credit pack, IDR).
+    """Create a Midtrans Snap one-time transaction (credit pack or top-up, IDR).
 
     The order is recorded BEFORE calling Midtrans with the exact amount we
     quoted, so the settlement webhook can verify the paid amount against
     ground truth instead of trusting the notification.
     """
-    pack = pack_for_key(pack_key)
+    pack = purchasable_for_key(pack_key)
     if pack is None:
         raise HTTPException(status_code=400, detail=f"Unknown pack: {pack_key!r}")
 
@@ -192,9 +273,9 @@ def _checkout_midtrans(user: SessionUser, pack_key: str) -> CheckoutResponse:
 def create_checkout(
     payload: CheckoutRequest, user: SessionUser = Depends(current_user)
 ) -> CheckoutResponse:
-    if pack_for_key(payload.plan_key) is None:
+    if purchasable_for_key(payload.plan_key) is None:
         raise HTTPException(status_code=400, detail=f"Unknown pack: {payload.plan_key!r}")
-    provider = provider_for(payload.timezone)
+    provider = provider_for(payload.timezone, forced=payload.provider)
     if provider == "midtrans":
         return _checkout_midtrans(user, payload.plan_key)
     return _checkout_paddle(user, payload.plan_key)
@@ -251,21 +332,19 @@ def _grant_paddle_pack(user_id: str, data: dict, event_type: str) -> None:
     The pack is resolved from ``custom_data.pack`` (our own token), falling
     back to the transaction price mapping. Two integrity checks guard it:
 
-    - Price binding: every price id on the transaction's items must map to
-      the SAME pack as ``custom_data.pack``. A signature-valid transaction
-      for the Starter price carrying ``custom_data.pack: "studio"`` (a
-      dashboard test txn or tampered checkout link) must not mint Studio.
+    - Price binding: when catalog price ids are used, every id must map to
+      the SAME pack as ``custom_data.pack``. Custom (non-catalog) prices have
+      no binding and skip this check — amount sanity below is authoritative.
     - Amount sanity: when the transaction reports USD totals they must
       match the pack's configured USD price. Other currencies are skipped
-      (Paddle local pricing makes exact comparison impossible server-side;
-      the price-id binding above remains authoritative).
+      (Paddle local pricing makes exact comparison impossible server-side).
     """
     custom = (data.get("custom_data") or {})
     user = db.get_user(user_id) or {}
 
     pack_key = str(custom.get("pack") or "") or None
     if pack_key:
-        if pack_for_key(pack_key) is None:
+        if purchasable_for_key(pack_key) is None:
             pack_key = None
     if not pack_key:
         # Fall back to the price id on the transaction's items.
@@ -297,14 +376,20 @@ def _grant_paddle_pack(user_id: str, data: dict, event_type: str) -> None:
         )
         return
 
-    # Integrity check 2: USD totals vs configured price (best-effort).
-    pack = pack_for_key(pack_key) or {}
+    # Integrity check 2: USD totals vs configured price (best-effort, Decimal-safe).
+    pack = purchasable_for_key(pack_key) or {}
     expected_usd_cents = int(pack.get("price_usd") or 0)
     details = data.get("details") or {}
     totals = (details.get("totals") or {})
     currency = str((totals.get("currency_code") or data.get("currency_code") or "")).upper()
-    total_minor = totals.get("total")
-    if expected_usd_cents > 0 and currency == "USD" and isinstance(total_minor, int):
+    raw_total = totals.get("total")
+    total_minor: int | None = None
+    if raw_total is not None:
+        try:
+            total_minor = int(Decimal(str(raw_total)).to_integral_value(rounding=ROUND_HALF_UP))
+        except (InvalidOperation, ValueError, TypeError):
+            total_minor = None
+    if expected_usd_cents > 0 and currency == "USD" and total_minor is not None:
         if total_minor < expected_usd_cents:
             logger.error(
                 "Paddle %s rejected: paid %s < list price %s (USD) for user %s",
@@ -315,7 +400,16 @@ def _grant_paddle_pack(user_id: str, data: dict, event_type: str) -> None:
             )
             return
 
-    billing.grant_pack(user_id, pack_key)
+    if is_topup_key(pack_key):
+        billing.grant_topup(user_id, pack_key)
+    else:
+        billing.grant_pack(user_id, pack_key)
+    order_id = str(custom.get("order_id") or "")
+    if order_id:
+        try:
+            db.mark_order_settled(order_id)
+        except Exception:
+            pass
     logger.info(
         "Granted pack %s to user %s (%s credits)", pack_key, user_id, user.get("email")
     )
@@ -418,8 +512,8 @@ async def midtrans_webhook(request: Request) -> dict:
         return {"ok": True, "deduplicated": True}
 
     try:
-        paid_amount = int(round(float(gross_amount)))
-    except ValueError:
+        paid_amount = int(Decimal(gross_amount).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    except (InvalidOperation, ValueError, TypeError):
         raise HTTPException(status_code=400, detail="Malformed gross_amount")
 
     if paid_amount != int(order["gross_amount"]):
@@ -446,14 +540,20 @@ async def midtrans_webhook(request: Request) -> dict:
                 "Midtrans order %s already settled; skipping duplicate grant", order_id
             )
             return {"ok": True, "deduplicated": True}
-        billing.grant_pack(order["user_id"], order["plan_key"])
+        before = billing.credit_balance(order["user_id"])
+        if is_topup_key(order["plan_key"]):
+            billing.grant_topup(order["user_id"], order["plan_key"])
+        else:
+            billing.grant_pack(order["user_id"], order["plan_key"])
+        after = billing.credit_balance(order["user_id"])
+        logger.info("Midtrans settled %s: user=%s pack=%s credits %s->%s tier=%s", order_id, order["user_id"], order["plan_key"], before, after, billing.entitlement_tier(order["user_id"]))
     elif transaction_status in _MT_FAILURE_STATUSES:
         db.set_payment_order_status(order_id, _MT_FAILURE_STATUSES[transaction_status])
     elif transaction_status in ("refund", "chargeback"):
         db.set_payment_order_status(order_id, "refunded" if transaction_status == "refund" else "chargeback")
         # A refunded/charged-back pack has its credits deducted back. The tier
         # is intentionally left as-is (permanent entitlements are never revoked).
-        pack = pack_for_key(order["plan_key"])
+        pack = purchasable_for_key(order["plan_key"])
         if pack:
             db.increment_user_credits(order["user_id"], -int(pack["credits"]))
     # "pending" and anything unknown: just record it.

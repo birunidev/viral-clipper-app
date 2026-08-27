@@ -174,7 +174,9 @@ def test_checkout_creates_paddle_transaction(client, monkeypatch):
     assert captured["headers"]["Authorization"] == "Bearer pdl_api_key_test"
     assert captured["body"]["items"][0]["quantity"] == 1
     uid = db.get_user_by_email("checkout@example.com")["id"]
-    assert captured["body"]["custom_data"] == {"user_id": uid, "pack": "starter"}
+    assert captured["body"]["custom_data"]["user_id"] == uid
+    assert captured["body"]["custom_data"]["pack"] == "starter"
+    assert captured["body"]["custom_data"]["order_id"].startswith(f"PDL-{uid[:8]}-starter-")
 
 
 def test_checkout_rejects_unknown_pack(client):

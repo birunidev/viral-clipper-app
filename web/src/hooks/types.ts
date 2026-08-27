@@ -120,10 +120,21 @@ export type CreditPack = {
   credits: number;
   /** One-time Paddle (global) price in USD, e.g. 2.9. */
   price_usd: number;
+  /** Same price in integer cents (precise). */
+  price_usd_cents: number;
   /** One-time Midtrans (Indonesia) price in whole rupiah. */
   price_idr: number;
   /** The permanent entitlement limits this pack unlocks when bought. */
   limits: EntitlementLimits;
+};
+
+export type TopUpPack = {
+  key: string;
+  name: string;
+  credits: number;
+  price_usd: number;
+  price_usd_cents: number;
+  price_idr: number;
 };
 
 /**
@@ -147,4 +158,18 @@ export type BillingStatus = {
     projects: number;
   };
   packs: CreditPack[];
+  topups: TopUpPack[];
+  midtrans_available: boolean;
+};
+
+export type Transaction = {
+  order_id: string;
+  plan_key: string;
+  plan_name: string;
+  credits: number;
+  provider: string;
+  gross_amount: number;
+  currency: string;
+  status: string;
+  created_at: string | null;
 };

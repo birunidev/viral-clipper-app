@@ -10,8 +10,9 @@ import {
   useBilling,
   useCheckout,
   useInvalidateBilling,
+  useTransactions,
 } from "@/hooks/use-billing";
-import type { BillingStatus, CreditPack, EntitlementLimits } from "@/hooks/types";
+import type { BillingStatus, CreditPack, EntitlementLimits, TopUpPack, Transaction } from "@/hooks/types";
 
 type SnapWindow = Window & {
   snap?: {
@@ -33,13 +34,12 @@ export default function BillingPage() {
   const invalidateBilling = useInvalidateBilling();
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-
   const status = billing.data;
 
   function buy(packKey: string) {
     setError("");
     setNotice("");
-    checkout.mutate(packKey, {
+    checkout.mutate(packKey as never, {
       onSuccess: (data) => {
         if (data.provider !== "midtrans" && data.url) {
           window.location.href = data.url;
@@ -89,6 +89,8 @@ export default function BillingPage() {
         </p>
       </div>
 
+      {status && <CurrentTier status={status} />}
+
       {status && <CreditBalance status={status} />}
 
       {status && <UsageMeters status={status} />}
@@ -107,11 +109,14 @@ export default function BillingPage() {
       )}
 
       <PackPicker
-        current={status?.tier ?? "free"}
         packs={status?.packs ?? []}
         onSelect={buy}
         busy={checkout.isPending}
       />
+
+      <TopUpPicker topups={status?.topups ?? []} onSelect={buy} busy={checkout.isPending} />
+
+      <TransactionHistory />
 
       <p className="text-xs text-ink-muted">
         Buying any pack permanently unlocks its storage/projects/resolution and removes the
@@ -131,6 +136,24 @@ export default function BillingPage() {
   );
 }
 
+function CurrentTier({ status }: { status: BillingStatus }) {
+  return (
+    <Card className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <p className="text-xs uppercase tracking-wider text-ink-tertiary">Current tier</p>
+        <p className="mt-1 flex items-center gap-2">
+          <span className="inline-flex items-center rounded-full bg-accent px-2.5 py-0.5 text-xs font-semibold text-accent-ink">{status.tier_name}</span>
+          <span className="text-xs text-ink-tertiary">{status.tier}</span>
+        </p>
+        <p className="mt-2 text-xs text-ink-tertiary">
+          {status.limits.max_resolution ? `Up to ${status.limits.max_resolution}p` : "Source resolution"} · {status.limits.max_projects == null ? "Unlimited projects" : `${status.limits.max_projects} projects`} · {fmtBytes(status.limits.storage_cap_bytes)} storage · {status.limits.watermark ? "Watermark" : "No watermark"}
+        </p>
+      </div>
+      <div className="text-xs text-ink-muted">Permanent — never downgrades</div>
+    </Card>
+  );
+}
+
 function CreditBalance({ status }: { status: BillingStatus }) {
   return (
     <Card className="flex items-center justify-between gap-4 p-5">
@@ -138,9 +161,9 @@ function CreditBalance({ status }: { status: BillingStatus }) {
         <p className="text-xs uppercase tracking-wider text-ink-tertiary">Credit balance</p>
         <p className="mt-1 flex items-baseline gap-1.5">
           <span className="text-3xl font-semibold tracking-tight text-ink tabular-nums">
-            {status.credits}
+            {fmtCredits(status.credits)}
           </span>
-          <span className="text-sm text-ink-tertiary">min · {status.tier_name} tier</span>
+          <span className="text-sm text-ink-tertiary">min {fmtHours(status.credits)}</span>
         </p>
       </div>
       <Coins size={32} className="text-accent" weight="duotone" />
@@ -213,52 +236,37 @@ function Meter({
 }
 
 function PackPicker({
-  current,
   packs,
   onSelect,
   busy,
 }: {
-  current: string;
   packs: CreditPack[];
   onSelect: (key: string) => void;
   busy: boolean;
 }) {
-  // Assume the browser can pay in IDR when it reports an Indonesian zone; the
-  // backend routes by timezone too, so matching locally keeps prices honest.
   const idr = Intl.DateTimeFormat().resolvedOptions().timeZone?.startsWith("Asia/");
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
       {packs.map((pack) => {
-        const isCurrent = current === pack.key;
         return (
-          <Card
-            key={pack.key}
-            className={`flex flex-col gap-4 p-5 ${isCurrent ? "border-accent/50 bg-accent-soft/30" : ""}`}
-          >
+          <Card key={pack.key} className="flex flex-col gap-4 p-5">
             <div className="flex items-start justify-between gap-2">
               <div>
                 <p className="flex items-center gap-1.5 text-sm font-semibold text-ink">
                   <Lightning size={14} weight="fill" className="text-accent" />
                   {pack.name}
                 </p>
-                <p className="mt-0.5 text-xs text-ink-tertiary">{pack.credits} credits</p>
+                <p className="mt-0.5 text-xs text-ink-tertiary">{fmtCredits(pack.credits)} credits · {fmtHours(pack.credits)}</p>
               </div>
               <span className="shrink-0 text-xl font-semibold tracking-tight text-ink tabular-nums">
-                {idr
-                  ? `Rp${(pack.price_idr ?? 0).toLocaleString("id-ID")}`
-                  : `$${pack.price_usd.toFixed(2)}`}
+                {idr ? `Rp${(pack.price_idr ?? 0).toLocaleString("id-ID")}` : `$${fmtUSD(pack.price_usd_cents ?? Math.round(pack.price_usd * 100))}`}
               </span>
             </div>
 
             <FeatureList limits={pack.limits} credits={pack.credits} />
 
-            <Button
-              className="mt-auto"
-              variant={isCurrent ? "secondary" : "primary"}
-              disabled={busy}
-              onClick={() => onSelect(pack.key)}
-            >
-              {isCurrent ? "Your tier" : busy ? "Opening checkout…" : "Buy pack"}
+            <Button className="mt-auto" variant="primary" disabled={busy} onClick={() => onSelect(pack.key)}>
+              {busy ? "Opening checkout…" : "Buy pack"}
             </Button>
           </Card>
         );
@@ -267,10 +275,45 @@ function PackPicker({
   );
 }
 
+function TopUpPicker({
+  topups,
+  onSelect,
+  busy,
+}: {
+  topups: TopUpPack[];
+  onSelect: (key: string) => void;
+  busy: boolean;
+}) {
+  const idr = Intl.DateTimeFormat().resolvedOptions().timeZone?.startsWith("Asia/");
+  if (!topups.length) return null;
+  return (
+    <div>
+      <h2 className="text-sm font-semibold text-ink">Top up minutes</h2>
+      <p className="mt-1 text-xs text-ink-tertiary">Add credits without changing your tier — pay as you go.</p>
+      <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-4">
+        {topups.map((t) => (
+          <Card key={t.key} className="flex flex-col gap-3 p-4">
+            <div className="flex items-baseline justify-between gap-2">
+              <p className="text-sm font-semibold text-ink">{t.name}</p>
+              <span className="text-sm font-semibold tabular-nums text-ink">
+                {idr ? `Rp${(t.price_idr ?? 0).toLocaleString("id-ID")}` : `$${fmtUSD(t.price_usd_cents ?? Math.round(t.price_usd * 100))}`}
+              </span>
+            </div>
+            <p className="text-xs text-ink-tertiary">+{fmtCredits(t.credits)} min {fmtHours(t.credits)}</p>
+            <Button className="mt-auto" variant="secondary" disabled={busy} onClick={() => onSelect(t.key)}>
+              {busy ? "Opening…" : "Top up"}
+            </Button>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function FeatureList({ limits, credits }: { limits: EntitlementLimits; credits: number }) {
   return (
     <ul className="flex flex-col gap-1.5 text-sm text-ink-secondary">
-      <Feature done>{credits} prepaid minutes</Feature>
+      <Feature done>{fmtCredits(credits)} prepaid minutes {fmtHours(credits) !== "" ? `(${fmtHours(credits).trim()})` : ""}</Feature>
       <Feature done>No watermark on exports</Feature>
       <Feature done>
         {limits.max_resolution ? `Up to ${limits.max_resolution}p` : "Source resolution"}
@@ -296,6 +339,59 @@ function Feature({ done, children }: { done?: boolean; children: React.ReactNode
       <span>{children}</span>
     </li>
   );
+}
+
+function TransactionHistory() {
+  const { data, isLoading } = useTransactions();
+  if (isLoading) return <Card className="p-4 text-sm text-ink-tertiary">Loading transactions…</Card>;
+  if (!data || data.length === 0) {
+    return (
+      <Card className="p-5">
+        <h2 className="text-sm font-semibold text-ink">Transaction history</h2>
+        <p className="mt-1 text-sm text-ink-tertiary">No transactions yet — your purchases will appear here.</p>
+      </Card>
+    );
+  }
+  return (
+    <Card className="overflow-hidden p-0">
+      <div className="border-b border-line px-5 py-3">
+        <h2 className="text-sm font-semibold text-ink">Transaction history</h2>
+        <p className="text-xs text-ink-tertiary">All your credit purchases — packs and top-ups.</p>
+      </div>
+      <div className="divide-y divide-line">
+        {data.map((t) => (
+          <div key={t.order_id} className="flex items-center justify-between gap-4 px-5 py-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-ink truncate">{t.plan_name}</p>
+              <p className="text-xs text-ink-tertiary">{t.created_at ? new Date(t.created_at).toLocaleString() : ""} · {t.provider === "midtrans" ? "Midtrans" : "Paddle"} · +{fmtCredits(t.credits)} min</p>
+            </div>
+            <div className="shrink-0 text-right">
+              <p className="text-sm font-semibold tabular-nums text-ink">{t.currency === "IDR" ? `Rp${Number(t.gross_amount).toLocaleString("id-ID")}` : `$${fmtUSD(Number(t.gross_amount))}`}</p>
+              <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${t.status === "settled" ? "bg-success/10 text-success" : t.status === "pending" ? "bg-amber-500/10 text-amber-600" : "bg-surface-2 text-ink-tertiary"}`}>{t.status}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function fmtUSD(cents: number): string {
+  const d = Math.trunc(cents / 100);
+  const c = Math.abs(cents % 100);
+  return `${d}.${String(c).padStart(2, "0")}`;
+}
+
+function fmtCredits(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+function fmtHours(mins: number): string {
+  if (mins < 60) return "";
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  if (m === 0) return `· ${h}h`;
+  return `· ${h}h ${m}m`;
 }
 
 function fmtBytes(bytes: number): string {

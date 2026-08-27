@@ -211,6 +211,17 @@ def get_payment_order(order_id: str) -> dict[str, Any] | None:
         return _row(db.execute(stmt).scalar_one_or_none())
 
 
+def list_payment_orders(user_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    with session_scope() as db:
+        stmt = (
+            select(PaymentOrder)
+            .where(PaymentOrder.user_id == user_id)
+            .order_by(PaymentOrder.created_at.desc())
+            .limit(min(max(limit, 1), 100))
+        )
+        return [_row(r) for r in db.execute(stmt).scalars().all()]
+
+
 def set_payment_order_status(order_id: str, status: str) -> None:
     with session_scope() as db:
         stmt = select(PaymentOrder).where(PaymentOrder.order_id == order_id)

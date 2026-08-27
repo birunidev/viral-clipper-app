@@ -26,16 +26,24 @@ from __future__ import annotations
 import os
 
 from app import db
+from decimal import ROUND_HALF_UP, Decimal
+
 from app.plans import (
     FREE,
     all_packs,
+    all_topups,
     entitlement_tier_key,
     entitlements_for_tier,
     free_credits,
     free_tier,
+    is_topup_key,
     pack_for_key,
+    purchasable_for_key,
     tier_rank,
+    topup_for_key,
 )
+
+from core import midtrans as _midtrans
 
 
 class PaywallError(Exception):
@@ -105,6 +113,9 @@ def grant_pack(user_id: str, pack_key: str) -> dict | None:
 
     Idempotent-ish: re-buying a pack re-adds its credit allowance but never
     *lowers* the tier. Returns the pack, or None if the key is unknown.
+    Credits are incremented atomically so a concurrent job deduction cannot
+    be overwritten (important when a Studio user buys a lower tier like
+    Starter — tier stays, credits must still add).
     """
     pack = pack_for_key(pack_key)
     if pack is None:
@@ -116,14 +127,34 @@ def grant_pack(user_id: str, pack_key: str) -> dict | None:
     )
     new_tier = pack["key"] if tier_rank(pack["key"]) >= tier_rank(current_tier) else current_tier
 
+    db.increment_user_credits(user_id, int(pack["credits"]))
     db.set_user_billing(
         user_id,
-        credits=int((user.get("credits") or 0)) + int(pack["credits"]),
         entitlement_tier=new_tier,
         plan_key=pack_key,
         billing_email=user.get("billing_email"),
     )
     return pack
+
+
+def grant_topup(user_id: str, topup_key: str) -> dict | None:
+    topup = topup_for_key(topup_key)
+    if topup is None:
+        return None
+    user = db.get_user(user_id) or {}
+    db.increment_user_credits(user_id, int(topup["credits"]))
+    db.set_user_billing(
+        user_id,
+        plan_key=topup_key,
+        billing_email=user.get("billing_email"),
+    )
+    return topup
+
+
+def grant_credits(user_id: str, key: str) -> dict | None:
+    if is_topup_key(key):
+        return grant_topup(user_id, key)
+    return grant_pack(user_id, key)
 
 
 # ------------------------------------------------------------ entitlements
@@ -243,8 +274,16 @@ def uses_managed(user_id: str) -> bool:
 
 
 def _usd(pack: dict) -> float:
-    # price_usd is stored in whole cents; expose dollars for display.
-    return int(pack.get("price_usd") or 0) / 100.0
+    cents = int(pack.get("price_usd") or 0)
+    return float((Decimal(cents) / Decimal(100)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def _usd_cents(pack: dict) -> int:
+    return int(pack.get("price_usd") or 0)
+
+
+def _fmt_usd(cents: int) -> str:
+    return str((Decimal(cents) / Decimal(100)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
 def billing_status(user_id: str) -> dict:
@@ -283,9 +322,22 @@ def billing_status(user_id: str) -> dict:
                 "name": p["name"],
                 "credits": p["credits"],
                 "price_usd": _usd(p),
+                "price_usd_cents": _usd_cents(p),
                 "price_idr": p["price_idr"],
                 "limits": {k: p.get(k) for k in limit_keys},
             }
             for p in all_packs()
         ],
+        "topups": [
+            {
+                "key": p["key"],
+                "name": p["name"],
+                "credits": p["credits"],
+                "price_usd": _usd(p),
+                "price_usd_cents": _usd_cents(p),
+                "price_idr": p["price_idr"],
+            }
+            for p in all_topups()
+        ],
+        "midtrans_available": _midtrans.is_configured(),
     }

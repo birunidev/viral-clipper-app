@@ -34,11 +34,20 @@ if FRONTEND_URLS:
 
 @app.on_event("startup")
 def _start_worker_pool() -> None:
-    # WORKERS defaults to 1: local models (whisper.cpp, Ollama) are
-    # GPU/CPU/RAM-bound and must run one job at a time on modest hardware.
-    # Cloud-only deployments (AssemblyAI + hosted LLM) can raise WORKERS
-    # since there's no shared local model to contend for.
     pool.start()
+    try:
+        from core.paddle import ensure_notification_destination
+        ensure_notification_destination()
+    except Exception:
+        pass
+    try:
+        from core.midtrans import resolve_notification_url as _mid_url
+        import logging
+        _mid = _mid_url()
+        if _mid:
+            logging.getLogger(__name__).info("Midtrans expected Dashboard notification URL: %s (set in Midtrans Dashboard > Settings > Configuration, not per-transaction)", _mid)
+    except Exception:
+        pass
 
 
 app.include_router(auth.router, prefix="/api/v1")

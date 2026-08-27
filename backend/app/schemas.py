@@ -236,12 +236,15 @@ class CheckoutRequest(BaseModel):
 
     ``timezone`` is the browser's IANA zone (e.g. ``Asia/Jakarta``); Indonesian
     zones route to the Midtrans gateway (IDR), everything else to Paddle.
-    Optional — defaults to Paddle. There is no plan/subscription here: a pack
-    grants prepaid credits (1 = 1 source minute) plus permanent entitlements.
+    ``provider`` optionally forces the gateway (``paddle`` | ``midtrans``) —
+    useful as a manual override when the auto-detected timezone is wrong.
+    There is no plan/subscription here: a pack grants prepaid credits
+    (1 = 1 source minute) plus permanent entitlements.
     """
 
     plan_key: str = Field(min_length=1, max_length=32)
     timezone: str | None = Field(default=None, max_length=64)
+    provider: str | None = Field(default=None, max_length=16)
 
 
 class CheckoutResponse(BaseModel):

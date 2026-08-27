@@ -12,6 +12,8 @@ cp .env.example .env   # fill in DATABASE_URL, credentials, FRONTEND_URLS
 poetry install
 poetry run alembic upgrade head   # create/update the schema
 poetry run uvicorn app.main:app --host 0.0.0.0 --port 8000
+# dev with auto-reload on file changes:
+poetry run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Requires `ffmpeg` on PATH.

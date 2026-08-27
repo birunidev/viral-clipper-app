@@ -73,6 +73,12 @@ def free_credits() -> int:
     return max(0, _int_env("FREE_CREDITS", 5))
 
 
+TOPUP_10 = "topup_10"
+TOPUP_30 = "topup_30"
+TOPUP_60 = "topup_60"
+TOPUP_120 = "topup_120"
+TOPUP_KEYS = [TOPUP_10, TOPUP_30, TOPUP_60, TOPUP_120]
+
 # Paid packs: key -> entitlements + credit allowance + one-time prices.
 _BUILTIN_PACKS = {
     STARTER: {
@@ -110,19 +116,51 @@ _BUILTIN_PACKS = {
     },
 }
 
-# Paddle price id -> pack key. Populated at import from env so launch-time
+# Minute-only top-ups: credits only, no entitlement change (pay-as-you-go).
+_TOPUP_PACKS = {
+    TOPUP_10: {
+        "key": TOPUP_10,
+        "name": "Top-up 10 Minutes",
+        "credits": _int_env("TOPUP_10_CREDITS", 10),
+        "price_usd": _int_env("TOPUP_10_PRICE_USD", 99),
+        "price_idr": _int_env("TOPUP_10_PRICE_IDR", 16_000),
+    },
+    TOPUP_30: {
+        "key": TOPUP_30,
+        "name": "Top-up 30 Minutes",
+        "credits": _int_env("TOPUP_30_CREDITS", 30),
+        "price_usd": _int_env("TOPUP_30_PRICE_USD", 199),
+        "price_idr": _int_env("TOPUP_30_PRICE_IDR", 32_000),
+    },
+    TOPUP_60: {
+        "key": TOPUP_60,
+        "name": "Top-up 60 Minutes",
+        "credits": _int_env("TOPUP_60_CREDITS", 60),
+        "price_usd": _int_env("TOPUP_60_PRICE_USD", 349),
+        "price_idr": _int_env("TOPUP_60_PRICE_IDR", 55_000),
+    },
+    TOPUP_120: {
+        "key": TOPUP_120,
+        "name": "Top-up 120 Minutes",
+        "credits": _int_env("TOPUP_120_CREDITS", 120),
+        "price_usd": _int_env("TOPUP_120_PRICE_USD", 599),
+        "price_idr": _int_env("TOPUP_120_PRICE_IDR", 95_000),
+    },
+}
+
+# Paddle price id -> pack/topup key. Populated at import from env so launch-time
 # mapping needs no code changes; the free tier is never purchasable.
 _PRICE_TO_PACK: dict[str, str] = {}
 
 
 def register_price(price_id: str, pack_key: str) -> None:
-    """Map a Paddle price id to a built-in pack key."""
-    if price_id and pack_key in _BUILTIN_PACKS:
+    """Map a Paddle price id to a built-in pack or top-up key."""
+    if price_id and (pack_key in _BUILTIN_PACKS or pack_key in _TOPUP_PACKS):
         _PRICE_TO_PACK[price_id] = pack_key
 
 
 def _load_price_map() -> None:
-    for key in _BUILTIN_PACKS:
+    for key in list(_BUILTIN_PACKS.keys()) + list(_TOPUP_PACKS.keys()):
         price = os.environ.get(f"PADDLE_PRICE_{key.upper()}", "").strip()
         if price:
             register_price(price, key)
@@ -141,17 +179,50 @@ def pack_for_price(price_id: str | None) -> dict | None:
     if not price_id:
         return None
     key = _PRICE_TO_PACK.get(price_id)
-    return _BUILTIN_PACKS.get(key) if key else None
+    if not key:
+        return None
+    return _BUILTIN_PACKS.get(key) or _TOPUP_PACKS.get(key)
 
 
 def price_for_pack_key(pack_key: str) -> str | None:
-    if pack_key not in _BUILTIN_PACKS:
+    if pack_key not in _BUILTIN_PACKS and pack_key not in _TOPUP_PACKS:
         return None
     return os.environ.get(f"PADDLE_PRICE_{pack_key.upper()}", "").strip() or None
 
 
 def all_packs() -> list[dict]:
     return list(_BUILTIN_PACKS.values())
+
+
+def topup_for_key(topup_key: str | None) -> dict | None:
+    if not topup_key:
+        return None
+    return _TOPUP_PACKS.get(topup_key)
+
+
+def topup_for_price(price_id: str | None) -> dict | None:
+    if not price_id:
+        return None
+    key = _PRICE_TO_PACK.get(price_id)
+    return _TOPUP_PACKS.get(key) if key else None
+
+
+def price_for_topup_key(topup_key: str) -> str | None:
+    return price_for_pack_key(topup_key)
+
+
+def all_topups() -> list[dict]:
+    return list(_TOPUP_PACKS.values())
+
+
+def purchasable_for_key(key: str | None) -> dict | None:
+    if not key:
+        return None
+    return _BUILTIN_PACKS.get(key) or _TOPUP_PACKS.get(key)
+
+
+def is_topup_key(key: str | None) -> bool:
+    return key in _TOPUP_PACKS
 
 
 def tier_entries() -> list[dict]:

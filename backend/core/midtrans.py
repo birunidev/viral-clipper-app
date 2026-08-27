@@ -80,6 +80,24 @@ def is_configured() -> bool:
     )
 
 
+def resolve_notification_url() -> str | None:
+    """Resolve the *expected* Midtrans HTTP notification URL for logging.
+
+    Midtrans Snap does NOT support per-transaction ``notification_url`` — the
+    webhook URL is global in Dashboard > Settings > Configuration > Payment
+    Notification URL (sandbox vs production are separate). This helper just
+    returns what that Dashboard URL *should* be, for startup logs and docs.
+    """
+    explicit = os.environ.get("MIDTRANS_NOTIFICATION_URL", "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    for key in ("BACKEND_URL", "PUBLIC_BACKEND_URL", "API_URL"):
+        base = os.environ.get(key, "").strip()
+        if base:
+            return base.rstrip("/") + "/api/v1/webhooks/midtrans"
+    return None
+
+
 def verify_signature(
     order_id: str, status_code: str, gross_amount: str, signature_key: str | None
 ) -> bool:

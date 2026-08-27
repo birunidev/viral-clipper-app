@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import type { BillingStatus } from "./types";
 
 export const billingKey = ["billing", "status"] as const;
+export const transactionsKey = ["billing", "transactions"] as const;
 
 /** The browser's IANA timezone — Indonesian zones route to Midtrans. */
 export function browserTimezone(): string {
@@ -43,18 +44,33 @@ export type CheckoutResult = {
 
 export function useCheckout() {
   return useMutation({
-    mutationFn: (packKey: string) =>
-      api.post<CheckoutResult>("/billing/checkout", {
-        plan_key: packKey,
+    mutationFn: (vars: string | { packKey: string; provider?: string }) => {
+      const key = typeof vars === "string" ? vars : vars.packKey;
+      const prov = typeof vars === "string" ? undefined : vars.provider;
+      return api.post<CheckoutResult>("/billing/checkout", {
+        plan_key: key,
         timezone: browserTimezone(),
-      }),
+        ...(prov ? { provider: prov } : {}),
+      });
+    },
   });
 }
 
 /** Refetch billing status after a payment/webhook sync. */
 export function useInvalidateBilling() {
   const queryClient = useQueryClient();
-  return () => queryClient.invalidateQueries({ queryKey: billingKey });
+  return () => {
+    queryClient.invalidateQueries({ queryKey: billingKey });
+    queryClient.invalidateQueries({ queryKey: transactionsKey });
+  };
+}
+
+export function useTransactions() {
+  return useQuery<import("./types").Transaction[]>({
+    queryKey: transactionsKey,
+    queryFn: () => api.get<import("./types").Transaction[]>("/billing/transactions"),
+    refetchInterval: 30_000,
+  });
 }
 
 // ------------------------------------------------------------------ snap.js
