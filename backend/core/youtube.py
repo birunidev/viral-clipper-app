@@ -37,9 +37,12 @@ FALLBACK_CLIENTS = ["android", "ios", "mweb", "tv", "android_vr"]
 # Shared hint for bot-guard failures — keep in one place so get_info()
 # and download() stay consistent. Includes Docker mount hint.
 _BOT_GUARD_HINT = (
-    " (YouTube bot guard: set YTDLP_COOKIEFILE=/path/to/cookies.txt exported from your browser, "
-    "or YTDLP_COOKIES_FROM_BROWSER=chrome, then restart backend. "
-    "See https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies)"
+    " (YouTube bot guard on datacenter IP: set YTDLP_COOKIEFILE=/path/to/cookies.txt exported from your browser, "
+    "or YTDLP_COOKIES_FROM_BROWSER=chrome, or set YTDLP_PROXY=http://user:pass@residential-proxy:port + "
+    "YTDLP_PO_TOKEN/YTDLP_VISITOR_DATA, then restart backend. "
+    "For immediate workaround, download the video locally and use Upload instead. "
+    "See https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies and "
+    "https://github.com/coletdjnz/bgutil-ytdlp-pot-provider)"
 )
 
 # Safe-mode hint when yt-dlp is disabled – direct users to upload.
@@ -67,7 +70,7 @@ def _validate_source(url: str) -> None:
 
 
 def _apply_cookie_and_po_opts(opts: dict, *, player_clients=None) -> None:
-    """Mutate ``opts`` with cookie / PO-token / browser handling.
+    """Mutate ``opts`` with cookie / PO-token / browser / proxy handling.
 
     Centralised so get_info() and download() (_build_opts) stay in sync.
     Safe to call multiple times; never raises — missing cookiefile is
@@ -133,6 +136,37 @@ def _apply_cookie_and_po_opts(opts: dict, *, player_clients=None) -> None:
         youtube_args = dict(existing.get("youtube", {}))
         youtube_args.update(extractor_args)
         opts["extractor_args"] = {**existing, "youtube": youtube_args}
+
+    # --- Datacenter bypass: proxy + impersonation + PO-token plugin ---
+    # Residential proxy (e.g. http://user:pass@proxy:port) via YTDLP_PROXY or
+    # standard http_proxy/https_proxy. Lets the VPS egress via residential IP.
+    proxy = (
+        os.environ.get("YTDLP_PROXY", "").strip()
+        or os.environ.get("YTDLP_HTTP_PROXY", "").strip()
+        or os.environ.get("http_proxy", "").strip()
+        or os.environ.get("https_proxy", "").strip()
+        or os.environ.get("HTTP_PROXY", "").strip()
+        or os.environ.get("HTTPS_PROXY", "").strip()
+    )
+    if proxy:
+        opts["proxy"] = proxy
+
+    # Browser impersonation via curl_cffi (chrome) – helps TLS fingerprint.
+    # yt-dlp Python API expects ImpersonateTarget object, not raw string.
+    impersonate = os.environ.get("YTDLP_IMPERSONATE", "").strip()
+    # Default off — enable with YTDLP_IMPERSONATE=chrome if you have curl_cffi
+    if impersonate and impersonate.lower() not in ("0", "false", "off", "no"):
+        try:
+            from yt_dlp.networking.impersonate import ImpersonateTarget
+
+            # e.g. "chrome", "chrome:chrome110", "safari"
+            target = ImpersonateTarget.from_str(impersonate) if hasattr(ImpersonateTarget, "from_str") else impersonate
+            opts["impersonate"] = target
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Could not set impersonate %r: %s", impersonate, exc)
+
+    # bgutil-ytdlp-pot-provider auto-generates PO tokens if installed as
+    # yt_dlp_plugins. No opts needed – it hooks automatically.
 
 
 def _is_ytdlp_enabled() -> bool:
@@ -315,9 +349,20 @@ def download(
 
     if info is None:
         detail = _strip_ansi(str(last_error or "unknown error"))
-        hint = ""
-        if "Sign in to confirm" in detail or "bot" in detail.lower():
-            hint = _BOT_GUARD_HINT
+        is_bot = "Sign in to confirm" in detail or "bot" in detail.lower()
+        # --- Cobalt fallback for datacenter bot-guard ---
+        # If YouTube blocked the VPS IP, try cobalt.tools (yt-dlp alternative
+        # backend) which fetches via its own residential pool. No cookies needed.
+        if is_bot:
+            cobalt_err = None
+            try:
+                logger.info("yt-dlp bot-blocked, trying cobalt fallback for %s", url[:80])
+                return _cobalt_download(url, out_dir, progress)
+            except Exception as exc:  # noqa: BLE001
+                cobalt_err = _strip_ansi(str(exc))
+                logger.warning("Cobalt fallback failed: %s", cobalt_err[:300])
+                detail = f"{detail} | cobalt fallback also failed: {cobalt_err[:200]}"
+        hint = _BOT_GUARD_HINT if is_bot else ""
         raise DownloadError(f"Download failed: {detail}{hint}")
 
     video_id = (info or {}).get("id")
@@ -331,6 +376,116 @@ def download(
                 return os.path.join(out_dir, name)
 
     raise DownloadError("Download finished but no output file was found.")
+
+
+def _cobalt_download(url: str, out_dir: str, progress=None) -> str:
+    """Fallback download via cobalt.tools API (bypasses YouTube bot-guard on VPS).
+
+    cobalt runs its own yt-dlp pool with residential egress. Returns local
+    file path on success, raises DownloadError otherwise. Respects
+    YTDLP_COBALT_API env (default https://api.cobalt.tools).
+    """
+    import json
+    import urllib.request
+
+    api = os.environ.get("YTDLP_COBALT_API", "https://api.cobalt.tools").rstrip("/")
+    # Some cobalt instances live at /api/json, others at / . Try both.
+    endpoints = [f"{api}/api/json", f"{api}/"] if not api.endswith("/api/json") else [api]
+    # Youtube URL validation already done via _validate_source()
+    payload = json.dumps(
+        {
+            "url": url,
+            "vCodec": "h264",
+            "vQuality": "1080",
+            "aFormat": "mp3",
+            "isAudioOnly": False,
+            "filenamePattern": "basic",
+        }
+    ).encode()
+
+    last_err: str | None = None
+    for ep in endpoints:
+        try:
+            req = urllib.request.Request(
+                ep,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "User-Agent": "snapclip/1.0",
+                },
+                method="POST",
+            )
+            # Optional auth for self-hosted cobalt
+            token = os.environ.get("YTDLP_COBALT_API_KEY", "").strip()
+            if token:
+                req.add_header("Authorization", f"Api-Key {token}")
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode())
+            status = data.get("status")
+            dl_url = data.get("url")
+            if status == "redirect" and dl_url:
+                # cobalt returns direct file URL – download it
+                os.makedirs(out_dir, exist_ok=True)
+                # Determine extension from cobalt filename or url
+                filename = data.get("filename") or "video.mp4"
+                dest = os.path.join(out_dir, filename)
+                # Stream download with progress
+                def _dl_progress(blocks, block_size, total):  # noqa: ARG001
+                    if progress and total:
+                        progress(0.05 + 0.25 * min(1.0, (blocks * block_size) / total))
+
+                # Use urllib with timeout; fallback to requests if available
+                try:
+                    import requests  # type: ignore
+
+                    with requests.get(dl_url, stream=True, timeout=60) as r:
+                        r.raise_for_status()
+                        total = int(r.headers.get("content-length", 0))
+                        downloaded = 0
+                        with open(dest, "wb") as fh:
+                            for chunk in r.iter_content(chunk_size=8192):
+                                if chunk:
+                                    fh.write(chunk)
+                                    downloaded += len(chunk)
+                                    if progress and total:
+                                        progress(0.05 + 0.25 * downloaded / total)
+                except ImportError:
+                    import urllib.request as _ur
+
+                    _ur.urlretrieve(dl_url, dest)  # noqa: S310
+                if progress:
+                    progress(0.3)
+                # Normalize to <video_id>.mp4 if cobalt gave different name
+                vid = _extract_id(url) or "video"
+                final = os.path.join(out_dir, f"{vid}.mp4")
+                if dest != final:
+                    try:
+                        os.rename(dest, final)
+                        dest = final
+                    except OSError:
+                        pass
+                if os.path.isfile(dest) and os.path.getsize(dest) > 0:
+                    return dest
+                raise DownloadError(f"Cobalt downloaded file missing/empty: {dest}")
+            # Error status from cobalt
+            err = data.get("error") or data.get("text") or json.dumps(data)[:300]
+            last_err = str(err)
+            logger.warning("Cobalt %s returned %r: %s", ep, status, last_err[:200])
+            continue
+        except DownloadError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            last_err = _strip_ansi(str(exc))
+            logger.warning("Cobalt %s failed: %s", ep, last_err[:200])
+            continue
+    raise DownloadError(f"Cobalt fallback failed: {last_err or 'unknown error'}")
+
+
+def _extract_id(url: str) -> str | None:
+    """Extract YouTube video ID from URL for cobalt filename normalization."""
+    m = re.search(r"(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{11})", url)
+    return m.group(1) if m else None
 
 
 def _clean_out_dir(out_dir: str) -> None:
