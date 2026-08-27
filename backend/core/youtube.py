@@ -239,8 +239,12 @@ def _detect_browser() -> str | None:
 
 
 def _build_opts(out_dir: str, hook: Callable[[dict], None], player_clients) -> dict:
+    # Prefer H.264 (broadest compatibility) → VP9 → AV1 fallback (per Fetchr
+    # note: AV1 is often served but browser/device support is inconsistent).
+    # Instagram serves separate DASH video+audio – the `+ba` merge handles it
+    # (previous Fetchr bug was silent Instagram files).
     opts = {
-        "format": "bv*[height<=1080]+ba/b[height<=1080]/b",
+        "format": "bestvideo[vcodec^=avc][height<=1080]+bestaudio/bv*[vcodec^=avc][height<=1080]+ba/bv*[vcodec^=vp9][height<=1080]+ba/bv*[height<=1080]+ba/b[height<=1080]/b",
         "outtmpl": os.path.join(out_dir, "%(id)s.%(ext)s"),
         "merge_output_format": "mp4",
         "quiet": True,
