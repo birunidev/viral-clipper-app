@@ -27,7 +27,7 @@ def _register(client, email="bill@example.com"):
 
 def test_signup_grants_one_time_free_credits(client):
     uid = _register(client)
-    assert billing.credit_balance(uid) == 5
+    assert billing.credit_balance(uid) == 100
     assert billing.entitlement_tier(uid) == "free"
 
 
@@ -48,22 +48,22 @@ def test_enforce_credits_blocks_when_exhausted(client):
 
 
 def test_enforce_credits_blocks_oversize_job(client):
-    uid = _register(client)  # 5 credits
+    uid = _register(client)  # 100 credits
     with pytest.raises(billing.PaywallError):
-        billing.enforce_credits(uid, estimated_seconds=10 * 60)  # needs 10
+        billing.enforce_credits(uid, estimated_seconds=200 * 60)  # needs 200
 
 
 def test_grant_pack_adds_credits_and_raises_tier(client):
     uid = _register(client)
     pack = billing.grant_pack(uid, "starter")
     assert pack is not None
-    assert billing.credit_balance(uid) == 5 + 60
+    assert billing.credit_balance(uid) == 100 + 60
     assert billing.entitlement_tier(uid) == "starter"
 
     # Buying a lower/higher pack never lowers the tier; credits always add.
     billing.grant_pack(uid, "creator")
     assert billing.entitlement_tier(uid) == "creator"
-    assert billing.credit_balance(uid) == 5 + 60 + 300
+    assert billing.credit_balance(uid) == 100 + 60 + 300
 
 
 def test_grant_pack_unknown_key_returns_none(client):
@@ -256,7 +256,7 @@ def test_webhook_grants_pack_and_credits(client, monkeypatch):
 
     user = db.get_user(uid)
     assert user["entitlement_tier"] == "starter"
-    assert user["credits"] == 5 + 60
+    assert user["credits"] == 100 + 60
     assert user["plan_key"] == "starter"
 
 
@@ -268,7 +268,7 @@ def test_webhook_deduplicates_on_redelivery(client, monkeypatch):
     second = _post_event(client, payload)
     assert first.status_code == 200 and second.status_code == 200
     assert second.json()["deduplicated"] is True
-    assert billing.credit_balance(uid) == 5 + 60
+    assert billing.credit_balance(uid) == 100 + 60
 
 
 def test_webhook_ignores_uncompleted_transactions(client, monkeypatch):
@@ -279,7 +279,7 @@ def test_webhook_ignores_uncompleted_transactions(client, monkeypatch):
     payload["data"]["payments"] = [{"status": "authorized"}]
     res = _post_event(client, payload)
     assert res.status_code == 200
-    assert billing.credit_balance(uid) == 5
+    assert billing.credit_balance(uid) == 100
     assert billing.entitlement_tier(uid) == "free"
 
 
@@ -305,7 +305,7 @@ def test_webhook_rejects_pack_price_mismatch(client, monkeypatch):
     user = db.get_user(uid)
     # Still on free tier with only the signup grant — no Studio pack.
     assert user["entitlement_tier"] == "free"
-    assert user["credits"] == 5
+    assert user["credits"] == 100
 
 
 # ---------------------------------------------------------------- status
@@ -316,7 +316,7 @@ def test_billing_status_shape(client):
     billing.grant_pack(uid, "creator")
     status = billing.billing_status(uid)
     assert status["tier"] == "creator"
-    assert status["credits"] == 5 + 300
+    assert status["credits"] == 100 + 300
     assert status["byok_enabled"] is False
     assert {p["key"] for p in status["packs"]} == {"starter", "creator", "studio"}
     assert "storage_used_bytes" in status["usage"]

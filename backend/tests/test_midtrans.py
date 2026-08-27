@@ -122,7 +122,7 @@ def test_midtrans_checkout_creates_pending_order_and_snap_token(
 
     # No new credits granted yet — the pack is only settled after the
     # webhook (the user only has their one-time signup grant).
-    assert billing.credit_balance(uid) == 5
+    assert billing.credit_balance(uid) == 100
 
 
 def test_checkout_rejects_unknown_pack(client):
@@ -153,7 +153,7 @@ def test_webhook_rejects_tampered_amount(client):
     res = _notify(client, order_id, "settlement", gross_amount="1.00")
     assert res.status_code == 400
     assert db.get_payment_order(order_id)["status"] == "failed"
-    assert billing.credit_balance(uid) == 5
+    assert billing.credit_balance(uid) == 100
 
 
 def test_settlement_grants_credits_and_permanent_tier(client):
@@ -191,9 +191,9 @@ def test_capture_then_settlement_grants_exactly_once(client):
     assert capture.status_code == 200 and settle.status_code == 200
 
     user = db.get_user(uid)
-    # Starter = 60 credits; a double grant would show 120+ here. The free
-    # signup grant is 5, so exactly one pack means 65.
-    assert user["credits"] == 5 + 60
+    # Starter = 60 credits; a double grant would show 220+ here. The free
+    # signup grant is 100, so exactly one pack means 160.
+    assert user["credits"] == 100 + 60
     assert db.get_payment_order(order_id)["status"] == "settled"
 
 
@@ -217,7 +217,7 @@ def test_failure_status_does_not_grant_pack(client):
     assert res.status_code == 200
     assert db.get_payment_order(order_id)["status"] == "failed"
     assert billing.entitlement_tier(uid) == "free"
-    assert billing.credit_balance(uid) == 5
+    assert billing.credit_balance(uid) == 100
 
 
 def test_refund_deducts_credits_but_keeps_tier(client):
@@ -230,5 +230,5 @@ def test_refund_deducts_credits_but_keeps_tier(client):
     assert res.status_code == 200
     # Credits clawed back (back to the signup grant); the permanent tier is
     # intentionally not revoked.
-    assert billing.credit_balance(uid) == 5
+    assert billing.credit_balance(uid) == 100
     assert billing.entitlement_tier(uid) == "starter"

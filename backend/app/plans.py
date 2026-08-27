@@ -61,7 +61,7 @@ def free_tier() -> dict:
     return {
         "key": FREE,
         "name": "Free",
-        "storage_cap_bytes": _mb(_int_env("BASE_STORAGE_MB", 200)),
+        "storage_cap_bytes": _mb(_int_env("BASE_STORAGE_MB", 500)),
         "max_projects": _int_env("BASE_MAX_PROJECTS", 3),
         "max_resolution": _int_env("BASE_MAX_RESOLUTION", 720),
         "watermark": _bool_env("BASE_WATERMARK", True),
@@ -70,7 +70,7 @@ def free_tier() -> dict:
 
 def free_credits() -> int:
     """One-time credit grant at signup (whole source-minutes). No expiry."""
-    return max(0, _int_env("FREE_CREDITS", 5))
+    return max(0, _int_env("FREE_CREDITS", 100))
 
 
 TOPUP_10 = "topup_10"
