@@ -64,6 +64,10 @@ services:
       # Always talk to the internal postgres, never whatever localhost/dev
       # URL happens to be in backend/.env (compose overrides env_file).
       DATABASE_URL: postgresql://${POSTGRES_USER:-clipforge}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipforge}
+      # YouTube bot-guard vars are read from backend/.env via env_file above
+      # (YTDLP_COOKIEFILE, YTDLP_COOKIES_FROM_BROWSER, etc.). No need to
+      # duplicate them here — compose would mask backend/.env with empty
+      # values. See backend/.env.example for docs.
     # Loopback-only publication: the host Caddy reaches it at 127.0.0.1:8000;
     # the public internet cannot.
     ports:
@@ -73,6 +77,12 @@ services:
     # container recreation doesn't re-download.
     volumes:
       - whisper_models:/root/.local/share/pywhispercpp/models
+      # YouTube cookies (bot-guard). If YTDLP_COOKIEFILE is set (e.g.
+      # /tmp/cookies.txt), mount the host file read-only. Create the file
+      # BEFORE `docker compose up` or this will create a directory instead.
+      # Example:  YTDLP_COOKIEFILE=/tmp/cookies.txt  +  ./cookies.txt:/tmp/cookies.txt:ro
+      # Uncomment and adjust if you keep cookies at the compose root:
+      # - ./cookies.txt:/tmp/cookies.txt:ro
     depends_on:
       postgres:
         condition: service_healthy
