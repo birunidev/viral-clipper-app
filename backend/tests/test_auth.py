@@ -26,9 +26,42 @@ def test_register_duplicate_email_409(client):
 def test_register_short_password_422(client):
     res = client.post(
         "/api/v1/auth/register",
-        json={"name": "x", "email": "a@b.com", "password": "short"},
+        json={"name": "x", "email": "a@b.com", "password": "short", "accept_terms": True},
     )
     assert res.status_code == 422
+
+
+def test_register_requires_terms_acceptance(client):
+    """Registration without accept_terms=true must fail with 422."""
+    res = client.post(
+        "/api/v1/auth/register",
+        json={"name": "x", "email": "no-consent@b.com", "password": "longenough123", "accept_terms": False},
+    )
+    assert res.status_code == 422
+    assert db.get_user_by_email("no-consent@b.com") is None
+
+
+def test_register_stores_terms_accepted_at(client):
+    res = register_user(client, email="consent@example.com")
+    assert res.status_code == 201
+    assert res.json()["terms_accepted_at"] is not None
+    user = db.get_user_by_email("consent@example.com")
+    assert user["terms_accepted_at"] is not None
+
+
+def test_me_returns_terms_accepted_at(client):
+    register_user(client)
+    res = client.get("/api/v1/auth/me")
+    assert res.status_code == 200
+    assert res.json()["terms_accepted_at"] is not None
+
+
+def test_accept_terms_is_idempotent(client):
+    register_user(client, email="idem@example.com")
+    first = client.post("/api/v1/auth/accept-terms").json()["terms_accepted_at"]
+    second = client.post("/api/v1/auth/accept-terms").json()["terms_accepted_at"]
+    assert first is not None
+    assert first == second
 
 
 # ------------------------------------------------------- session hardening

@@ -4,6 +4,8 @@ export type User = {
   id: string;
   name: string | null;
   email: string;
+  /** ISO timestamp when the user accepted the Terms/Privacy Policy, or null. */
+  terms_accepted_at: string | null;
 };
 
 /** Per-user BYOK settings (GET response; keys are masked/write-only). */

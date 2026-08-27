@@ -10,8 +10,14 @@ def register_user(
     email: str = "user@example.com",
     password: str = "password123",
     name: str = "Test User",
+    accept_terms: bool = True,
 ):
     return client.post(
         "/api/v1/auth/register",
-        json={"name": name, "email": email, "password": password},
+        json={
+            "name": name,
+            "email": email,
+            "password": password,
+            "accept_terms": accept_terms,
+        },
     )

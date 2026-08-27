@@ -224,11 +224,19 @@ export default function HomePage() {
         </div>
       </section>
 
-      <footer className="flex items-center justify-between border-t border-line px-6 py-5 md:px-10">
+      <footer className="flex items-center justify-between gap-4 border-t border-line px-6 py-5 md:px-10">
         <span className="text-xs text-ink-muted">SnapClip — private by default, runs locally.</span>
-        <Link href="/app/login" className="text-xs text-ink-tertiary hover:text-ink">
-          Sign in
-        </Link>
+        <nav className="flex items-center gap-4">
+          <Link href="/terms" className="text-xs text-ink-tertiary hover:text-ink">
+            Terms
+          </Link>
+          <Link href="/privacy" className="text-xs text-ink-tertiary hover:text-ink">
+            Privacy
+          </Link>
+          <Link href="/app/login" className="text-xs text-ink-tertiary hover:text-ink">
+            Sign in
+          </Link>
+        </nav>
       </footer>
     </main>
   );

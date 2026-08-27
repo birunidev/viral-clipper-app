@@ -35,7 +35,20 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
           </div>
         </div>
 
-        <p className="text-xs text-ink-muted">No credit card required.</p>
+        <div>
+          <p className="text-xs text-ink-muted">No credit card required.</p>
+          <p className="mt-1 text-xs text-ink-muted">
+            By continuing you agree to our{" "}
+            <Link href="/terms" className="underline underline-offset-4 hover:text-ink">
+              Terms
+            </Link>{" "}
+            and{" "}
+            <Link href="/privacy" className="underline underline-offset-4 hover:text-ink">
+              Privacy Policy
+            </Link>
+            .
+          </p>
+        </div>
 
         {/* subtle timeline decoration */}
         <div

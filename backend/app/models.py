@@ -75,6 +75,7 @@ class User(Base, TimestampMixin):
     credits: Mapped[int] = mapped_column(BigInteger, server_default="0", nullable=False)
     plan_key: Mapped[str | None] = mapped_column(String)
     billing_email: Mapped[str | None] = mapped_column(String)
+    terms_accepted_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
     sessions: Mapped[list["Session"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     accounts: Mapped[list["Account"]] = relationship(back_populates="user", cascade="all, delete-orphan")

@@ -10,14 +10,19 @@ export default function RegisterPage() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [accepted, setAccepted] = useState(false);
   const [error, setError] = useState("");
   const register = useRegister();
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
+    if (!accepted) {
+      setError("You must agree to the Terms of Service and Privacy Policy to continue.");
+      return;
+    }
     register.mutate(
-      { name, email, password },
+      { name, email, password, accept_terms: accepted },
       {
         onSuccess: () => router.push("/app/dashboard"),
         onError: (err) => setError(err.message),
@@ -72,9 +77,39 @@ export default function RegisterPage() {
             {error}
           </p>
         )}
+        <label className="flex items-start gap-2.5 text-sm text-ink-secondary">
+          <input
+            type="checkbox"
+            required
+            checked={accepted}
+            onChange={(e) => setAccepted(e.target.checked)}
+            className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
+          />
+          <span>
+            I agree to the{" "}
+            <Link
+              href="/terms"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-ink underline underline-offset-4"
+            >
+              Terms of Service
+            </Link>{" "}
+            and{" "}
+            <Link
+              href="/privacy"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-ink underline underline-offset-4"
+            >
+              Privacy Policy
+            </Link>
+            .
+          </span>
+        </label>
         <button
           type="submit"
-          disabled={register.isPending}
+          disabled={register.isPending || !accepted}
           className="inline-flex h-10 items-center justify-center rounded-lg bg-accent text-sm font-medium text-accent-ink transition-[transform,background-color] duration-150 ease-out hover:bg-accent-strong active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
         >
           {register.isPending ? "Creating…" : "Create account"}

@@ -56,7 +56,12 @@ def _row(obj) -> dict[str, Any] | None:
 # -------------------------------------------------------------------- users
 
 
-def create_user(email: str, password_hash: str, name: str | None = None) -> dict:
+def create_user(
+    email: str,
+    password_hash: str,
+    name: str | None = None,
+    terms_accepted_at: dt.datetime | None = None,
+) -> dict:
     with session_scope() as db:
         # New accounts get a one-time free credit grant (no subscription).
         from app.plans import free_credits
@@ -68,6 +73,7 @@ def create_user(email: str, password_hash: str, name: str | None = None) -> dict
             name=name,
             credits=free_credits(),
             entitlement_tier="free",
+            terms_accepted_at=terms_accepted_at,
         )
         db.add(user)
         db.flush()
@@ -131,6 +137,25 @@ def increment_project_storage(project_id: str, delta_bytes: int) -> None:
                 )
             )
         )
+
+
+def accept_user_terms(user_id: str, accepted_at: dt.datetime | None = None) -> bool:
+    """Record that ``user_id`` accepted the Terms/Privacy Policy.
+
+    Idempotent: if the user has already accepted, returns False without
+    overwriting the original timestamp. Returns True when the timestamp was
+    first set.
+    """
+    if accepted_at is None:
+        accepted_at = dt.datetime.now(dt.timezone.utc)
+    with session_scope() as db:
+        user = db.get(User, user_id)
+        if user is None:
+            return False
+        if user.terms_accepted_at is not None:
+            return False
+        user.terms_accepted_at = accepted_at
+        return True
 
 
 def get_user_by_email(email: str) -> dict[str, Any] | None:

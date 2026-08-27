@@ -7,6 +7,7 @@ SameSite=Lax cookie named ``clipforge_session``.
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import os
 import secrets
@@ -48,6 +49,7 @@ class SessionUser:
     id: str
     email: str
     name: str | None
+    terms_accepted_at: dt.datetime | None = None
 
 
 def hash_password(password: str) -> str:
@@ -152,7 +154,12 @@ def get_user_from_session(session_token: str | None) -> SessionUser | None:
     user = db.get_user(row["user_id"])
     if not user:
         return None
-    return SessionUser(id=user["id"], email=user["email"], name=user.get("name"))
+    return SessionUser(
+        id=user["id"],
+        email=user["email"],
+        name=user.get("name"),
+        terms_accepted_at=user.get("terms_accepted_at"),
+    )
 
 
 def current_user(

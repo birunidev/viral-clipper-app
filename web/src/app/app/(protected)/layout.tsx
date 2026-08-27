@@ -36,6 +36,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     // An errored session query (network/server blip) keeps the user in place
     // — the cookie and DB session are still valid.
     if (!isLoading && !isError && !user) router.replace("/app/login");
+    // Existing accounts must accept the Terms/Privacy Policy before using the
+    // app. The standalone consent page handles the actual opt-in.
+    if (!isLoading && user && !user.terms_accepted_at)
+      router.replace("/app/accept-terms");
   }, [isLoading, isError, user, router]);
 
   if (isLoading || !user) return null;

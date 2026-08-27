@@ -13,6 +13,13 @@ class RegisterRequest(BaseModel):
     name: str | None = Field(default=None, max_length=120)
     email: EmailStr
     password: str = Field(min_length=8, max_length=200)
+    accept_terms: bool = Field(description="Must be true to create an account")
+
+    @model_validator(mode="after")
+    def _must_accept_terms(self) -> "RegisterRequest":
+        if not self.accept_terms:
+            raise ValueError("You must accept the Terms of Service and Privacy Policy")
+        return self
 
 
 class LoginRequest(BaseModel):
@@ -24,6 +31,7 @@ class UserResponse(BaseModel):
     id: str
     name: str | None = None
     email: str
+    terms_accepted_at: dt.datetime | None = None
 
 
 # ------------------------------------------------------------------ projects

@@ -29,8 +29,22 @@ export function useSession() {
 export function useRegister() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { name: string; email: string; password: string }) =>
-      api.post<User>("/auth/register", payload),
+    mutationFn: (payload: {
+      name: string;
+      email: string;
+      password: string;
+      accept_terms: boolean;
+    }) => api.post<User>("/auth/register", payload),
+    onSuccess: (user) => {
+      queryClient.setQueryData(SESSION_KEY, user);
+    },
+  });
+}
+
+export function useAcceptTerms() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post<User>("/auth/accept-terms"),
     onSuccess: (user) => {
       queryClient.setQueryData(SESSION_KEY, user);
     },

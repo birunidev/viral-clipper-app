@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from sqlalchemy.exc import IntegrityError
 
@@ -53,6 +55,7 @@ def register(
             email=email,
             password_hash=hash_password(payload.password),
             name=payload.name,
+            terms_accepted_at=dt.datetime.now(dt.timezone.utc),
         )
     except IntegrityError:
         # Concurrent registration for the same email raced past the
@@ -62,7 +65,12 @@ def register(
     token = new_session_token()
     create_session(user["id"], token)
     set_session_cookie(response, token)
-    return UserResponse(id=user["id"], name=user["name"], email=user["email"])
+    return UserResponse(
+        id=user["id"],
+        name=user["name"],
+        email=user["email"],
+        terms_accepted_at=user.get("terms_accepted_at"),
+    )
 
 
 @router.post("/login", response_model=UserResponse)
@@ -85,7 +93,32 @@ def login(
     token = new_session_token()
     create_session(user["id"], token)
     set_session_cookie(response, token)
-    return UserResponse(id=user["id"], name=user["name"], email=user["email"])
+    return UserResponse(
+        id=user["id"],
+        name=user["name"],
+        email=user["email"],
+        terms_accepted_at=user.get("terms_accepted_at"),
+    )
+
+
+@router.post("/accept-terms", response_model=UserResponse)
+def accept_terms(
+    user: SessionUser = Depends(current_user),
+) -> UserResponse:
+    """Record consent to the Terms of Service and Privacy Policy.
+
+    Idempotent: accepting twice keeps the original timestamp. Lets
+    pre-existing accounts (created before the consent gate shipped) opt in
+    without re-registering.
+    """
+    db.accept_user_terms(user.id)
+    refreshed = db.get_user(user.id)
+    return UserResponse(
+        id=refreshed["id"],
+        name=refreshed["name"],
+        email=refreshed["email"],
+        terms_accepted_at=refreshed.get("terms_accepted_at"),
+    )
 
 
 @router.post("/logout", status_code=204, response_model=None)
@@ -106,4 +139,9 @@ def logout(
 
 @router.get("/me", response_model=UserResponse)
 def me(user: SessionUser = Depends(current_user)) -> UserResponse:
-    return UserResponse(id=user.id, name=user.name, email=user.email)
+    return UserResponse(
+        id=user.id,
+        name=user.name,
+        email=user.email,
+        terms_accepted_at=user.terms_accepted_at,
+    )
