@@ -208,7 +208,7 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
-   Reels marquee — vertical, GPU-only, respects reduced-motion
+   Reels marquee — GPU-only, respects reduced-motion
    ------------------------------------------------------------------------- */
 @keyframes marquee-up {
   from { transform: translateY(0); }
@@ -222,6 +222,10 @@ body {
   from { transform: translateX(0); }
   to { transform: translateX(-50%); }
 }
+@keyframes marquee-x-reverse {
+  from { transform: translateX(-50%); }
+  to { transform: translateX(0); }
+}
 @media (prefers-reduced-motion: no-preference) {
   .animate-marquee-up {
     animation: marquee-up 38s linear infinite;
@@ -230,11 +234,15 @@ body {
     animation: marquee-down 42s linear infinite;
   }
   .animate-marquee-x {
-    animation: marquee-x 22s linear infinite;
+    animation: marquee-x 28s linear infinite;
+  }
+  .animate-marquee-x-reverse {
+    animation: marquee-x-reverse 32s linear infinite;
   }
   .animate-marquee-up:hover,
   .animate-marquee-down:hover,
-  .animate-marquee-x:hover {
+  .animate-marquee-x:hover,
+  .animate-marquee-x-reverse:hover {
     animation-play-state: paused;
   }
 }

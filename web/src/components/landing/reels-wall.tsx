@@ -136,14 +136,14 @@ function ReelCard({ r }: { r: Reel }) {
           else v.pause();
         });
       },
-      { threshold: 0.35 }
+      { threshold: 0.25 }
     );
     io.observe(v);
     return () => io.disconnect();
   }, []);
 
   return (
-    <div className="group relative overflow-hidden rounded-[20px] border border-line bg-surface-1">
+    <div className="group relative w-[172px] shrink-0 overflow-hidden rounded-[18px] border border-line bg-surface-1 sm:w-[200px] md:w-[220px]">
       <div className="aspect-[9/16] relative bg-canvas">
         <video
           ref={ref}
@@ -155,27 +155,28 @@ function ReelCard({ r }: { r: Reel }) {
           preload="metadata"
           className="absolute inset-0 h-full w-full object-cover"
         />
-        {/* soft film grain over video */}
-        <div className="pointer-events-none absolute inset-0 opacity-[0.06] mix-blend-overlay" style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E")` }} />
-        {/* top bar */}
+        <div
+          className="pointer-events-none absolute inset-0 opacity-[0.06] mix-blend-overlay"
+          style={{
+            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E")`,
+          }}
+        />
         <div className="absolute left-2 right-2 top-2 flex items-center justify-between">
-          <span className="rounded-full bg-black/55 px-2.5 py-1 text-[10px] font-medium tracking-wide text-white backdrop-blur">
+          <span className="rounded-full bg-black/55 px-2 py-1 text-[10px] font-medium tracking-wide text-white backdrop-blur">
             {r.tag}
           </span>
           <span className="rounded-full bg-black/55 px-2 py-1 font-mono text-[10px] text-white backdrop-blur tabular-nums">
             {r.dur}
           </span>
         </div>
-        {/* play hint */}
-        <div className="absolute left-1/2 top-1/2 flex h-9 w-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white/90 text-ink opacity-0 shadow-lg backdrop-blur transition-opacity group-hover:opacity-100">
-          <Play size={14} weight="fill" className="ml-0.5" />
+        <div className="absolute left-1/2 top-1/2 flex h-8 w-8 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white/90 text-ink opacity-0 shadow-lg backdrop-blur transition-opacity group-hover:opacity-100">
+          <Play size={12} weight="fill" className="ml-0.5" />
         </div>
-        {/* bottom scrim */}
-        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/30 to-transparent p-3 pt-10">
-          <p className="text-[13px] font-medium leading-tight text-white">{r.hook}</p>
-          <div className="mt-1.5 flex items-center justify-between">
-            <span className="text-xs text-white/80">{r.handle}</span>
-            <span className="font-mono text-[11px] text-white/70 tabular-nums">{r.views} views</span>
+        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/30 to-transparent p-2.5 pt-8">
+          <p className="text-[12px] font-medium leading-tight text-white line-clamp-2">{r.hook}</p>
+          <div className="mt-1 flex items-center justify-between gap-2">
+            <span className="truncate text-[11px] text-white/80">{r.handle}</span>
+            <span className="shrink-0 font-mono text-[10px] text-white/70 tabular-nums">{r.views}</span>
           </div>
         </div>
       </div>
@@ -183,34 +184,29 @@ function ReelCard({ r }: { r: Reel }) {
   );
 }
 
-function Column({ items, variant }: { items: Reel[]; variant: "up" | "down" }) {
+function Row({ items, reverse }: { items: Reel[]; reverse?: boolean }) {
   const doubled = [...items, ...items];
   return (
-    <div className="relative overflow-hidden">
-      <div
-        className={`flex flex-col gap-4 ${variant === "up" ? "animate-marquee-up" : "animate-marquee-down"}`}
-      >
+    <div className="overflow-hidden">
+      <div className={`flex w-max gap-4 ${reverse ? "animate-marquee-x-reverse" : "animate-marquee-x"}`}>
         {doubled.map((r, i) => (
           <ReelCard key={`${r.handle}-${i}`} r={r} />
         ))}
       </div>
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-canvas to-transparent" />
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-canvas to-transparent" />
     </div>
   );
 }
 
 export function ReelsWall() {
-  const col1 = REELS.slice(0, 4);
-  const col2 = REELS.slice(4, 8);
-  const col3 = REELS.slice(8, 12);
+  const row1 = REELS.slice(0, 6);
+  const row2 = REELS.slice(6, 12);
   return (
-    <div className="grid grid-cols-2 gap-4 md:grid-cols-3 md:gap-5">
-      <Column items={col1} variant="up" />
-      <Column items={col2} variant="down" />
-      <div className="hidden md:block">
-        <Column items={col3} variant="up" />
-      </div>
+    <div className="relative flex flex-col gap-4">
+      <Row items={row1} />
+      <Row items={row2} reverse />
+      {/* edge fades */}
+      <div className="pointer-events-none absolute inset-y-0 left-0 w-10 bg-gradient-to-r from-canvas to-transparent md:w-16" />
+      <div className="pointer-events-none absolute inset-y-0 right-0 w-10 bg-gradient-to-l from-canvas to-transparent md:w-16" />
     </div>
   );
 }
