@@ -73,6 +73,17 @@ snapclip.mysaas.web.id {
 	}
 
 	# ─────────────────────────────── routing ────────────────────────────────
+	# License proxy (web) must be reached via /api/license/verify, not backend.
+	# Keep this more-specific handle BEFORE the generic /api/* -> backend.
+	handle /api/license/verify* {
+		reverse_proxy 127.0.0.1:3005 {
+			health_uri /
+			health_interval 15s
+			health_timeout 5s
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
 	# The browser calls the FastAPI backend for auth/CRUD/webhooks (same-site
 	# so the httpOnly session cookie works across both origins).
 	handle /api/* {
