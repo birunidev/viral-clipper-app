@@ -25,19 +25,17 @@ test("headless e2e — real youtube short → viral moments → preview → save
 
   try {
     // 1) Dashboard — create project (YouTube, no auto-start)
-    await page.waitForTimeout(1500);
-    // App may start at /login if not licensed — activate if needed
-    const needsLogin = await page.locator('text="Activate ClipZard"').isVisible().catch(() => false);
+    // Wait for either Projects (licensed) or Activate (needs license) — license check is async
+    await expect(page.getByText(/Projects|Activate ClipZard/).first()).toBeVisible({ timeout: 20_000 });
+    const needsLogin = await page.getByText("Activate ClipZard").isVisible().catch(() => false);
     if (needsLogin) {
       console.log("[e2e] activating with CF-TEST-0001-UNLIMITED");
       await page.fill('input[placeholder="CF-XXXX-XXXX-XXXX"]', "CF-TEST-0001-UNLIMITED");
-      await page.click('button:has-text("Activate")');
-      await page.waitForTimeout(1500);
+      await page.getByRole("button", { name: "Activate" }).click();
+      await expect(page.getByText("Projects").first()).toBeVisible({ timeout: 15_000 });
+    } else {
+      await expect(page.getByText("Projects").first()).toBeVisible({ timeout: 15_000 });
     }
-
-    // Ensure on Dashboard
-    await page.goto("http://localhost:5173/#/");
-    await expect(page.locator('text="Projects"')).toBeVisible({ timeout: 10_000 });
 
     // Open composer -> YouTube
     await page.click('button:has-text("New project")');
@@ -64,7 +62,7 @@ test("headless e2e — real youtube short → viral moments → preview → save
 
     // Wait for pipeline stages
     console.log("[e2e] pipeline started — waiting for completed (up to 4 min for real whisper+1.5B)...");
-    await expect(page.locator('text="Downloading source" , text="Transcribing audio" , text="Finding viral moments" , text="Working"').first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/Downloading source|Transcribing audio|Finding viral moments|Working/).first()).toBeVisible({ timeout: 30_000 });
 
     // Poll for Clips header "X found" where X >0
     let clipsFound = 0;

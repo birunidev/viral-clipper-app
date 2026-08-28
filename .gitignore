@@ -29,6 +29,16 @@ electron/renderer/dist/
 electron/.data/
 electron/renderer/.vite/
 web/out/
+# playwright (local e2e) - never commit reports/traces/videos
+playwright-report/
+playwright/.cache/
+test-results/
+blob-report/
+electron/playwright-report/
+electron/test-results/
+electron/blob-report/
+electron/tests/e2e/test-results/
+electron/tests/e2e/playwright-report/
 *.AppImage
 *.deb
 *.exe
