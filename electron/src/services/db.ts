@@ -60,6 +60,23 @@ const SCHEMA = `
 let sqliteElectron: any = null;
 let electronReady = false;
 let electronReadyPromise: Promise<void> | null = null;
+// sqlite-electron uses a single Python child process with one stdin/stdout.
+// Concurrent sendCommand calls interleave and corrupt the EOF-delimited JSON
+// stream (observed: "Unexpected non-whitespace character after JSON at position 318").
+// Serialize all sqlite-electron calls through a promise queue.
+let _queueTail: Promise<void> = Promise.resolve();
+async function withDbQueue<T>(fn: () => Promise<T>): Promise<T> {
+  let release!: () => void;
+  const cur = new Promise<void>((res) => (release = res));
+  const prev = _queueTail;
+  _queueTail = cur;
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
 
 function isElectronMain(): boolean {
   return !!process.versions.electron && process.type === "browser";
@@ -131,21 +148,21 @@ export function isSqliteElectron(): boolean { return electronReady && !!sqliteEl
 export async function dbFetchOne<T>(sql: string, params: unknown[] = []): Promise<T | undefined> {
   if (isElectronMain() && sqliteElectron) {
     await ensureElectronDb();
-    if (electronReady) return (await sqliteElectron.fetchOne(sql, params as any)) as T | undefined;
+    if (electronReady) return withDbQueue(() => sqliteElectron.fetchOne(sql, params as any) as Promise<T | undefined>);
   }
   return getDbInnerSync().prepare(sql).get(...params) as T | undefined;
 }
 export async function dbFetchAll<T>(sql: string, params: unknown[] = []): Promise<T[]> {
   if (isElectronMain() && sqliteElectron) {
     await ensureElectronDb();
-    if (electronReady) return (await sqliteElectron.fetchAll(sql, params as any)) as T[];
+    if (electronReady) return withDbQueue(() => sqliteElectron.fetchAll(sql, params as any) as Promise<T[]>);
   }
   return getDbInnerSync().prepare(sql).all(...params) as T[];
 }
 export async function dbExec(sql: string, params: unknown[] = []): Promise<void> {
   if (isElectronMain() && sqliteElectron) {
     await ensureElectronDb();
-    if (electronReady) { await sqliteElectron.executeQuery(sql, params as any); return; }
+    if (electronReady) { await withDbQueue(() => sqliteElectron.executeQuery(sql, params as any) as Promise<void>); return; }
   }
   getDbInnerSync().prepare(sql).run(...params);
 }
@@ -154,7 +171,7 @@ export async function dbRun(sql: string, params: unknown[] = []): Promise<void> 
 export async function dbScript(script: string): Promise<void> {
   if (isElectronMain() && sqliteElectron) {
     await ensureElectronDb();
-    if (electronReady) { await sqliteElectron.executeScript(script); return; }
+    if (electronReady) { await withDbQueue(() => sqliteElectron.executeScript(script) as Promise<void>); return; }
   }
   getDbInnerSync().exec(script);
 }
