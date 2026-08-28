@@ -10,6 +10,7 @@ import {
   Play,
   Scissors,
   SlidersHorizontal,
+  Terminal,
   Warning,
   Waveform,
   X,
@@ -21,8 +22,10 @@ import { StatusPill } from "@/components/ui/status-pill";
 import { Timestamp, fmtDuration } from "@/components/ui/timestamp";
 import { SourceTypeIcon } from "@/components/project/source-icon";
 import {
+  useCancelJob,
   useCaptionStyles,
   useJob,
+  useJobLogs,
   useProject,
   useRefreshProjectOnJobDone,
   useSmartRenderClip,
@@ -36,6 +39,7 @@ import { CaptionStyleEditor } from "@/components/project/caption-style-editor";
 import { WordCaptionOverlay } from "@/components/project/word-caption-overlay";
 import { UpgradeRequired, isPaywall } from "@/components/upgrade-required";
 import { DEFAULT_CAPTION_CONFIG } from "@/lib/caption-style-defaults";
+import { LogPanel } from "@/components/ui/log-panel";
 
 const STAGE_LABEL: Record<string, string> = {
   downloading: "Downloading source",
@@ -88,6 +92,16 @@ function PipelineStages({ stage }: { stage: string | null }) {
   );
 }
 
+function StopButton({ jobId }: { jobId: string }) {
+  const cancel = useCancelJob();
+  return (
+    <Button variant="ghost" size="sm" onClick={() => { if (!window.confirm("Stop this job? Next run will start from scratch.")) return; cancel.mutate(jobId); }} loading={cancel.isPending} disabled={cancel.isPending} className="text-ink-tertiary hover:text-danger">
+      <X size={13} weight="bold" />
+      Stop
+    </Button>
+  );
+}
+
 export default function ProjectPage() {
   const params = useParams();
   const id = (params as { id: string }).id;
@@ -125,6 +139,10 @@ export default function ProjectPage() {
 
   const startJob = useStartJob(id);
   const isDesktopPage = typeof window !== "undefined" && !!(window as unknown as { clipzard?: unknown }).clipzard;
+  const [logOpen, setLogOpen] = useState(false);
+  const lastJobId = project?.jobs[0]?.id ?? activeId;
+  const logJobId = (isActive ? activeId : lastJobId) ?? "";
+  const jobLogs = useJobLogs(logJobId);
 
   // keep optimistic job in sync when real job arrives
   useEffect(() => {
@@ -227,6 +245,9 @@ export default function ProjectPage() {
               />
             </div>
             <PipelineStages stage={job.stage} />
+            <div className="flex justify-end">
+              <StopButton jobId={job.id} />
+            </div>
           </div>
         ) : (
           <div className="flex flex-wrap items-end justify-between gap-6">
@@ -299,6 +320,23 @@ export default function ProjectPage() {
             <Warning size={15} weight="fill" />
             {lastJob.error}
           </p>
+        )}
+        {lastJob?.status === "cancelled" && (
+          <p className="mt-4 flex items-center gap-2 rounded-lg border border-line bg-surface-2 px-3 py-2.5 text-sm text-ink-secondary">
+            <X size={15} weight="bold" />
+            Stopped — next run will start from scratch.
+          </p>
+        )}
+
+        {(isActive || lastJob) && logJobId && (
+          <div className="mt-4 border-t border-line pt-4">
+            <button type="button" onClick={() => setLogOpen((v) => !v)} className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-surface-2 px-3 py-1.5 text-xs font-medium text-ink-secondary hover:bg-surface-3 hover:text-ink">
+              <Terminal size={12} weight={logOpen ? "fill" : "regular"} />
+              {logOpen ? "Hide log" : "View log"}
+              {jobLogs.length > 0 && <span className="rounded bg-surface-3 px-1 py-0.5 font-mono text-[10px] tabular-nums">{jobLogs.length}</span>}
+            </button>
+            {logOpen && <div className="mt-3"><LogPanel logs={jobLogs as never[]} isRunning={isActive} /></div>}
+          </div>
         )}
       </Card>
 

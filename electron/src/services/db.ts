@@ -51,9 +51,18 @@ const SCHEMA = `
       id TEXT PRIMARY KEY, license_key TEXT NOT NULL, email TEXT,
       valid INTEGER NOT NULL DEFAULT 0, verified_at TEXT, expires_at TEXT, payload TEXT
     );
+    CREATE TABLE IF NOT EXISTS job_logs (
+      id TEXT PRIMARY KEY, job_id TEXT NOT NULL, ts TEXT NOT NULL,
+      level TEXT NOT NULL, stage TEXT, message TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS youtube_cache (
+      video_id TEXT PRIMARY KEY, file_path TEXT NOT NULL, ext TEXT NOT NULL,
+      bytes INTEGER NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT NOT NULL
+    );
     CREATE INDEX IF NOT EXISTS idx_jobs_project ON jobs(project_id);
     CREATE INDEX IF NOT EXISTS idx_clips_project ON clips(project_id);
     CREATE INDEX IF NOT EXISTS idx_words_project ON timeline_words(project_id);
+    CREATE INDEX IF NOT EXISTS idx_logs_job_ts ON job_logs(job_id, ts);
 `;
 
 // --- Electron sqlite-electron bridge (async, main process only) ---
@@ -181,9 +190,9 @@ let _syncFallback: ReturnType<typeof createJsonFallback> | null = null;
 function createJsonFallback(p: string) {
   const jsonPath = p.replace(/\.db$/, ".json");
   let data: Record<string, unknown[]> = {};
-  const reload = () => { try { if (fs.existsSync(jsonPath)) { const fresh = JSON.parse(fs.readFileSync(jsonPath, "utf-8")); for (const t of ["projects","jobs","clips","timeline_words","caption_styles","license_cache"] as const) if (fresh[t]) data[t]=fresh[t] as unknown[]; } } catch {} };
+  const reload = () => { try { if (fs.existsSync(jsonPath)) { const fresh = JSON.parse(fs.readFileSync(jsonPath, "utf-8")); for (const t of ["projects","jobs","clips","timeline_words","caption_styles","license_cache","job_logs","youtube_cache"] as const) if (fresh[t]) data[t]=fresh[t] as unknown[]; } } catch {} };
   try { if (fs.existsSync(jsonPath)) data = JSON.parse(fs.readFileSync(jsonPath, "utf-8")); } catch { data={}; }
-  const tables=["projects","jobs","clips","timeline_words","caption_styles","license_cache"]; for(const t of tables) if(!data[t]) data[t]=[];
+  const tables=["projects","jobs","clips","timeline_words","caption_styles","license_cache","job_logs","youtube_cache"]; for(const t of tables) if(!data[t]) data[t]=[];
   const persist=()=>{ try{ fs.writeFileSync(jsonPath, JSON.stringify(data,null,2)); }catch{} };
   const matchWhere=(rows:Record<string,unknown>[], sql:string, params:unknown[])=>{ const lower=sql.toLowerCase(); if(lower.includes("where deleted_at is not null")) return rows.filter(r=>!!(r as any).deleted_at); if(lower.includes("where deleted_at is null")) return rows.filter(r=>!(r as any).deleted_at); if(lower.includes("where id=?")||lower.includes("where id =?")) return rows.filter(r=>String(r.id)===String(params[0])); if(lower.includes("where project_id=?")||lower.includes("where project_id =?")) return rows.filter(r=>String((r as any).project_id)===String(params[0])); if(lower.includes("where project_id=? and clip_id=?")) return rows.filter(r=>String((r as any).project_id)===String(params[0])&&String((r as any).clip_id)===String(params[1])); return rows; };
   return {

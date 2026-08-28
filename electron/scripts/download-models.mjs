@@ -35,7 +35,7 @@ function ramTier() {
   if (gb >= 12) return "mid";
   return "low";
 }
-function whisperFor(t) { return t === "high" ? "medium" : t === "mid" ? "small" : "base"; }
+function whisperFor(_t) { return "small"; }
 function llmFor(t) {
   // keep in sync with src/services/system.ts — bartowski single-file builds avoid 404 sharded Qwen files
   const tiny = (process.env.LLM_TIER ?? "").toLowerCase();

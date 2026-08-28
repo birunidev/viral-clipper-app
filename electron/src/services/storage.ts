@@ -45,6 +45,33 @@ export function thumbPath(projectId: string, filename: string): string {
   return path.join(thumbsDir(projectId), filename);
 }
 
+export function youtubeCacheDir(): string {
+  const d = path.join(userDataRoot(), "youtube-cache");
+  fs.mkdirSync(d, { recursive: true });
+  return d;
+}
+
+export function cachedVideoPath(videoId: string, ext = ".mp4"): string {
+  return path.join(youtubeCacheDir(), `${videoId}${ext}`);
+}
+
+export function cachedVideoMeta(videoId: string): { path: string; size: number } | null {
+  const p = cachedVideoPath(videoId);
+  try {
+    const st = fs.statSync(p);
+    if (st.isFile() && st.size > 2000) return { path: p, size: st.size };
+  } catch {}
+  for (const ext of [".mp4", ".webm", ".mkv", ".m4v"] as const) {
+    const alt = cachedVideoPath(videoId, ext);
+    if (alt === p) continue;
+    try {
+      const st = fs.statSync(alt);
+      if (st.isFile() && st.size > 2000) return { path: alt, size: st.size };
+    } catch {}
+  }
+  return null;
+}
+
 export function ensureProjectDirs(projectId: string) {
   projectDir(projectId);
   clipsDir(projectId);

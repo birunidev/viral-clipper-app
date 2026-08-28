@@ -126,6 +126,25 @@ export async function transcribeWithWords(videoPath: string, onProgress?: (f: nu
     onProgress?.(1);
     return mockTranscript(videoPath, language);
   }
+  // The binary may exist but fail to load (missing libwhisper.so.1/libggml.so.0).
+  // Do a cheap smoke test so we fall back to mock instead of hard-failing later.
+  try {
+    const probe = spawn(bin, ["--help"], { stdio: "ignore", env: { ...process.env, LD_LIBRARY_PATH: path.dirname(bin) } });
+    const probeOk = await new Promise<boolean>((resolve) => {
+      const t = setTimeout(() => { try { probe.kill("SIGKILL"); } catch {} resolve(false); }, 8000);
+      probe.on("close", (code) => { clearTimeout(t); resolve(code === 0); });
+      probe.on("error", () => { clearTimeout(t); resolve(false); });
+    });
+    if (!probeOk) {
+      console.warn(`[transcriber] whisper binary at ${bin} failed to load (missing shared libs?), using mock transcript`);
+      onProgress?.(0.5);
+      await new Promise((r) => setTimeout(r, 300));
+      onProgress?.(1);
+      return mockTranscript(videoPath, language);
+    }
+  } catch {
+    // ignore probe failures; let the real run surface any deeper error
+  }
   const tier = ramTier();
   const modelName = process.env.WHISPER_MODEL ?? whisperModelForTier(tier);
   onProgress?.(0.05);
@@ -158,9 +177,10 @@ export async function transcribeWithWords(videoPath: string, onProgress?: (f: nu
     const jsonPath = `${base}.json`;
     // Clean any previous json
     try { fs.unlinkSync(jsonPath); } catch {}
-    const args = ["-m", model, "-f", wav, "-ojf", "-of", base, "-t", String(threadCount())];
-    // --print-progress writes to stderr, useful but not needed for parse
-    // language: 'auto' triggers auto-detect
+    const args = ["-m", model, "-f", wav, "-ojf", "-of", base, "-t", String(threadCount()), "-pp"];
+    // -pp (--print-progress) streams "progress = NN%" to stderr so the pipeline
+    // can report live progress instead of stalling at the post-extract value
+    // during long CPU transcriptions.
     if (language) args.push("-l", language);
     else args.push("-l", "auto");
     console.log(`[transcriber] spawn ${bin} ${args.join(" ")} (attempt ${attempt+1})`);
@@ -168,7 +188,17 @@ export async function transcribeWithWords(videoPath: string, onProgress?: (f: nu
       const p = spawn(bin, args, { stdio: "pipe" });
       let out = "", err = "";
       p.stdout.on("data", (d) => (out += d.toString()));
-      p.stderr.on("data", (d) => (err += d.toString()));
+      p.stderr.on("data", (d) => {
+        const s = d.toString();
+        err += s;
+        // "whisper_print_progress_callback: progress =  45%"  -> fraction 0..1
+        const m = s.match(/progress\s*=\s*\+?(\d+)%/);
+        if (m && onProgress) {
+          const v = Math.min(1, Number(m[1]) / 100);
+          // whisper reports in progress_step chunks (default 5%); still monotonic
+          onProgress(v);
+        }
+      });
       p.on("close", (code) => {
         console.log(`[transcriber] exit ${code} out=${out.slice(0,300)} err=${err.slice(0,600)} jsonExists=${fs.existsSync(jsonPath)}`);
         if (code !== 0) {

@@ -11,10 +11,8 @@ export function ramTier(): Tier {
   return "low";
 }
 
-export function whisperModelForTier(t: Tier): string {
-  if (t === "high") return "medium";
-  if (t === "mid") return "small";
-  return "base";
+export function whisperModelForTier(_t: Tier): string {
+  return "small";
 }
 
 // Size/quality trade-off for this task (JSON clip extraction from timestamped transcript):

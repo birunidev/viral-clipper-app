@@ -171,6 +171,8 @@ async function desktopRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (startMatch && method === "POST") return (await (d.jobStart as (a:string,b:unknown)=>Promise<unknown>)(startMatch[1], body)) as T;
   const renderMatch = path.match(/^\/projects\/([^/]+)\/clips\/([^/]+)\/render$/);
   if (renderMatch && method === "POST") return (await (d.jobRender as (a:string,b:string,c:unknown)=>Promise<unknown>)(renderMatch[1], renderMatch[2], body)) as T;
+  const cancelMatch = path.match(/^\/jobs\/([^/]+)\/cancel$/);
+  if (cancelMatch && method === "POST") return (await (d.jobCancel as (id:string)=>Promise<unknown>)(cancelMatch[1])) as T;
   const jobMatch = path.match(/^\/jobs\/([^/]+)$/);
   if (jobMatch && method === "GET") return (await (d.jobGet as (id:string)=>Promise<unknown>)(jobMatch[1])) as T;
   const restoreMatch = path.match(/^\/projects\/([^/]+)\/restore$/);

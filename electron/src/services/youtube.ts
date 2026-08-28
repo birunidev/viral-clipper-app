@@ -33,11 +33,15 @@ function cookiesArgs(): string[] {
   return [];
 }
 
+function ejsArgs(): string[] {
+  return ["--js-runtimes", "node", "--remote-components", "ejs:github"];
+}
+
 export async function getInfo(url: string): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let resolved = false;
     const extra = cookiesArgs();
-    const p = spawn(bin(), [...extra, "--dump-json", "--no-playlist", "--skip-download", url], { stdio: "pipe" });
+    const p = spawn(bin(), [...extra, ...ejsArgs(), "--dump-json", "--no-playlist", "--skip-download", url], { stdio: "pipe" });
     let out = "", err = "";
     const t = setTimeout(() => {
       if (!resolved) {
@@ -70,7 +74,7 @@ export function download(url: string, outDir: string, onProgress?: (f: number) =
   fs.mkdirSync(outDir, { recursive: true });
   const tmpl = path.join(outDir, "%(id)s.%(ext)s");
   const extra = cookiesArgs();
-  const args = [...extra, "-f", "bv*[height<=1080]+ba/b[height<=1080]/b", "--merge-output-format", "mp4", "-o", tmpl, "--newline", "--no-warnings", url];
+  const args = [...extra, ...ejsArgs(), "-f", "bv*[height<=1080]+ba/b[height<=1080]/b", "--merge-output-format", "mp4", "-o", tmpl, "--newline", "--no-warnings", url];
   const binPath = bin();
   try {
     if (!fs.existsSync(binPath) && binPath !== "yt-dlp" && binPath !== "yt-dlp.exe") {
@@ -140,6 +144,19 @@ export function download(url: string, outDir: string, onProgress?: (f: number) =
       } else reject(new DownloadError(msg));
     });
   });
+}
+
+const YT_ID_RE = /(?:v=|youtu\.be\/|embed\/|shorts\/)([A-Za-z0-9_-]{11})/;
+
+export function extractVideoId(url: string): string | null {
+  const m = url.match(YT_ID_RE);
+  if (m) return m[1];
+  if (/^[A-Za-z0-9_-]{11}$/.test(url.trim())) return url.trim();
+  try {
+    const v = new URL(url).searchParams.get("v");
+    if (v && /^[A-Za-z0-9_-]{11}$/.test(v)) return v;
+  } catch {}
+  return null;
 }
 
 export function isUrl(v: string): boolean {

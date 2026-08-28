@@ -50,71 +50,129 @@ function hasCmd(c){
 }
 
 async function ensureWhisperBinary() {
-  if (fs.existsSync(whisperBin) && fs.statSync(whisperBin).size > 10000) {
-    log(`whisper-cli already at ${whisperBin} (${(fs.statSync(whisperBin).size/1024/1024).toFixed(1)} MB)`);
+  const runsOk = () => {
+    if (!fs.existsSync(whisperBin) || fs.statSync(whisperBin).size <= 10000) return false;
+    // Verify it actually loads (a copied binary missing libwhisper.so.1 fails
+    // here but "exists" on disk — never trust size alone).
+    const sm = spawnSync(whisperBin, ["--help"], { stdio: "pipe", env: { ...process.env, LD_LIBRARY_PATH: path.dirname(whisperBin) } });
+    return sm.status === 0;
+  };
+  if (runsOk()) {
+    log(`whisper-cli already ok at ${whisperBin} (${(fs.statSync(whisperBin).size/1024/1024).toFixed(1)} MB)`);
     return true;
   }
+  if (fs.existsSync(whisperBin)) {
+    warn(`existing whisper-cli at ${whisperBin} fails to load (size ${fs.statSync(whisperBin).size}) — rebuilding`);
+    fs.rmSync(whisperBin, { force: true });
+  }
   fs.mkdirSync(binDir, { recursive: true });
-  // Try build from source if deps present
+  // Try build from source if deps present. Recent whisper.cpp links whisper-cli
+  // against libwhisper.so.1/libggml.so.0 by default; we must build a
+  // SELF-CONTAINED binary (no shared-lib deps) or copy the .so files alongside
+  // it and point rpath at them — otherwise whisper-cli fails at runtime with
+  // "cannot open shared object file".
   const hasCmake = hasCmd("cmake");
   const hasMake = hasCmd("make") || hasCmd("gmake");
   const hasGpp = hasCmd("g++") || hasCmd("clang++");
   log(`deps: cmake=${hasCmake} make=${hasMake} g++=${hasGpp}`);
-  if (hasCmake && hasMake && hasGpp) {
+  if (hasMake && hasGpp) {
     const tmp = path.join(os.tmpdir(), "whisper.cpp");
-    if (!fs.existsSync(path.join(tmp, "CMakeLists.txt"))) {
-      log(`cloning whisper.cpp to ${tmp} ...`);
-      if (fs.existsSync(tmp)) fs.rmSync(tmp, { recursive: true, force: true });
-      const r = spawnSync("git", ["clone", "--depth", "1", "https://github.com/ggerganov/whisper.cpp.git", tmp], { stdio: "inherit" });
-      if (r.status !== 0) { warn("git clone failed"); return false; }
-    } else {
-      log(`whisper.cpp already at ${tmp}, updating`);
-      spawnSync("git", ["-C", tmp, "pull", "--ff-only"], { stdio: "inherit" });
-    }
-    log("building whisper-cli (cmake) — this takes 1-3 min ...");
-    // whisper.cpp main -> whisper-cli rename in recent versions
+    const cloneOrPull = () => {
+      if (!fs.existsSync(path.join(tmp, "CMakeLists.txt"))) {
+        if (fs.existsSync(tmp)) fs.rmSync(tmp, { recursive: true, force: true });
+        const r = spawnSync("git", ["clone", "--depth", "1", "https://github.com/ggerganov/whisper.cpp.git", tmp], { stdio: "inherit" });
+        return r.status === 0;
+      }
+      return spawnSync("git", ["-C", tmp, "pull", "--ff-only"], { stdio: "inherit" }).status === 0;
+    };
+
+    // Helper: copy the built binary + any shared libs it needs into binDir,
+    // then re-point its RUNPATH at binDir so it self-loads locally.
+    const installFrom = (built) => {
+      if (!built || !fs.existsSync(built)) return false;
+      fs.copyFileSync(built, whisperBin);
+      try { fs.chmodSync(whisperBin, 0o755); } catch {}
+      // Gather sibling shared libs referenced by NEEDED (libwhisper.so.*, libggml.so.*, ...)
+      const deps = execSync(`ldd "${built}"`, { encoding: "utf8" }).split("\n")
+        .map(l => l.match(/=>\s+(\S+\.so(?:\.\d+)*)\s/)?.[1] ?? "")
+        .filter(Boolean);
+      const buildBin = path.dirname(built);
+      let copied = false;
+      for (const dep of deps) {
+        const base = path.basename(dep);
+        const src = path.join(buildBin, base);
+        if (dep.includes(`/build/`) && fs.existsSync(src)) {
+          fs.copyFileSync(src, path.join(binDir, base));
+          try { fs.chmodSync(path.join(binDir, base), 0o755); } catch {}
+          copied = true;
+        }
+      }
+      if (copied) {
+        // Re-point the binary's RUNPATH to binDir so it finds the copied libs.
+        try {
+          const binDirShared = binDir;
+          execSync(`patchelf --set-rpath "${binDirShared}" "${whisperBin}" 2>/dev/null || true`);
+        } catch {}
+      }
+      const sz = fs.statSync(whisperBin).size / 1024 / 1024;
+      const sm = spawnSync(whisperBin, ["--help"], { stdio: "pipe", env: { ...process.env, LD_LIBRARY_PATH: binDir } });
+      log(`installed whisper-cli -> ${whisperBin} (${sz.toFixed(1)} MB) smoke: ${sm.status===0 ? "ok" : "exit "+sm.status} ${String(sm.stdout||sm.stderr).slice(0,200)}`);
+      if (sm.status !== 0) return false;
+      return true;
+    };
+
+    if (!cloneOrPull()) { warn("git clone/pull failed"); }
+    log("building whisper-cli — this takes 1-3 min ...");
+    let built = null;
     let buildDir = path.join(tmp, "build");
-    fs.mkdirSync(buildDir, { recursive: true });
-    let r = spawnSync("cmake", ["-B", buildDir, "-DCMAKE_BUILD_TYPE=Release"], { cwd: tmp, stdio: "inherit" });
-    if (r.status !== 0) { warn("cmake configure failed"); return false; }
-    r = spawnSync("cmake", ["--build", buildDir, "-j", String(Math.max(2, os.cpus().length -1)), "--config", "Release"], { cwd: tmp, stdio: "inherit" });
-    if (r.status !== 0) { warn("cmake build failed"); return false; }
-    // Find built binary: build/bin/whisper-cli or build/bin/whisper-cli.exe or build/whisper-cli
-    const candidates = [
+    if (hasCmake) {
+      fs.mkdirSync(buildDir, { recursive: true });
+      // Prefer a fully static build (GGML_SHARED=OFF + WHISPER_BUILD_STATIC=ON)
+      // so the binary carries no .so deps. Fall back to copying the shared libs.
+      let r = spawnSync("cmake", [
+        "-B", buildDir,
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DGGML_SHARED=OFF",
+        "-DWHISPER_BUILD_STATIC=ON",
+        "-DWHISPER_BUILD_SHARED=OFF",
+      ], { cwd: tmp, stdio: "inherit" });
+      if (r.status === 0) {
+        r = spawnSync("cmake", ["--build", buildDir, "-j", String(Math.max(2, os.cpus().length -1)), "--config", "Release"], { cwd: tmp, stdio: "inherit" });
+        if (r.status !== 0) warn("cmake build failed, continuing search");
+      } else {
+        warn("cmake configure failed with static flags, retrying with defaults");
+        r = spawnSync("cmake", ["-B", buildDir, "-DCMAKE_BUILD_TYPE=Release"], { cwd: tmp, stdio: "inherit" });
+        if (r.status === 0) r = spawnSync("cmake", ["--build", buildDir, "-j", String(Math.max(2, os.cpus().length -1)), "--config", "Release"], { cwd: tmp, stdio: "inherit" });
+      }
+    } else {
+      // No cmake: whisper.cpp ships a plain Makefile that builds statically.
+      log("cmake not found, using whisper.cpp Makefile build (static)");
+      const m = spawnSync("make", ["-j", String(Math.max(2, os.cpus().length -1))], { cwd: tmp, stdio: "inherit" });
+      if (m.status !== 0) warn(`make build failed code=${m.status}, continuing search`);
+    }
+
+    // Candidates across cmake build/bin and make build dirs
+    for (const cand of [
       path.join(buildDir, "bin", "whisper-cli"),
       path.join(buildDir, "bin", "whisper-cli.exe"),
       path.join(buildDir, "whisper-cli"),
       path.join(tmp, "build", "bin", "whisper-cli"),
-    ];
-    let built = candidates.find(p=>fs.existsSync(p));
+      path.join(tmp, "build", "bin", "main"),
+      path.join(tmp, "build", "main"),
+    ]) if (fs.existsSync(cand)) { built = cand; break; }
     if (!built) {
-      // search
       try {
-        const out = execSync(`find ${buildDir} -name "whisper-cli*" -type f | head -n 5`, { encoding: "utf8" });
-        log(`find result: ${out}`);
+        const out = execSync(`find ${tmp}/build -type f \\( -name "whisper-cli*" -o -name "main" \\) | head -n 5`, { encoding: "utf8" });
         const first = out.trim().split("\n")[0];
         if (first && fs.existsSync(first)) built = first;
       } catch {}
     }
-    if (!built || !fs.existsSync(built)) {
-      warn("built binary not found — look for main/whisper-cli in build/");
-      // fallback: try 'main' old name
-      const old = path.join(buildDir, "bin", "main");
-      if (fs.existsSync(old)) { built = old; log(`using legacy 'main' as whisper-cli`); }
-      else return false;
-    }
-    fs.copyFileSync(built, whisperBin);
-    try { fs.chmodSync(whisperBin, 0o755); } catch {}
-    log(`installed whisper-cli -> ${whisperBin} (${(fs.statSync(whisperBin).size/1024/1024).toFixed(1)} MB)`);
-    // smoke test
-    const sm = spawnSync(whisperBin, ["--help"], { stdio: "pipe" });
-    log(`whisper-cli smoke: ${sm.status===0 ? "ok" : "help exit "+sm.status} ${String(sm.stdout||sm.stderr).slice(0,200)}`);
-    return true;
+    if (installFrom(built)) return true;
+    warn("built binary failed smoke test (missing shared libs) — tried to copy libs beside it.");
+    return false;
   } else {
-    warn("cmake/make/g++ missing — install: sudo apt install -y cmake build-essential git");
+    warn("make/g++ missing — install: sudo apt install -y cmake build-essential git");
     warn("Skipping whisper build. You can still run mocks, or install deps and re-run.");
-    // Try prebuilt download as fallback (community)
-    // We won't auto-download random binary; just warn.
     return false;
   }
 }

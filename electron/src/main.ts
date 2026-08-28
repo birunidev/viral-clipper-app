@@ -58,10 +58,39 @@ function createWindow() {
 
 function isSafeMediaPath(p: string): string | null {
   const normalized = path.normalize(p);
-  const roots = [path.normalize(path.join(app.getPath("userData"), "projects")), path.normalize(app.getPath("temp")), path.normalize(os.tmpdir())];
+  const roots = [
+    path.normalize(path.join(app.getPath("userData"), "projects")),
+    path.normalize(path.join(app.getPath("userData"), "youtube-cache")),
+    path.normalize(app.getPath("temp")),
+    path.normalize(os.tmpdir()),
+  ];
   if (roots.some((r) => normalized.startsWith(r))) return normalized;
   if (process.platform === "win32" && /^[a-zA-Z]:\\/.test(normalized) && roots.some((r) => normalized.toLowerCase().startsWith(r.toLowerCase()))) return normalized;
   return null;
+}
+
+function humanizeLog(line: string): { level: "info" | "warn" | "error"; message: string } {
+  const s = line.trim();
+  if (!s) return { level: "info", message: s };
+  const lower = s.toLowerCase();
+  if (lower.includes("error") || lower.includes("failed") || lower.includes("not all tensors") || lower.includes("cannot open shared") || lower.includes("enoent")) return { level: "error", message: s };
+  if (lower.includes("warn") || lower.includes("n challenge") || lower.includes("only images are available") || lower.includes("bot guard") || lower.includes("truncated")) return { level: "warn", message: s };
+  return { level: "info", message: s };
+}
+
+const YT_CACHE_MAX_BYTES = 5 * 1024 * 1024 * 1024;
+
+async function evictYoutubeCacheIfNeeded() {
+  try {
+    const rows = await dbFetchAll<{ bytes: number; video_id: string; file_path: string }>("SELECT video_id, file_path, bytes FROM youtube_cache ORDER BY last_used_at ASC");
+    let total = rows.reduce((a, r) => a + Number(r.bytes || 0), 0);
+    for (const r of rows) {
+      if (total <= YT_CACHE_MAX_BYTES) break;
+      try { if (fs.existsSync(r.file_path)) fs.unlinkSync(r.file_path); } catch {}
+      await dbExecute("DELETE FROM youtube_cache WHERE video_id=?", [r.video_id]);
+      total -= Number(r.bytes || 0);
+    }
+  } catch {}
 }
 
 let fastApiUrl: string | null = null;
@@ -113,6 +142,7 @@ app.whenReady().then(async () => {
   });
 
   await seedCaptionStyles();
+  startJobWatchdog();
   createWindow();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
@@ -198,7 +228,8 @@ ipcMain.handle("projects:list", async () => {
   const result: Record<string, unknown>[] = [];
   for (const r of rows) {
     const clipRow = await dbFetchOne<{ c: number }>("SELECT count(*) as c FROM clips WHERE project_id=?", [r.id as string]);
-    result.push({ ...r, clip_count: clipRow?.c ?? 0 });
+    const runningJob = await dbFetchOne<Record<string, unknown>>("SELECT id FROM jobs WHERE project_id=? AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1", [r.id as string]);
+    result.push({ ...r, clip_count: clipRow?.c ?? 0, running_job_id: (runningJob?.id as string) ?? null });
   }
   return result;
 });
@@ -252,6 +283,10 @@ ipcMain.handle("projects:purge", async (_e, id: string) => {
     try { if (p.source_key) fs.unlinkSync(p.source_key as string); } catch {}
     try { const dir = path.join(app.getPath("userData"), "projects", id); fs.rmSync(dir, { recursive: true, force: true }); } catch {}
   }
+  await dbExecute("DELETE FROM job_logs WHERE job_id IN (SELECT id FROM jobs WHERE project_id=?)", [id]);
+  await dbExecute("DELETE FROM jobs WHERE project_id=?", [id]);
+  await dbExecute("DELETE FROM timeline_words WHERE project_id=?", [id]);
+  await dbExecute("DELETE FROM clips WHERE project_id=?", [id]);
   await dbExecute("DELETE FROM projects WHERE id=?", [id]);
   return { ok: true };
 });
@@ -266,6 +301,54 @@ ipcMain.handle("caption-styles:create", async (_e, data: { label: string; config
 });
 
 const activeUtilities = new Map<string, Electron.UtilityProcess>();
+
+// If a job is still marked running/queued but its backing utility is gone
+// (crashed, OOM-killed, or exited without a done/error message), reconcile it
+// to 'failed' instead of leaving a zombie "running" row that never progresses.
+async function reconcileRunningJob(jobId: string, projectId: string, clipId?: string, reason = "utility vanished") {
+  try {
+    const j = await dbFetchOne<Record<string, unknown>>("SELECT status FROM jobs WHERE id=?", [jobId]);
+    const st = String(j?.status ?? "");
+    if (st === "running" || st === "queued") {
+      console.warn(`[main] reconciling orphan job ${jobId} (${st}) -> failed: ${reason}`);
+      await dbExecute("UPDATE jobs SET status='failed', error=?, stage=NULL, updated_at=? WHERE id=?", [reason.slice(0, 500), nowIso(), jobId]);
+      await dbExecute("UPDATE projects SET status='failed', updated_at=? WHERE id=?", [nowIso(), projectId]);
+      win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "failed", error: reason });
+    }
+  } catch {}
+}
+
+// Watchdog: periodically sweep for jobs stuck 'running'/'queued' whose utility
+// process is no longer alive (or was never registered), and fail them. Backs up
+// the 'exit' handler in case that event is missed during heavy load/crash.
+let watchdogStarted = false;
+function startJobWatchdog() {
+  if (watchdogStarted) return;
+  watchdogStarted = true;
+  setInterval(async () => {
+    try {
+      const rows = await dbFetchAll<Record<string, unknown>>("SELECT id, project_id, clip_id, status FROM jobs WHERE status IN ('running','queued')");
+      for (const r of rows) {
+        const jobId = String(r.id);
+        const projectId = String(r.project_id);
+        const clipId = r.clip_id ? String(r.clip_id) : undefined;
+        const child = activeUtilities.get(jobId);
+        if (child) {
+          // Utility registered — check the OS process is actually alive.
+          const pid = (child as { pid?: number }).pid;
+          let alive = false;
+          if (pid) { try { process.kill(pid, 0); alive = true; } catch {} }
+          if (!alive) {
+            await reconcileRunningJob(jobId, projectId, clipId, `utility pid ${pid ?? "?"} no longer alive`);
+          }
+        } else {
+          // Stuck row with no utility at all — orphaned (e.g. crash before registration).
+          await reconcileRunningJob(jobId, projectId, clipId, "job has no active utility process");
+        }
+      }
+    } catch {}
+  }, 30_000);
+}
 
 async function runJobInUtility(jobId: string, projectId: string, clipId?: string) {
   console.log(`[main] runJobInUtility jobId=${jobId} projectId=${projectId} clipId=${clipId} isLicensed=${isLicensedSync()} packaged=${app.isPackaged}`);
@@ -328,10 +411,36 @@ async function runJobInUtility(jobId: string, projectId: string, clipId?: string
 
   activeUtilities.set(jobId, child);
 
+  let currentLogStage = "downloading";
+  const emitLog = async (raw: string, fallbackLevel: "info" | "warn" | "error" = "info") => {
+    const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
+    for (const line of lines) {
+      const { level, message } = humanizeLog(line);
+      const lvl = level === "info" ? fallbackLevel : level;
+      const ts = nowIso();
+      const id = randomUUID();
+      try { await dbExecute("INSERT INTO job_logs (id, job_id, ts, level, stage, message) VALUES (?,?,?,?,?,?)", [id, jobId, ts, lvl, currentLogStage, message.slice(0, 2000)]); } catch {}
+      const countRow = await dbFetchOne<{ c: number }>("SELECT count(*) as c FROM job_logs WHERE job_id=?", [jobId]);
+      if ((countRow?.c ?? 0) > 800) {
+        try { await dbExecute("DELETE FROM job_logs WHERE id IN (SELECT id FROM job_logs WHERE job_id=? ORDER BY ts ASC LIMIT 100)", [jobId]); } catch {}
+      }
+      win?.webContents.send("job:log", { jobId, projectId, log: { id, ts, level: lvl, stage: currentLogStage, message } });
+    }
+  };
+
   child.on("spawn", async () => {
     console.log(`[main] utility spawned pid=${child.pid} for ${jobId}`);
-    child.stdout?.on("data", (d: Buffer) => console.log(`[utility:${jobId.slice(0,6)} out] ${d.toString().trim()}`));
-    child.stderr?.on("data", (d: Buffer) => console.error(`[utility:${jobId.slice(0,6)} err] ${d.toString().trim()}`));
+    await emitLog(`Job ${jobType} started for project ${projectId}`, "info");
+    child.stdout?.on("data", (d: Buffer) => {
+      const s = d.toString();
+      console.log(`[utility:${jobId.slice(0,6)} out] ${s.trim()}`);
+      void emitLog(s, "info");
+    });
+    child.stderr?.on("data", (d: Buffer) => {
+      const s = d.toString();
+      console.error(`[utility:${jobId.slice(0,6)} err] ${s.trim()}`);
+      void emitLog(s, "warn");
+    });
 
     // Send start payload after spawn so parentPort is ready
     const payload: Record<string, unknown> = clipId
@@ -371,20 +480,43 @@ async function runJobInUtility(jobId: string, projectId: string, clipId?: string
     child.postMessage(payload as never);
   });
 
-  child.on("message", async (msg: unknown) => {
-    const m = msg as Record<string, unknown>;
+  child.on("message", async (e: unknown) => {
+    const m = ((e as Record<string, unknown>)?.data ?? e) as Record<string, unknown>;
     if (!m || typeof m.type !== "string") return;
 
     if (m.type === "progress" && typeof m.stage === "string") {
       const stage = String(m.stage);
       const progress = Number(m.progress ?? 0);
+      currentLogStage = stage;
       try { await dbExecute("UPDATE jobs SET stage=?, progress=?, updated_at=? WHERE id=?", [stage, progress, nowIso(), jobId]); } catch {}
       win?.webContents.send("job:progress", { jobId, projectId, clipId, stage, progress });
     } else if (m.type === "sourceReady" && typeof m.sourceKey === "string") {
       try {
         await dbExecute("UPDATE projects SET source_key=?, updated_at=? WHERE id=?", [String(m.sourceKey), nowIso(), projectId]);
         if (m.language) await dbExecute("UPDATE projects SET language=? WHERE id=?", [String(m.language), projectId]);
+        const vid = (m.videoId as string | undefined) || null;
+        if (vid && m.sourceKey) {
+          const ext = path.extname(String(m.sourceKey)) || ".mp4";
+          let bytes = 0;
+          try { bytes = fs.statSync(String(m.sourceKey)).size; } catch {}
+          try {
+            await dbExecute("INSERT OR IGNORE INTO youtube_cache (video_id, file_path, ext, bytes, created_at, last_used_at) VALUES (?,?,?,?,?,?)", [vid, String(m.sourceKey), ext, bytes, nowIso(), nowIso()]);
+            await dbExecute("UPDATE youtube_cache SET last_used_at=?, bytes=? WHERE video_id=?", [nowIso(), bytes, vid]);
+          } catch {}
+          const cachedPath = path.join(app.getPath("userData"), "youtube-cache", `${vid}${ext}`);
+          try {
+            if (String(m.sourceKey) !== cachedPath) {
+              fs.mkdirSync(path.dirname(cachedPath), { recursive: true });
+              if (!fs.existsSync(cachedPath) || fs.statSync(cachedPath).size !== bytes) {
+                fs.copyFileSync(String(m.sourceKey), cachedPath);
+                await dbExecute("UPDATE youtube_cache SET file_path=?, bytes=? WHERE video_id=?", [cachedPath, bytes, vid]);
+              }
+            }
+          } catch {}
+          void evictYoutubeCacheIfNeeded();
+        }
       } catch {}
+      void emitLog(`Source ready: ${String(m.sourceKey).split("/").pop()}${(m as Record<string, unknown>).cached ? " (cached)" : ""}`, "info");
     } else if (m.type === "meta" && typeof m.language === "string") {
       try { await dbExecute("UPDATE projects SET language=? WHERE id=?", [String(m.language), projectId]); } catch {}
     } else if (m.type === "words" && Array.isArray(m.words)) {
@@ -398,6 +530,7 @@ async function runJobInUtility(jobId: string, projectId: string, clipId?: string
         }
       } catch (e) { console.warn("[main] words persist failed", e); }
     } else if (m.type === "done") {
+      void emitLog("Job completed successfully", "info");
       const payload = m.payload as Record<string, unknown> | undefined;
       try {
         if (jobType === "render" || clipId) {
@@ -427,6 +560,7 @@ async function runJobInUtility(jobId: string, projectId: string, clipId?: string
     } else if (m.type === "error") {
       const err = String(m.error ?? "unknown").slice(0, 800);
       console.error(`[main] utility error ${jobId} ${err}`);
+      void emitLog(err, "error");
       try {
         await dbExecute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?", [err.slice(0, 500), nowIso(), jobId]);
         await dbExecute("UPDATE projects SET status='failed', updated_at=? WHERE id=?", [nowIso(), projectId]);
@@ -449,17 +583,9 @@ async function runJobInUtility(jobId: string, projectId: string, clipId?: string
   child.on("exit", async (code: number) => {
     console.log(`[utility] exit ${jobId} code ${code}`);
     activeUtilities.delete(jobId);
-    // If exit without done/error and job still running, mark failed
-    try {
-      const j = await dbFetchOne<Record<string, unknown>>("SELECT status FROM jobs WHERE id=?", [jobId]);
-      if (j && (j.status === "running" || j.status === "queued")) {
-        if (code !== 0) {
-          await dbExecute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?", [`utility exit ${code}`, nowIso(), jobId]);
-          await dbExecute("UPDATE projects SET status='failed', updated_at=? WHERE id=?", [nowIso(), projectId]);
-          win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "failed", error: `utility exit ${code}` });
-        }
-      }
-    } catch {}
+    // If the utility vanished without sending done/error (crash, OOM, silent
+    // process.exit), the job must not be left as a zombie 'running'.
+    await reconcileRunningJob(jobId, projectId, clipId, `utility exited ${code}`);
   });
 }
 
@@ -489,17 +615,41 @@ ipcMain.handle("jobs:render", async (_e, { projectId, clipId, opts }: { projectI
 
 ipcMain.handle("jobs:cancel", async (_e, jobId: string) => {
   const child = activeUtilities.get(jobId);
-  if (child) { try { child.kill(); } catch {} activeUtilities.delete(jobId); }
+  if (child) {
+    try { child.kill(); } catch {}
+    setTimeout(() => { try { child.kill(); } catch {} }, 3000);
+    activeUtilities.delete(jobId);
+  }
   try {
-    const j = await dbFetchOne<Record<string, unknown>>("SELECT status FROM jobs WHERE id=?", [jobId]);
+    const j = await dbFetchOne<Record<string, unknown>>("SELECT id, project_id, status FROM jobs WHERE id=?", [jobId]);
     if (j && (j.status === "queued" || j.status === "running")) {
-      await dbExecute("UPDATE jobs SET status='failed', error='cancelled', updated_at=? WHERE id=?", [nowIso(), jobId]);
+      const projectId = String(j.project_id);
+      await dbExecute("UPDATE jobs SET status='cancelled', stage=NULL, progress=0, error='cancelled', updated_at=? WHERE id=?", [nowIso(), jobId]);
+      await dbExecute("UPDATE projects SET status='cancelled', updated_at=? WHERE id=?", [nowIso(), projectId]);
+      await dbExecute("DELETE FROM timeline_words WHERE project_id=?", [projectId]);
+      await dbExecute("DELETE FROM job_logs WHERE job_id=?", [jobId]);
+      const logId = randomUUID();
+      try { await dbExecute("INSERT INTO job_logs (id, job_id, ts, level, stage, message) VALUES (?,?,?,?,?,?)", [logId, jobId, nowIso(), "warn", "cancelled", "Stopped by user — next run will start from scratch."]); } catch {}
+      win?.webContents.send("job:log", { jobId, projectId, log: { id: logId, ts: nowIso(), level: "warn", stage: "cancelled", message: "Stopped by user — next run will start from scratch." } });
+      const proj = await dbFetchOne<Record<string, unknown>>("SELECT source_key FROM projects WHERE id=?", [projectId]);
+      if (proj?.source_key) {
+        try { if (fs.existsSync(proj.source_key as string)) fs.unlinkSync(proj.source_key as string); } catch {}
+        await dbExecute("UPDATE projects SET source_key=NULL WHERE id=?", [projectId]);
+      }
+      win?.webContents.send("job:progress", { jobId, projectId, stage: "cancelled", error: "cancelled", progress: 0 });
     }
   } catch {}
   return { ok: true };
 });
 
 ipcMain.handle("jobs:get", async (_e, id: string) => await dbFetchOne<Record<string, unknown>>("SELECT * FROM jobs WHERE id=?", [id]));
+ipcMain.handle("jobs:logs", async (_e, jobId: string) => {
+  return await dbFetchAll<Record<string, unknown>>("SELECT id, job_id, ts, level, stage, message FROM job_logs WHERE job_id=? ORDER BY ts ASC LIMIT 800", [jobId]);
+});
+ipcMain.handle("jobs:clearLogs", async (_e, jobId: string) => {
+  await dbExecute("DELETE FROM job_logs WHERE job_id=?", [jobId]);
+  return { ok: true };
+});
 ipcMain.handle("clips:list", async (_e, projectId: string) => await dbFetchAll<Record<string, unknown>>("SELECT * FROM clips WHERE project_id=? ORDER BY start_time", [projectId]));
 ipcMain.handle("dialog:openVideo", async () => {
   const res = await dialog.showOpenDialog(win!, { properties: ["openFile"], filters: [{ name: "Video", extensions: ["mp4", "mov", "mkv", "webm", "avi", "m4v"] }] });

@@ -4,6 +4,7 @@ const TONES = {
   running: "bg-warning-soft text-warning border-warning/20",
   completed: "bg-success-soft text-success border-success/20",
   failed: "bg-danger-soft text-danger border-danger/20",
+  cancelled: "bg-surface-2 text-white border-line",
 } as const;
 
 type Tone = keyof typeof TONES;
@@ -14,6 +15,7 @@ const LABELS: Record<Tone, string> = {
   running: "Processing",
   completed: "Completed",
   failed: "Failed",
+  cancelled: "Cancelled",
 };
 
 export function StatusPill({ status }: { status: string }) {

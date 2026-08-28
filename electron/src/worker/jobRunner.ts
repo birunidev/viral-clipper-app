@@ -87,8 +87,9 @@ function postError(error: string) {
   parentPort?.postMessage({ type: "error", error });
 }
 
-(parentPort as NonNullable<typeof parentPort>).on("message", async (msg: unknown) => {
-  const m = msg as { type: string; [k: string]: unknown };
+(parentPort as NonNullable<typeof parentPort>).on("message", async (e: unknown) => {
+  const raw = (e as { data?: unknown })?.data ?? e;
+  const m = raw as { type: string; [k: string]: unknown };
   if (!m || m.type !== "start") return;
   const jobId = String((m as Record<string, unknown>).jobId ?? "");
   const projectId = String((m as Record<string, unknown>).projectId ?? "");
@@ -128,43 +129,93 @@ async function handleAnalyze(msg: StartAnalyzeMsg) {
   if (!isUpload) postProgress("downloading", 2);
 
   if (sourceType === "youtube") {
-    console.log(`[jobRunner] getInfo ${source}`);
+    // Reuse an already-downloaded local source (from a prior completed download
+    // or a failed job that got past the download step) instead of re-downloading.
+    const existingKey = String(project.source_key ?? "");
+    let reuseExisting = false;
     try {
-      const info = await getInfo(source);
-      sourceLanguage = String((info as Record<string, unknown>).language ?? (info as Record<string, unknown>).original_language ?? "") || null;
-      if (sourceLanguage) parentPort?.postMessage({ type: "meta", language: sourceLanguage });
-      console.log(`[jobRunner] getInfo ok lang=${sourceLanguage} title=${String((info as any).title ?? "").slice(0,60)}`);
-    } catch (e) {
-      console.warn(`[jobRunner] getInfo failed ${(e as Error).message?.slice(0,300)}`);
-    }
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clipzard_dl_"));
-    console.log(`[jobRunner] download start tmp=${tmpDir}`);
-    try {
-      const { ytdlpPath } = await import("../services/bin.js");
-      const bin = ytdlpPath();
-      console.log(`[jobRunner] ytdlp bin=${bin} exists=${fs.existsSync(bin)}`);
-      const { cookiesArgs } = await import("../services/youtube.js").then(() => ({ cookiesArgs: null })).catch(() => ({ cookiesArgs: null }));
-      // log cookies candidates via direct check
-      const candidates = [
-        process.env.YTDLP_COOKIEFILE,
-        process.env.USER_DATA_PATH ? `${process.env.USER_DATA_PATH}/cookies.txt` : null,
-        `${os.homedir()}/.config/clipzard-desktop/cookies.txt`,
-        "/tmp/cookies.txt",
-      ].filter(Boolean) as string[];
-      console.log(`[jobRunner] cookies candidates ${candidates.map(c => `${c}:${fs.existsSync(c as string)}`).join(", ")}`);
+      if (existingKey && fs.statSync(existingKey).isFile() && fs.statSync(existingKey).size > 2000) reuseExisting = true;
     } catch {}
-    localVideo = await download(source, tmpDir, (f: number) => {
-      const p = Math.round(2 + 23 * f);
-      console.log(`[jobRunner] download progress ${Math.round(f*100)}% -> ${p}%`);
-      postProgress("downloading", p);
-    });
-    console.log(`[jobRunner] download done ${localVideo}`);
-    const ext = path.extname(localVideo) || ".mp4";
-    const dest = sourcePath(projectId, ext);
-    fs.copyFileSync(localVideo, dest);
-    localVideo = dest;
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
-    parentPort?.postMessage({ type: "sourceReady", sourceKey: dest, language: sourceLanguage });
+    if (reuseExisting) {
+      console.log(`[jobRunner] reusing downloaded source ${existingKey}`);
+      localVideo = existingKey;
+      try {
+        const { extractVideoId: ev } = await import("../services/youtube.js");
+        const vid = ev(source);
+        parentPort?.postMessage({ type: "sourceReady", sourceKey: existingKey, language: sourceLanguage, videoId: vid ?? undefined, cached: false });
+      } catch { parentPort?.postMessage({ type: "sourceReady", sourceKey: existingKey, language: sourceLanguage }); }
+    } else {
+      // Global youtube-cache: reuse if any prior project already downloaded this videoId
+      try {
+        const { extractVideoId } = await import("../services/youtube.js");
+        const { cachedVideoMeta, sourcePath: sp } = await import("../services/storage.js");
+        const vid = extractVideoId(source);
+        if (vid) {
+          const hit = cachedVideoMeta(vid);
+          if (hit) {
+            console.log(`[jobRunner] reusing cached video ${vid} from ${hit.path}`);
+            const ext = path.extname(hit.path) || ".mp4";
+            const dest = sp(projectId, ext);
+            fs.mkdirSync(path.dirname(dest), { recursive: true });
+            try { fs.copyFileSync(hit.path, dest); } catch {}
+            if (fs.existsSync(dest) && fs.statSync(dest).size > 2000) {
+              localVideo = dest;
+              parentPort?.postMessage({ type: "sourceReady", sourceKey: dest, language: sourceLanguage, videoId: vid, cached: true });
+              // Keep youtube-cache LRU fresh — main owns DB but we can touch file
+              try { fs.utimesSync(hit.path, new Date(), new Date()); } catch {}
+            } else {
+              localVideo = null;
+            }
+          }
+        }
+        if (localVideo) {
+          // Already satisfied via global cache — skip download entirely
+        } else {
+      console.log(`[jobRunner] getInfo ${source}`);
+      try {
+        const info = await getInfo(source);
+        sourceLanguage = String((info as Record<string, unknown>).language ?? (info as Record<string, unknown>).original_language ?? "") || null;
+        if (sourceLanguage) parentPort?.postMessage({ type: "meta", language: sourceLanguage });
+        console.log(`[jobRunner] getInfo ok lang=${sourceLanguage} title=${String((info as any).title ?? "").slice(0,60)}`);
+      } catch (e) {
+        console.warn(`[jobRunner] getInfo failed ${(e as Error).message?.slice(0,300)}`);
+      }
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clipzard_dl_"));
+      console.log(`[jobRunner] download start tmp=${tmpDir}`);
+      try {
+        const { ytdlpPath } = await import("../services/bin.js");
+        const bin = ytdlpPath();
+        console.log(`[jobRunner] ytdlp bin=${bin} exists=${fs.existsSync(bin)}`);
+        const { cookiesArgs } = await import("../services/youtube.js").then(() => ({ cookiesArgs: null })).catch(() => ({ cookiesArgs: null }));
+        // log cookies candidates via direct check
+        const candidates = [
+          process.env.YTDLP_COOKIEFILE,
+          process.env.USER_DATA_PATH ? `${process.env.USER_DATA_PATH}/cookies.txt` : null,
+          `${os.homedir()}/.config/clipzard-desktop/cookies.txt`,
+          "/tmp/cookies.txt",
+        ].filter(Boolean) as string[];
+        console.log(`[jobRunner] cookies candidates ${candidates.map(c => `${c}:${fs.existsSync(c as string)}`).join(", ")}`);
+      } catch {}
+      localVideo = await download(source, tmpDir, (f: number) => {
+        const p = Math.round(2 + 23 * f);
+        console.log(`[jobRunner] download progress ${Math.round(f*100)}% -> ${p}%`);
+        postProgress("downloading", p);
+      });
+      console.log(`[jobRunner] download done ${localVideo}`);
+      const ext = path.extname(localVideo) || ".mp4";
+      const dest = sourcePath(projectId, ext);
+      fs.copyFileSync(localVideo, dest);
+      localVideo = dest;
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+      try {
+              const { extractVideoId: ev2 } = await import("../services/youtube.js");
+              const vid2 = ev2(source);
+              if (vid2) parentPort?.postMessage({ type: "sourceReady", sourceKey: dest, language: sourceLanguage, videoId: vid2 });
+              else parentPort?.postMessage({ type: "sourceReady", sourceKey: dest, language: sourceLanguage });
+            } catch { parentPort?.postMessage({ type: "sourceReady", sourceKey: dest, language: sourceLanguage }); }
+        }
+      } catch {}
+    }
   } else {
     // upload: copy is instant, go straight to transcribing — no downloading stage
     postProgress("transcribing", 5);

@@ -36,11 +36,18 @@ try {
      ipcRenderer.on("models:progress", handler);
      return () => ipcRenderer.removeListener("models:progress", handler);
    },
-     onJobProgress: (cb: (data: unknown) => void) => {
-     const handler = (_: unknown, data: unknown) => cb(data);
-     ipcRenderer.on("job:progress", handler);
-     return () => ipcRenderer.removeListener("job:progress", handler);
-   },
+      onJobProgress: (cb: (data: unknown) => void) => {
+      const handler = (_: unknown, data: unknown) => cb(data);
+      ipcRenderer.on("job:progress", handler);
+      return () => ipcRenderer.removeListener("job:progress", handler);
+    },
+      getJobLogs: (jobId: string) => ipcRenderer.invoke("jobs:logs", jobId),
+      clearJobLogs: (jobId: string) => ipcRenderer.invoke("jobs:clearLogs", jobId),
+      onJobLog: (cb: (data: unknown) => void) => {
+      const handler = (_: unknown, data: unknown) => cb(data);
+      ipcRenderer.on("job:log", handler);
+      return () => ipcRenderer.removeListener("job:log", handler);
+    },
   });
   console.log("[preload] exposed clipzard");
 } catch (e) {
@@ -59,9 +66,13 @@ declare global {
       projectDelete: (id: string) => Promise<unknown>;
       jobStart: (p: string, o?: unknown) => Promise<unknown>;
       jobRender: (p: string, c: string, o?: unknown) => Promise<unknown>;
+      jobCancel: (id: string) => Promise<unknown>;
       jobGet: (id: string) => Promise<unknown>;
       clipsList: (p: string) => Promise<unknown>;
       onJobProgress: (cb: (d: unknown) => void) => () => void;
+      getJobLogs: (jobId: string) => Promise<unknown>;
+      clearJobLogs: (jobId: string) => Promise<unknown>;
+      onJobLog: (cb: (d: unknown) => void) => () => void;
     };
   }
 }

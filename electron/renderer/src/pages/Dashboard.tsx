@@ -7,6 +7,7 @@ import {
   Clock,
   FilmReel,
   Plus,
+  Terminal,
   Trash,
   Warning,
   X,
@@ -20,7 +21,7 @@ import { Card, EmptyState, Skeleton } from "@/components/ui/card";
 import { StatusPill } from "@/components/ui/status-pill";
 import { SourceTypeIcon } from "@/components/project/source-icon";
 import { UpgradeRequired, isPaywall } from "@/components/upgrade-required";
-import { useCreateProject, useDeleteProject, usePurgeProject, useProjects, useRestoreProject, useTrashProjects } from "@/hooks/use-projects";
+import { useCancelJob, useCreateProject, useDeleteProject, usePurgeProject, useProjects, useRestoreProject, useTrashProjects } from "@/hooks/use-projects";
 
 const TRASH_RETENTION_DAYS = 30;
 
@@ -35,6 +36,7 @@ export default function DashboardPage() {
   const navigate = useNavigate();
   const [view, setView] = useState<"active" | "trash">("active");
   const projectsQuery = useProjects();
+  const cancelJob = useCancelJob();
   const trashQuery = useTrashProjects();
   const createProject = useCreateProject();
   const deleteProject = useDeleteProject();
@@ -384,6 +386,16 @@ export default function DashboardPage() {
                   <Clock size={13} />
                   {p.clip_count} clip{p.clip_count === 1 ? "" : "s"}
                 </span>
+                {(p.status === "running" || p.status === "queued") && (
+                  <>
+                    <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); const jid = (p as unknown as { running_job_id?: string }).running_job_id; if (!jid) { navigate(`/projects/${p.id}`); return; } if (!window.confirm(`Stop "${p.title}"? Next run will start from scratch.`)) return; cancelJob.mutate(jid); }} className="inline-flex items-center gap-1 rounded-md border border-line bg-surface-2 px-2 py-1 text-xs font-medium text-ink-secondary hover:bg-danger/10 hover:text-danger">
+                      <X size={11} weight="bold" />Stop
+                    </button>
+                    <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); navigate(`/projects/${p.id}`); }} className="inline-flex items-center gap-1 rounded-md border border-line bg-surface-2 px-2 py-1 text-xs font-medium text-ink-secondary hover:bg-surface-3 hover:text-ink">
+                      <Terminal size={11} />View log
+                    </button>
+                  </>
+                )}
                 <StatusPill status={p.status} />
                 <button
                   type="button"

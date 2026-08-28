@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { API_URL, api } from "@/lib/api";
 import { renderClipInBrowser } from "@/lib/client-render/renderer";
 import { clientRenderEnabled } from "@/lib/client-render/support";
@@ -51,7 +51,7 @@ export function useProject(id: string) {
   });
 }
 
-const TERMINAL_STATUSES = new Set(["completed", "failed"]);
+const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
 
 /**
  * Polls a job's status every 2s while it's queued/running, and stops once
@@ -346,6 +346,42 @@ export function usePurgeProject() {
       queryClient.invalidateQueries({ queryKey: projectsKey });
       queryClient.invalidateQueries({ queryKey: trashKey });
       queryClient.invalidateQueries({ queryKey: settingsKey });
+    },
+  });
+}
+
+export type JobLog = { id: string; job_id: string; ts: string; level: string; stage: string | null; message: string };
+
+export function useJobLogs(jobId: string) {
+  const [logs, setLogs] = useState<JobLog[]>([]);
+  useEffect(() => {
+    if (!jobId) return;
+    const w = window as unknown as { clipzard?: { getJobLogs?: (id: string) => Promise<unknown>; onJobLog?: (cb: (d: unknown) => void) => () => void } };
+    if (w.clipzard?.getJobLogs) {
+      w.clipzard.getJobLogs(jobId).then((rows) => {
+        if (Array.isArray(rows)) setLogs(rows as JobLog[]);
+      }).catch(() => {});
+    }
+    const off = w.clipzard?.onJobLog?.((data) => {
+      const d = data as { jobId?: string; log?: JobLog };
+      if (d?.jobId === jobId && d?.log) setLogs((prev: JobLog[]) => [...prev, d.log as JobLog]);
+    });
+    return () => { off?.(); };
+  }, [jobId]);
+  return logs;
+}
+
+export function useCancelJob() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (jobId: string) => {
+      const w = window as unknown as { clipzard?: { jobCancel?: (id: string) => Promise<unknown> } };
+      if (w.clipzard?.jobCancel) return w.clipzard.jobCancel(jobId) as Promise<void>;
+      return api.post<void>(`/jobs/${jobId}/cancel`, {});
+    },
+    onSuccess: (_data, jobId) => {
+      queryClient.invalidateQueries({ queryKey: jobKey(jobId) });
+      queryClient.invalidateQueries({ queryKey: projectsKey });
     },
   });
 }
