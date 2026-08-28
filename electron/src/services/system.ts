@@ -39,15 +39,18 @@ export function llmModelForTier(t: Tier): { file: string; url: string } {
   if (raw === "tiny" || raw === "nano" || raw === "0.5b") {
     return { file: "qwen2.5-0.5b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf" };
   }
-  if (raw === "balanced" || raw === "1.5b") {
-    return { file: "qwen2.5-1.5b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf" };
-  }
   if (raw === "quality" || raw === "3b") {
     return { file: "qwen2.5-3b-q4_k_m.gguf", url: "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf" };
   }
-  if (t === "high") return { file: "qwen2.5-14b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf" };
-  if (t === "mid") return { file: "qwen2.5-7b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf" };
-  // low — 1.5B is new sweet spot (950 MB) vs old 3B (2 GB)
+  if (raw === "7b" || raw === "mid") {
+    return { file: "qwen2.5-7b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf" };
+  }
+  if (raw === "14b" || raw === "high") {
+    return { file: "qwen2.5-14b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf" };
+  }
+  // Default for ALL tiers (low/mid/high, balanced, unset): 1.5B — 950 MB,
+  // fastest download + fastest inference with usable JSON quality.
+  // Opt back up with LLM_TIER=7b / 14b or Settings → Local AI Models.
   return { file: "qwen2.5-1.5b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf" };
 }
 

@@ -144,31 +144,63 @@ function llmModelPath(): string {
   return path.join(getUserDataPath(), "models", "llm", f);
 }
 
+const LLM_EXPECTED_MB: Record<string, number> = {
+  "qwen2.5-0.5b-q4_k_m.gguf": 380,
+  "qwen2.5-1.5b-q4_k_m.gguf": 950,
+  "qwen2.5-3b-q4_k_m.gguf": 2000,
+  "qwen2.5-7b-q4_k_m.gguf": 4700,
+  "qwen2.5-14b-q4_k_m.gguf": 8500,
+};
+
 async function ensureLlmModel(onProgress?: (f: number) => void): Promise<string> {
   const tier = ramTier();
   const { file, url } = llmModelForTier(tier);
   const dest = path.join(getUserDataPath(), "models", "llm", file);
-  if (fs.existsSync(dest) && fs.statSync(dest).size > 1024 * 1024) return dest;
+  if (fs.existsSync(dest)) {
+    const sz = fs.statSync(dest).size;
+    const expMb = LLM_EXPECTED_MB[file];
+    // Truncated download (llama.cpp fails with "data is not within the file
+    // bounds") — delete and re-download instead of failing on every job.
+    if (expMb && sz < expMb * 1024 * 1024 * 0.85) {
+      console.warn(`[analyzer] LLM model ${file} truncated (${(sz / 1048576).toFixed(0)} MB < 85% of ${expMb} MB) — re-downloading`);
+      try { fs.unlinkSync(dest); } catch {}
+    } else if (sz > 1024 * 1024) return dest;
+  }
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   const envUrl = process.env.LLM_MODEL_URL ?? url;
-  await downloadFile(envUrl, dest, onProgress);
+  const expectedBytes = (LLM_EXPECTED_MB[file] ?? 0) * 1048576;
+  console.log(`[analyzer] LLM model not found — downloading ${file}${expectedBytes ? ` (~${(expectedBytes / 1048576).toFixed(0)} MB)` : ""} to ${dest} (this can take minutes). Pre-download with: npm run setup:models`);
+  let lastLogged = -1;
+  await downloadFile(envUrl, dest, (f) => {
+    onProgress?.(f);
+    const pct = Math.floor(f * 100);
+    if (pct % 5 === 0 && pct !== lastLogged) { lastLogged = pct; console.log(`[analyzer] LLM download ${pct}%`); }
+  }, expectedBytes);
   return dest;
 }
 
-function downloadFile(url: string, dest: string, onProgress?: (f: number) => void): Promise<void> {
+function downloadFile(url: string, dest: string, onProgress?: (f: number) => void, expectedBytes = 0): Promise<void> {
   return new Promise((resolve, reject) => {
     const h = url.startsWith("https") ? require("node:https") : require("node:http");
     const file = fs.createWriteStream(dest);
     h.get(url, (res: { statusCode?: number; headers: Record<string, string>; pipe: (s: unknown) => void; on: (e: string, cb: (c: Buffer) => void) => void }) => {
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         file.close(); fs.unlink(dest, () => {});
-        downloadFile(res.headers.location, dest, onProgress).then(resolve, reject);
+        downloadFile(res.headers.location, dest, onProgress, expectedBytes).then(resolve, reject);
         return;
       }
       if (res.statusCode !== 200) { reject(new AnalysisError(`LLM download ${res.statusCode}`)); return; }
-      const total = parseInt(res.headers["content-length"] ?? "0", 10);
+      // HF often streams chunked (no content-length) — fall back to the known
+      // expected size so progress actually moves instead of sticking at 0%.
+      const total = parseInt(res.headers["content-length"] ?? "0", 10) || expectedBytes;
       let done = 0;
-      res.on("data", (c: Buffer) => { done += c.length; if (onProgress && total) onProgress(done / total); });
+      let lastMbLog = 0;
+      res.on("data", (c: Buffer) => {
+        done += c.length;
+        if (!onProgress) return;
+        if (total) onProgress(Math.min(1, done / total));
+        else if (done - lastMbLog >= 25 * 1048576) { lastMbLog = done; console.log(`[analyzer] LLM downloaded ${(done / 1048576).toFixed(0)} MB`); }
+      });
       res.pipe(file);
       file.on("finish", () => { file.close(); resolve(); });
       file.on("error", reject);
@@ -198,6 +230,12 @@ export async function analyze(transcript: string, words?: { text: string; start_
   const minDuration = opts.minDuration ?? 15;
   const maxDuration = opts.maxDuration ?? 90;
   if (!transcript.trim() && !words?.length) throw new AnalysisError("empty transcript");
+  // CLIPZARD_FORCE_MOCK=1 → skip local LLM entirely (no multi-GB model download).
+  // Used by verify scripts; the app itself never sets this.
+  if (process.env.CLIPZARD_FORCE_MOCK === "1") {
+    console.log("[analyzer] CLIPZARD_FORCE_MOCK=1 — using mock analyzer");
+    return mockAnalyze(words, transcript, minDuration, maxDuration, opts.language);
+  }
   const apiKey = process.env.LLM_API_KEY?.trim();
   const baseUrl = process.env.LLM_BASE_URL?.trim();
   if (apiKey && baseUrl) {
@@ -267,7 +305,20 @@ async function analyzeLocal(transcript: string, words: { text: string; start_ms:
   const modelPath = await ensureLlmModel((f) => opts.onProgress?.(f * 0.3));
   const { getLlama, LlamaChatSession } = await import("node-llama-cpp");
   const llama = await getLlama();
-  const model = await llama.loadModel({ modelPath });
+  // Load with one corrupt-model retry: llama.cpp fails with "data is not
+  // within the file bounds" on truncated GGUFs — delete + re-download + retry.
+  let model: Awaited<ReturnType<typeof llama.loadModel>>;
+  try {
+    model = await llama.loadModel({ modelPath });
+  } catch (e) {
+    const msg = String((e as Error).message ?? e);
+    if (/corrupt|file bounds|failed to load model|not all tensors/i.test(msg)) {
+      console.warn(`[analyzer] LLM model corrupted (${msg.slice(0, 160)}) — deleting and re-downloading once`);
+      try { fs.unlinkSync(modelPath); } catch {}
+      const freshPath = await ensureLlmModel((f) => opts.onProgress?.(f * 0.3));
+      model = await llama.loadModel({ modelPath: freshPath });
+    } else throw e;
+  }
   const context = await model.createContext();
   const session = new LlamaChatSession({ contextSequence: context.getSequence(), systemPrompt });
   const collected: { title: string; hook?: string; start: number; end: number }[] = [];

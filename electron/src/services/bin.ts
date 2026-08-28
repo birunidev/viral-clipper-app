@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 
 export function getResourceBase(): string {
   if (process.env.RESOURCES_PATH) return process.env.RESOURCES_PATH;
@@ -25,7 +26,7 @@ export function resolveBin(name: string): string | null {
   const base = getResourceBase();
   const plat = platformDir();
   const arch = archSuffix();
-  const electronRoot = path.resolve(path.join(path.dirname(new URL(import.meta.url).pathname), "..", ".."));
+  const electronRoot = path.resolve(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".."));
   const candidates = [
     path.join(base, "bin", `${plat}-${arch}`, name),
     path.join(base, "bin", plat, name),

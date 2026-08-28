@@ -7,11 +7,15 @@ import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url);
-const root = path.resolve(path.join(path.dirname(new URL(import.meta.url).pathname), ".."));
+const root = path.resolve(path.join(path.dirname(fileURLToPath(import.meta.url)), ".."));
 const tmp = process.env.USER_DATA_PATH ?? fs.mkdtempSync(path.join(os.tmpdir(), "cf-verify-"));
 if (!process.env.USER_DATA_PATH) process.env.USER_DATA_PATH = tmp;
+// This script intentionally exercises the MOCK pipeline (no whisper binary needed).
+// The app itself refuses to mock unless CLIPZARD_ALLOW_MOCK=1 — opt in here only.
+process.env.CLIPZARD_ALLOW_MOCK = "1";
 
 console.log(`[verify] root=${root}`);
 console.log(`[verify] USER_DATA_PATH=${process.env.USER_DATA_PATH} (tmp=${tmp})`);
@@ -59,7 +63,7 @@ check("yt-dlp binary (yt-dlp-exec)", () => {
 
 // 2. DB — handles both node:sqlite (null-prototype row, [Object: null prototype] {c:0}) and JSON fallback (no count(*) support)
 await asyncCheck("DB (node:sqlite or JSON fallback)", async () => {
-  const { getRaw, getDbPathExport } = await import(path.join(root, "dist/services/db.js"));
+  const { getRaw, getDbPathExport } = await import(pathToFileURL(path.join(root, "dist/services/db.js")).href);
   const db = getRaw();
   // Prefer count(*), fall back to SELECT * length for JSON fallback
   let counted = null;
@@ -82,14 +86,14 @@ await asyncCheck("DB (node:sqlite or JSON fallback)", async () => {
 
 // 3. pipeline mocks (no binaries needed)
 await asyncCheck("analyzer mock (no LLM binary)", async () => {
-  const { analyze } = await import(path.join(root, "dist/services/analyzer.js"));
+  const { analyze } = await import(pathToFileURL(path.join(root, "dist/services/analyzer.js")).href);
   const words = [{ text: "halo", start_ms: 0, end_ms: 200 }, { text: "bitcoin", start_ms: 200, end_ms: 400 }];
   const clips = await analyze("halo bitcoin market turun karena the fed hawkish", words, { language: "id", minDuration: 10, maxDuration: 60 });
   if (!clips.length) throw new Error("no clips from mock analyze");
 });
 
 await asyncCheck("transcriber mock (no whisper-cli)", async () => {
-  const { transcribeWithWords } = await import(path.join(root, "dist/services/transcriber.js"));
+  const { transcribeWithWords } = await import(pathToFileURL(path.join(root, "dist/services/transcriber.js")).href);
   const dummy = path.join(tmp, "dummy.mp4");
   fs.writeFileSync(dummy, Buffer.alloc(100));
   const t = await transcribeWithWords(dummy);
@@ -110,7 +114,7 @@ await asyncCheck("cutter buildCommand + ffmpeg cut (1s blank clip)", async () =>
   fs.mkdirSync(outDir, { recursive: true });
   const gen = spawnSync(ffmpeg, ["-y", "-f", "lavfi", "-i", "color=c=black:s=320x240:d=2:r=30", "-f", "lavfi", "-i", "anullsrc", "-t", "2", "-c:v", "libx264", "-c:a", "aac", "-shortest", src], { stdio: "pipe" });
   if (gen.status !== 0) throw new Error("ffmpeg gen failed: " + gen.stderr?.toString().slice(0,400));
-  const { cutClip } = await import(path.join(root, "dist/services/cutter.js"));
+  const { cutClip } = await import(pathToFileURL(path.join(root, "dist/services/cutter.js")).href);
   const out = await cutClip(src, 0, 1, "Test Clip", outDir, 1, "portrait", null, null, null);
   if (!fs.existsSync(out)) throw new Error("cut output missing");
 });

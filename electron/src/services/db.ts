@@ -100,8 +100,15 @@ async function ensureElectronDb(): Promise<void> {
       const mod = require("sqlite-electron");
       sqliteElectron = mod;
       const p = getDbPath();
-      await sqliteElectron.setdbPath(p);
-      await sqliteElectron.executeScript(SCHEMA);
+      // Windows: path with spaces (e.g. "C:\Users\AL EL FAMILY\...") can hang sqlite-electron's
+      // Python child if not handled; race with timeout so initDb never blocks window creation.
+      const withTimeout = <T>(pr: Promise<T>, ms: number, label: string): Promise<T> =>
+        Promise.race([
+          pr,
+          new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`${label} timeout after ${ms}ms`)), ms)),
+        ]);
+      await withTimeout(sqliteElectron.setdbPath(p), 8000, "sqlite-electron setdbPath");
+      await withTimeout(sqliteElectron.executeScript(SCHEMA), 8000, "sqlite-electron executeScript");
       electronReady = true;
       console.log("[db] sqlite-electron ready at", p);
       // Migrate JSON fallback if DB empty but JSON has data
@@ -136,20 +143,40 @@ async function ensureElectronDb(): Promise<void> {
         }
       } catch (e) { console.warn("[db] json migrate failed", e); }
     } catch (e) {
-      console.warn("[db] sqlite-electron init failed, falling back to node:sqlite/json", String(e).slice(0,400));
+      console.warn("[db] sqlite-electron init failed, falling back to node:sqlite/json", String(e).slice(0,800));
       sqliteElectron = null;
+      // allow retry via fallback path instead of stuck promise
+      electronReady = false;
+      electronReadyPromise = null;
     }
   })();
-  return electronReadyPromise;
+  try {
+    await electronReadyPromise;
+  } catch (e) {
+    console.warn("[db] sqlite-electron init error (outer)", String(e).slice(0,800));
+    sqliteElectron = null;
+    electronReady = false;
+    electronReadyPromise = null;
+  }
+  return;
 }
 
 export async function initDb(): Promise<void> {
   if (isElectronMain()) {
-    await ensureElectronDb();
+    try {
+      await ensureElectronDb();
+    } catch (e) {
+      console.warn("[db] ensureElectronDb threw, falling back", String(e).slice(0,400));
+    }
     if (electronReady) return;
   }
-  // non-electron or fallback: trigger sync init
-  getDbInnerSync();
+  // non-electron or fallback: trigger sync init (node:sqlite or JSON)
+  try {
+    getDbInnerSync();
+    console.log("[db] fallback db ready at", getDbPath());
+  } catch (e) {
+    console.warn("[db] fallback init failed", String(e).slice(0,400));
+  }
 }
 
 export function isSqliteElectron(): boolean { return electronReady && !!sqliteElectron; }
@@ -195,13 +222,24 @@ function createJsonFallback(p: string) {
   const tables=["projects","jobs","clips","timeline_words","caption_styles","license_cache","job_logs","youtube_cache"]; for(const t of tables) if(!data[t]) data[t]=[];
   const persist=()=>{ try{ fs.writeFileSync(jsonPath, JSON.stringify(data,null,2)); }catch{} };
   const matchWhere=(rows:Record<string,unknown>[], sql:string, params:unknown[])=>{ const lower=sql.toLowerCase(); if(lower.includes("where deleted_at is not null")) return rows.filter(r=>!!(r as any).deleted_at); if(lower.includes("where deleted_at is null")) return rows.filter(r=>!(r as any).deleted_at); if(lower.includes("where id=?")||lower.includes("where id =?")) return rows.filter(r=>String(r.id)===String(params[0])); if(lower.includes("where project_id=?")||lower.includes("where project_id =?")) return rows.filter(r=>String((r as any).project_id)===String(params[0])); if(lower.includes("where project_id=? and clip_id=?")) return rows.filter(r=>String((r as any).project_id)===String(params[0])&&String((r as any).clip_id)===String(params[1])); return rows; };
+  const dedupById = (rows: Record<string,unknown>[]): Record<string,unknown>[] => {
+    const seen = new Set<string>();
+    const out: Record<string,unknown>[] = [];
+    for (const r of rows) {
+      const k = String((r as Record<string,unknown>).id ?? `${(r as Record<string,unknown>).project_id ?? ""}:${(r as Record<string,unknown>).idx ?? Math.random()}`);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(r);
+    }
+    return out;
+  };
   return {
     prepare(sql:string): Stmt {
       const lower=sql.trim().toLowerCase();
       return {
-        get: (...params: unknown[])=>{ if(lower.startsWith("select")){ reload(); const m=sql.match(/from\s+(\w+)/i); const table=m?.[1]; if(!table||!data[table]) return undefined; let rows=data[table] as Record<string,unknown>[]; if(lower.includes("where")) rows=matchWhere(rows,sql,params); if(lower.includes("order by")){ if(lower.includes("updated_at desc")) rows=[...rows].sort((a,b)=>String(b.updated_at).localeCompare(String(a.updated_at))); if(lower.includes("start_time")) rows=[...rows].sort((a,b)=>Number(a.start_time)-Number(b.start_time)); if(lower.includes("idx")) rows=[...rows].sort((a,b)=>Number(a.idx)-Number(b.idx)); } return rows[0]; } return undefined; },
-        all: (...params: unknown[])=>{ if(lower.startsWith("select")){ reload(); const m=sql.match(/from\s+(\w+)/i); const table=m?.[1]; if(!table||!data[table]) return []; let rows=data[table] as Record<string,unknown>[]; if(lower.includes("where")) rows=matchWhere(rows,sql,params); if(lower.includes("order by")){ if(lower.includes("updated_at desc")) rows=[...rows].sort((a,b)=>String(b.updated_at).localeCompare(String(a.updated_at))); if(lower.includes("start_time")) rows=[...rows].sort((a,b)=>Number(a.start_time)-Number(b.start_time)); if(lower.includes("idx")) rows=[...rows].sort((a,b)=>Number(a.idx)-Number(b.idx)); if(lower.includes("created_at desc")) rows=[...rows].sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at))); } return rows; } return []; },
-        run: (...params: unknown[])=>{ reload(); if(lower.startsWith("insert")){ const m=sql.match(/into\s+(\w+)\s*\(([^)]+)\)/i); const table=m?.[1]; const cols=m?.[2].split(",").map(s=>s.trim()); if(table&&cols&&data[table]){ const row:Record<string,unknown>={}; cols.forEach((c,i)=>(row[c]=params[i])); if(lower.includes("or replace")){ const idx=(data[table] as Record<string,unknown>[]).findIndex(r=>String(r.id)===String(row.id)); if(idx>=0) (data[table] as Record<string,unknown>[])[idx]={...(data[table] as Record<string,unknown>[])[idx],...row}; else (data[table] as unknown[]).push(row); } else (data[table] as unknown[]).push(row); persist(); } return {}; } if(lower.startsWith("update")){ const m=sql.match(/update\s+(\w+)/i); const table=m?.[1]; if(table&&data[table]){ const lowerSql=sql.toLowerCase(); if(lowerSql.includes("set deleted_at=null")&&lowerSql.includes("where id=?")){ const updatedAt=params[0]; const idVal=params[1]; for(const r of data[table] as Record<string,unknown>[]) if(String(r.id)===String(idVal)){ r.deleted_at=null; (r as any).updated_at=updatedAt; } persist(); return {}; } if(lowerSql.includes("set deleted_at=?")&&lowerSql.includes("where id=?")){ const deletedAt=params[0]; const idVal=params[1]; for(const r of data[table] as Record<string,unknown>[]) if(String(r.id)===String(idVal)) r.deleted_at=deletedAt; persist(); return {}; } const setMatch=sql.match(/set\s+(.+?)\s+where/i); const whereMatch=sql.match(/where\s+(.+)/i); if(setMatch&&whereMatch){ const setParts=setMatch[1].split(",").map(s=>s.trim()); const setCols:string[]=[]; const setVals:unknown[]=[]; setParts.forEach(part=>{ const eqIdx=part.indexOf("="); const col=part.slice(0,eqIdx).trim(); const valRaw=part.slice(eqIdx+1).trim(); setCols.push(col); if(valRaw==="?") setVals.push("__PLACEHOLDER__"); else if(valRaw.toUpperCase()==="NULL") setVals.push(null); else if(/^'.*'$/.test(valRaw)||/^".*"$/.test(valRaw)) setVals.push(valRaw.slice(1,-1)); else if(!isNaN(Number(valRaw))) setVals.push(Number(valRaw)); else setVals.push(valRaw); }); const wherePart=whereMatch[1].trim().toLowerCase(); if(wherePart.includes("id=?")){ const idVal=params[params.length-1]; const valMap:Record<string,unknown>={}; let pIdx=0; setCols.forEach((c,i)=>{ if(setVals[i]==="__PLACEHOLDER__") valMap[c]=params[pIdx++]; else valMap[c]=setVals[i]; }); for(const r of data[table] as Record<string,unknown>[]) if(String(r.id)===String(idVal)) Object.assign(r,valMap); } persist(); } } return {}; } if(lower.startsWith("delete")){ const m=sql.match(/from\s+(\w+)/i); const table=m?.[1]; if(table&&data[table]){ if(lower.includes("where id=?")){ const idVal=params[0]; const before=(data[table] as unknown[]).length; data[table]=(data[table] as Record<string,unknown>[]).filter(r=>String(r.id)!==String(idVal)); if(table==="projects"&&(data[table] as unknown[]).length<before){ const pid=String(idVal); for(const t of ["clips","jobs","timeline_words"] as const) if(data[t]) data[t]=(data[t] as Record<string,unknown>[]).filter(r=>String(r.project_id)!==pid); } persist(); } else if(lower.includes("where project_id=?")){ data[table]=(data[table] as Record<string,unknown>[]).filter(r=>String(r.project_id)!==String(params[0])); persist(); } } return {}; } return {}; },
+        get: (...params: unknown[])=>{ if(lower.startsWith("select")){ reload(); const m=sql.match(/from\s+(\w+)/i); const table=m?.[1]; if(!table||!data[table]) return undefined; let rows=dedupById(data[table] as Record<string,unknown>[]); if(lower.includes("where")) rows=matchWhere(rows,sql,params); if(lower.includes("order by")){ if(lower.includes("updated_at desc")) rows=[...rows].sort((a,b)=>String(b.updated_at).localeCompare(String(a.updated_at))); if(lower.includes("start_time")) rows=[...rows].sort((a,b)=>Number(a.start_time)-Number(b.start_time)); if(lower.includes("idx")) rows=[...rows].sort((a,b)=>Number(a.idx)-Number(b.idx)); } return rows[0]; } return undefined; },
+        all: (...params: unknown[])=>{ if(lower.startsWith("select")){ reload(); const m=sql.match(/from\s+(\w+)/i); const table=m?.[1]; if(!table||!data[table]) return []; let rows=dedupById(data[table] as Record<string,unknown>[]); if(lower.includes("where")) rows=matchWhere(rows,sql,params); if(lower.includes("order by")){ if(lower.includes("updated_at desc")) rows=[...rows].sort((a,b)=>String(b.updated_at).localeCompare(String(a.updated_at))); if(lower.includes("start_time")) rows=[...rows].sort((a,b)=>Number(a.start_time)-Number(b.start_time)); if(lower.includes("idx")) rows=[...rows].sort((a,b)=>Number(a.idx)-Number(b.idx)); if(lower.includes("created_at desc")) rows=[...rows].sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at))); } return rows; } return []; },
+        run: (...params: unknown[])=>{ reload(); if(lower.startsWith("insert")){ const m=sql.match(/into\s+(\w+)\s*\(([^)]+)\)/i); const table=m?.[1]; const cols=m?.[2].split(",").map(s=>s.trim()); if(table&&cols&&data[table]){ const row:Record<string,unknown>={}; cols.forEach((c,i)=>(row[c]=params[i])); if(lower.includes("or replace")){ const idx=(data[table] as Record<string,unknown>[]).findIndex(r=>String(r.id)===String(row.id)); if(idx>=0) (data[table] as Record<string,unknown>[])[idx]={...(data[table] as Record<string,unknown>[])[idx],...row}; else (data[table] as unknown[]).push(row); } else if(lower.includes("or ignore")){ const exists=(data[table] as Record<string,unknown>[]).some(r=>String(r.id)===String(row.id)); if(!exists) (data[table] as unknown[]).push(row); } else { const exists=(data[table] as Record<string,unknown>[]).some(r=>String(r.id)===String(row.id)); if(!exists) (data[table] as unknown[]).push(row); else { const idx=(data[table] as Record<string,unknown>[]).findIndex(r=>String(r.id)===String(row.id)); if(idx>=0) (data[table] as Record<string,unknown>[])[idx]={...(data[table] as Record<string,unknown>[])[idx],...row}; } } persist(); } return {}; } if(lower.startsWith("update")){ const m=sql.match(/update\s+(\w+)/i); const table=m?.[1]; if(table&&data[table]){ const lowerSql=sql.toLowerCase(); if(lowerSql.includes("set deleted_at=null")&&lowerSql.includes("where id=?")){ const updatedAt=params[0]; const idVal=params[1]; for(const r of data[table] as Record<string,unknown>[]) if(String(r.id)===String(idVal)){ r.deleted_at=null; (r as any).updated_at=updatedAt; } persist(); return {}; } if(lowerSql.includes("set deleted_at=?")&&lowerSql.includes("where id=?")){ const deletedAt=params[0]; const idVal=params[1]; for(const r of data[table] as Record<string,unknown>[]) if(String(r.id)===String(idVal)) r.deleted_at=deletedAt; persist(); return {}; } const setMatch=sql.match(/set\s+(.+?)\s+where/i); const whereMatch=sql.match(/where\s+(.+)/i); if(setMatch&&whereMatch){ const setParts=setMatch[1].split(",").map(s=>s.trim()); const setCols:string[]=[]; const setVals:unknown[]=[]; setParts.forEach(part=>{ const eqIdx=part.indexOf("="); const col=part.slice(0,eqIdx).trim(); const valRaw=part.slice(eqIdx+1).trim(); setCols.push(col); if(valRaw==="?") setVals.push("__PLACEHOLDER__"); else if(valRaw.toUpperCase()==="NULL") setVals.push(null); else if(/^'.*'$/.test(valRaw)||/^".*"$/.test(valRaw)) setVals.push(valRaw.slice(1,-1)); else if(!isNaN(Number(valRaw))) setVals.push(Number(valRaw)); else setVals.push(valRaw); }); const wherePart=whereMatch[1].trim().toLowerCase(); if(wherePart.includes("id=?")){ const idVal=params[params.length-1]; const valMap:Record<string,unknown>={}; let pIdx=0; setCols.forEach((c,i)=>{ if(setVals[i]==="__PLACEHOLDER__") valMap[c]=params[pIdx++]; else valMap[c]=setVals[i]; }); for(const r of data[table] as Record<string,unknown>[]) if(String(r.id)===String(idVal)) Object.assign(r,valMap); } persist(); } } return {}; } if(lower.startsWith("delete")){ const m=sql.match(/from\s+(\w+)/i); const table=m?.[1]; if(table&&data[table]){ if(lower.includes("where id=?")){ const idVal=params[0]; const before=(data[table] as unknown[]).length; data[table]=(data[table] as Record<string,unknown>[]).filter(r=>String(r.id)!==String(idVal)); if(table==="projects"&&(data[table] as unknown[]).length<before){ const pid=String(idVal); for(const t of ["clips","jobs","timeline_words"] as const) if(data[t]) data[t]=(data[t] as Record<string,unknown>[]).filter(r=>String(r.project_id)!==pid); } persist(); } else if(lower.includes("where project_id=?")){ data[table]=(data[table] as Record<string,unknown>[]).filter(r=>String(r.project_id)!==String(params[0])); persist(); } } return {}; } return {}; },
       };
     },
     exec: (_sql:string)=>{},

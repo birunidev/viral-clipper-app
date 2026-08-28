@@ -36,13 +36,20 @@ function ramTier() {
   return "low";
 }
 function whisperFor(_t) { return "small"; }
+// Expected sizes (MB) — skip only if file is >= 85% of expected, else re-download
+const EXPECTED_MB = {
+  "ggml-tiny.bin": 76, "ggml-base.bin": 148, "ggml-small.bin": 488, "ggml-medium.bin": 1534,
+  "qwen2.5-0.5b-q4_k_m.gguf": 380, "qwen2.5-1.5b-q4_k_m.gguf": 950,
+  "qwen2.5-3b-q4_k_m.gguf": 2000, "qwen2.5-7b-q4_k_m.gguf": 4700, "qwen2.5-14b-q4_k_m.gguf": 8500,
+};
 function llmFor(t) {
   // keep in sync with src/services/system.ts — bartowski single-file builds avoid 404 sharded Qwen files
   const tiny = (process.env.LLM_TIER ?? "").toLowerCase();
   if (tiny === "tiny" || tiny === "nano" || tiny === "0.5b") return { file: "qwen2.5-0.5b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf" };
-  if (t === "high") return { file: "qwen2.5-14b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf" };
-  if (t === "mid") return { file: "qwen2.5-7b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf" };
-  // low — new default 1.5B (950 MB) replaces 3B (2 GB) to meet <2GB installer budget
+  if (tiny === "7b" || tiny === "mid") return { file: "qwen2.5-7b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf" };
+  if (tiny === "14b" || tiny === "high") return { file: "qwen2.5-14b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf" };
+  if (tiny === "quality" || tiny === "3b") return { file: "qwen2.5-3b-q4_k_m.gguf", url: "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf" };
+  // Default for ALL tiers: 1.5B (950 MB) — fastest download + inference. Opt up via LLM_TIER.
   return { file: "qwen2.5-1.5b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf" };
 }
 
@@ -65,9 +72,19 @@ function resolveOutDir() {
 function downloadFile(url, dest, label) {
   return new Promise((resolve, reject) => {
     fs.mkdirSync(path.dirname(dest), { recursive: true });
-    if (fs.existsSync(dest) && fs.statSync(dest).size > 1024 * 1024) {
-      console.log(`[models] skip ${label} — exists ${dest} (${(fs.statSync(dest).size/1024/1024).toFixed(1)} MB)`);
-      return resolve(dest);
+    if (fs.existsSync(dest)) {
+      const sz = fs.statSync(dest).size;
+      const expMb = EXPECTED_MB[path.basename(dest)];
+      // Skip only if complete (>= 85% of expected); truncated partial downloads
+      // (e.g. 737 MB "14B") must be deleted and re-downloaded, not skipped.
+      if (sz > 1024 * 1024 && (!expMb || sz >= expMb * 1024 * 1024 * 0.85)) {
+        console.log(`[models] skip ${label} — exists ${dest} (${(sz/1024/1024).toFixed(1)} MB)`);
+        return resolve(dest);
+      }
+      if (expMb && sz < expMb * 1024 * 1024 * 0.85) {
+        console.log(`[models] ${label} truncated (${(sz/1024/1024).toFixed(1)} MB < 85% of ${expMb} MB) — re-downloading`);
+        try { fs.unlinkSync(dest); } catch {}
+      }
     }
     const proto = url.startsWith("https") ? https : http;
     console.log(`[models] downloading ${label} -> ${dest}\n  from ${url}`);

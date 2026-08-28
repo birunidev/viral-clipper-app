@@ -6,6 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const url = process.argv[2];
 const keep = process.argv.includes("--keep");
@@ -16,14 +17,14 @@ if (!url || !/^https?:\/\//.test(url)) {
 }
 const tmp = process.env.USER_DATA_PATH ?? fs.mkdtempSync(path.join(os.tmpdir(), "cf-yt-"));
 if (!process.env.USER_DATA_PATH) process.env.USER_DATA_PATH = tmp;
-const root = path.resolve(path.join(path.dirname(new URL(import.meta.url).pathname), ".."));
+const root = path.resolve(path.join(path.dirname(fileURLToPath(import.meta.url)), ".."));
 
 console.log(`[yt] url=${url}`);
 console.log(`[yt] USER_DATA_PATH=${process.env.USER_DATA_PATH} tmp=${tmp} keep=${keep}`);
 console.log(`[yt] root=${root} node=${process.version}`);
 
-const { getRaw, nowIso } = await import(path.join(root, "dist/services/db.js"));
-const { runAnalyze, runRender } = await import(path.join(root, "dist/services/pipeline.js"));
+const { getRaw, nowIso } = await import(pathToFileURL(path.join(root, "dist/services/db.js")).href);
+const { runAnalyze, runRender } = await import(pathToFileURL(path.join(root, "dist/services/pipeline.js")).href);
 const db = getRaw();
 
 const projectId = `yt_${Date.now()}`;

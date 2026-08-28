@@ -26,6 +26,10 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { spawn, spawnSync, execSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { get as httpGet } from "node:http";
+import { get as httpsGet } from "node:https";
+import { createRequire } from "node:module";
 
 const args = process.argv.slice(2);
 const getArg = (k, d=null) => {
@@ -34,7 +38,7 @@ const getArg = (k, d=null) => {
 };
 const hasFlag = (k) => args.includes(`--${k}`);
 
-const root = path.resolve(path.join(path.dirname(new URL(import.meta.url).pathname), ".."));
+const root = path.resolve(path.join(path.dirname(fileURLToPath(import.meta.url)), ".."));
 const platformDir = process.platform === "win32" ? "win" : process.platform === "darwin" ? "mac" : "linux";
 const archSuffix = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "x64" : process.arch;
 const binDir = path.join(root, "resources", "bin", `${platformDir}-${archSuffix}`);
@@ -46,7 +50,10 @@ const whisperOnly = hasFlag("build-whisper-only");
 function log(m){ console.log(`[setup-ai] ${m}`); }
 function warn(m){ console.warn(`[setup-ai] WARN ${m}`); }
 function hasCmd(c){
-  try { return spawnSync(c, ["--version"], { stdio: "ignore" }).status === 0 || spawnSync("which", [c], { stdio: "ignore" }).status === 0; } catch { return false; }
+  try {
+    if (process.platform === "win32") return spawnSync("where", [c], { stdio: "ignore" }).status === 0 || spawnSync(c, ["--version"], { stdio: "ignore" }).status === 0;
+    return spawnSync(c, ["--version"], { stdio: "ignore" }).status === 0 || spawnSync("which", [c], { stdio: "ignore" }).status === 0;
+  } catch { return false; }
 }
 
 async function ensureWhisperBinary() {
@@ -80,7 +87,7 @@ async function ensureWhisperBinary() {
     const cloneOrPull = () => {
       if (!fs.existsSync(path.join(tmp, "CMakeLists.txt"))) {
         if (fs.existsSync(tmp)) fs.rmSync(tmp, { recursive: true, force: true });
-        const r = spawnSync("git", ["clone", "--depth", "1", "https://github.com/ggerganov/whisper.cpp.git", tmp], { stdio: "inherit" });
+        const r = spawnSync("git", ["clone", "--depth", "1", "https://github.com/ggml-org/whisper.cpp.git", tmp], { stdio: "inherit" });
         return r.status === 0;
       }
       return spawnSync("git", ["-C", tmp, "pull", "--ff-only"], { stdio: "inherit" }).status === 0;
@@ -92,30 +99,32 @@ async function ensureWhisperBinary() {
       if (!built || !fs.existsSync(built)) return false;
       fs.copyFileSync(built, whisperBin);
       try { fs.chmodSync(whisperBin, 0o755); } catch {}
-      // Gather sibling shared libs referenced by NEEDED (libwhisper.so.*, libggml.so.*, ...)
-      const deps = execSync(`ldd "${built}"`, { encoding: "utf8" }).split("\n")
-        .map(l => l.match(/=>\s+(\S+\.so(?:\.\d+)*)\s/)?.[1] ?? "")
-        .filter(Boolean);
-      const buildBin = path.dirname(built);
-      let copied = false;
-      for (const dep of deps) {
-        const base = path.basename(dep);
-        const src = path.join(buildBin, base);
-        if (dep.includes(`/build/`) && fs.existsSync(src)) {
-          fs.copyFileSync(src, path.join(binDir, base));
-          try { fs.chmodSync(path.join(binDir, base), 0o755); } catch {}
-          copied = true;
-        }
-      }
-      if (copied) {
-        // Re-point the binary's RUNPATH to binDir so it finds the copied libs.
+      if (process.platform !== "win32") {
         try {
-          const binDirShared = binDir;
-          execSync(`patchelf --set-rpath "${binDirShared}" "${whisperBin}" 2>/dev/null || true`);
+          const deps = execSync(`ldd "${built}"`, { encoding: "utf8" }).split("\n")
+            .map(l => l.match(/=>\s+(\S+\.so(?:\.\d+)*)\s/)?.[1] ?? "")
+            .filter(Boolean);
+          const buildBin = path.dirname(built);
+          let copied = false;
+          for (const dep of deps) {
+            const base = path.basename(dep);
+            const src = path.join(buildBin, base);
+            if (dep.includes(`/build/`) && fs.existsSync(src)) {
+              fs.copyFileSync(src, path.join(binDir, base));
+              try { fs.chmodSync(path.join(binDir, base), 0o755); } catch {}
+              copied = true;
+            }
+          }
+          if (copied) {
+            try {
+              execSync(`patchelf --set-rpath "${binDir}" "${whisperBin}" 2>/dev/null || true`);
+            } catch {}
+          }
         } catch {}
       }
       const sz = fs.statSync(whisperBin).size / 1024 / 1024;
-      const sm = spawnSync(whisperBin, ["--help"], { stdio: "pipe", env: { ...process.env, LD_LIBRARY_PATH: binDir } });
+      const envExtra = process.platform !== "win32" ? { LD_LIBRARY_PATH: binDir } : {};
+      const sm = spawnSync(whisperBin, ["--help"], { stdio: "pipe", env: { ...process.env, ...envExtra } });
       log(`installed whisper-cli -> ${whisperBin} (${sz.toFixed(1)} MB) smoke: ${sm.status===0 ? "ok" : "exit "+sm.status} ${String(sm.stdout||sm.stderr).slice(0,200)}`);
       if (sm.status !== 0) return false;
       return true;
@@ -161,20 +170,120 @@ async function ensureWhisperBinary() {
       path.join(tmp, "build", "main"),
     ]) if (fs.existsSync(cand)) { built = cand; break; }
     if (!built) {
-      try {
-        const out = execSync(`find ${tmp}/build -type f \\( -name "whisper-cli*" -o -name "main" \\) | head -n 5`, { encoding: "utf8" });
-        const first = out.trim().split("\n")[0];
-        if (first && fs.existsSync(first)) built = first;
-      } catch {}
+      if (process.platform !== "win32") {
+        try {
+          const out = execSync(`find ${tmp}/build -type f \\( -name "whisper-cli*" -o -name "main" \\) | head -n 5`, { encoding: "utf8" });
+          const first = out.trim().split("\n")[0];
+          if (first && fs.existsSync(first)) built = first;
+        } catch {}
+      } else {
+        // Windows: walk for whisper-cli.exe without Unix find
+        const walk = (d) => {
+          try {
+            for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+              const p = path.join(d, e.name);
+              if (e.isFile() && e.name.toLowerCase().startsWith("whisper-cli")) return p;
+              if (e.isDirectory()) { const r = walk(p); if (r) return r; }
+            }
+          } catch {}
+          return null;
+        };
+        built = walk(path.join(tmp, "build")) ?? null;
+      }
     }
     if (installFrom(built)) return true;
     warn("built binary failed smoke test (missing shared libs) — tried to copy libs beside it.");
+    // On Windows, fall back to prebuilt download even if build was attempted
+    if (process.platform === "win32") {
+      log("build failed — trying prebuilt download for Windows ...");
+      const downloaded = await downloadPrebuiltWhisperWindows();
+      if (downloaded) return true;
+    }
     return false;
   } else {
-    warn("make/g++ missing — install: sudo apt install -y cmake build-essential git");
+    // Windows fallback: download prebuilt whisper-cli.exe from GitHub releases
+    if (process.platform === "win32") {
+      log("cmake/make not found — trying prebuilt download for Windows ...");
+      const downloaded = await downloadPrebuiltWhisperWindows();
+      if (downloaded) return true;
+      warn("prebuilt download failed");
+    }
+    warn("make/g++ missing — install: sudo apt install -y cmake build-essential git  (Windows: install Visual Studio Build Tools + cmake + git)");
     warn("Skipping whisper build. You can still run mocks, or install deps and re-run.");
     return false;
   }
+}
+
+async function downloadPrebuiltWhisperWindows() {
+  // Official ggml-org/whisper.cpp CI binaries. whisper-bin-x64.zip contains
+  // whisper-cli.exe + required DLLs — ALL files must be copied to binDir.
+  const urls = [
+    "https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-bin-x64.zip",
+    "https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-blas-bin-x64.zip",
+  ];
+  for (const url of urls) {
+    try {
+      const tmpZip = path.join(os.tmpdir(), `whisper-win-${Date.now()}.zip`);
+      log(`downloading prebuilt whisper from ${url} ...`);
+      await downloadUrlToFile(url, tmpZip);
+      if (fs.statSync(tmpZip).size < 100_000) { warn(`downloaded zip too small (${fs.statSync(tmpZip).size} B) — bad mirror`); continue; }
+      const tmpDir = path.join(os.tmpdir(), `whisper-win-extract-${Date.now()}`);
+      fs.mkdirSync(tmpDir, { recursive: true });
+      // Use PowerShell Expand-Archive on Windows, unzip on other platforms
+      const expand = process.platform === "win32"
+        ? spawnSync("powershell", ["-Command", `Expand-Archive -Force -LiteralPath '${tmpZip}' -DestinationPath '${tmpDir}'`], { stdio: "inherit" })
+        : spawnSync("unzip", ["-o", tmpZip, "-d", tmpDir], { stdio: "inherit" });
+      if (expand.status !== 0) { warn(`extract failed for ${url}`); continue; }
+      // Locate whisper-cli (or legacy main.exe) inside the extraction tree
+      const findCli = (d) => {
+        try {
+          for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+            const p = path.join(d, e.name);
+            if (e.isFile()) {
+              const n = e.name.toLowerCase();
+              if (n === "whisper-cli.exe" || n === "whisper-cli" || n === "main.exe") return p;
+            } else if (e.isDirectory()) {
+              const r = findCli(p); if (r) return r;
+            }
+          }
+        } catch {}
+        return null;
+      };
+      const exePath = findCli(tmpDir);
+      if (!exePath) { warn(`no whisper-cli found inside ${url} zip`); continue; }
+      const srcDir = path.dirname(exePath);
+      // Copy EVERYTHING from the exe's folder (exe + ggml.dll + whisper.dll + ...)
+      for (const e of fs.readdirSync(srcDir, { withFileTypes: true })) {
+        if (!e.isFile()) continue;
+        fs.copyFileSync(path.join(srcDir, e.name), path.join(binDir, e.name));
+      }
+      try { fs.chmodSync(whisperBin, 0o755); } catch {}
+      log(`installed prebuilt bundle -> ${binDir} (${fs.readdirSync(binDir).length} files)`);
+      const sm = spawnSync(whisperBin, ["--help"], { stdio: "pipe" });
+      if (sm.status === 0) { log(`smoke test ok — real transcription ready`); return true; }
+      warn(`prebuilt binary smoke failed (exit ${sm.status}) ${String(sm.stderr || sm.stdout || "").slice(0, 200)} — trying next mirror`);
+    } catch (e) { warn(`prebuilt download from ${url} failed: ${String(e).slice(0,200)}`); }
+  }
+  return false;
+}
+
+function downloadUrlToFile(url, dest) {
+  return new Promise((resolve, reject) => {
+    const proto = url.startsWith("https") ? httpsGet : httpGet;
+    const file = fs.createWriteStream(dest);
+    const req = proto(url, { headers: { "User-Agent": "clipzard-setup" } }, (res) => {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        file.close(); fs.unlink(dest, () => {});
+        downloadUrlToFile(res.headers.location, dest).then(resolve, reject);
+        return;
+      }
+      if (res.statusCode !== 200) { reject(new Error(`download ${res.statusCode}`)); return; }
+      res.pipe(file);
+      file.on("finish", () => { file.close(); resolve(); });
+      file.on("error", reject);
+    });
+    req.on("error", reject);
+  });
 }
 
 async function downloadModels() {
@@ -208,9 +317,25 @@ async function rebuildLlama() {
   console.log(`[setup-ai] root=${root} plat=${platformDir}-${archSuffix} tier=${tierFlag ?? "auto (ram="+(os.totalmem()/1024**3).toFixed(1)+"GB)"}`);
   if (!whisperOnly) {
     // 1. ensure ffmpeg/yt-dlp present
-    const ff = path.join(root, "node_modules/ffmpeg-static/ffmpeg");
-    if (!fs.existsSync(ff)) warn("ffmpeg-static missing — run: npm install");
-    else log(`ffmpeg ${ff} present`);
+    const ffCandidates = [
+      path.join(root, "node_modules/ffmpeg-static/ffmpeg"),
+      path.join(root, "node_modules/ffmpeg-static/ffmpeg.exe"),
+    ];
+    const ff = ffCandidates.find((p) => fs.existsSync(p));
+    if (!ff) {
+      try {
+        const req = createRequire(import.meta.url);
+        const p = req("ffmpeg-static");
+        if (p && fs.existsSync(p)) log(`ffmpeg ${p} present`);
+        else warn("ffmpeg-static missing — run: npm install (in electron/)");
+      } catch { warn("ffmpeg-static missing — run: npm install (in electron/)"); }
+    } else log(`ffmpeg ${ff} present`);
+    // ensure dist built for verify-pipeline
+    const distMain = path.join(root, "dist/main.js");
+    if (!fs.existsSync(distMain)) {
+      log(`dist/main.js missing — running npx tsc ...`);
+      spawnSync("npx", ["tsc"], { cwd: root, stdio: "inherit" });
+    }
   }
   let okWhisper = true;
   if (!modelsOnly) okWhisper = await ensureWhisperBinary();

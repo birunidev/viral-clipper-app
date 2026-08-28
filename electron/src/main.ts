@@ -97,7 +97,15 @@ let fastApiUrl: string | null = null;
 
 app.whenReady().then(async () => {
   console.log("[main] userData", app.getPath("userData"), "appName", app.getName(), "isPackaged", app.isPackaged, "dbPath", getDbPathExport());
-  await initDb();
+  try {
+    await Promise.race([
+      initDb(),
+      new Promise<void>((_, rej) => setTimeout(() => rej(new Error("initDb timeout 10000ms")), 10_000)),
+    ]);
+  } catch (e) {
+    console.warn("[main] initDb failed/timeout, continuing to window", String(e).slice(0,500));
+    try { const { getDb } = await import("./services/db.js"); (getDb as any)(); } catch {}
+  }
   if (isLocalFastAPIEnabled()) {
     try {
       fastApiUrl = await startLocalFastAPI();
@@ -301,6 +309,9 @@ ipcMain.handle("caption-styles:create", async (_e, data: { label: string; config
 });
 
 const activeUtilities = new Map<string, Electron.UtilityProcess>();
+// One automatic NO_AUDIO_TRACK recovery per project (prevents infinite loops
+// for genuinely silent videos).
+const audioRetriedProjects = new Set<string>();
 
 // If a job is still marked running/queued but its backing utility is gone
 // (crashed, OOM-killed, or exited without a done/error message), reconcile it
@@ -561,6 +572,35 @@ async function runJobInUtility(jobId: string, projectId: string, clipId?: string
       const err = String(m.error ?? "unknown").slice(0, 800);
       console.error(`[main] utility error ${jobId} ${err}`);
       void emitLog(err, "error");
+      try {
+        // Video-only source (no audio track): purge the local source AND its
+        // global youtube-cache entry so the next run re-downloads a merged
+        // video+audio file instead of endlessly reusing the broken one.
+        if (err.includes("NO_AUDIO_TRACK")) {
+          const proj = await dbFetchOne<Record<string, unknown>>("SELECT source_key FROM projects WHERE id=?", [projectId]);
+          const srcKey = (proj?.source_key as string) ?? null;
+          if (srcKey) {
+            try { if (fs.existsSync(srcKey)) fs.unlinkSync(srcKey); } catch {}
+            try { await dbExecute("DELETE FROM youtube_cache WHERE file_path=?", [srcKey]); } catch {}
+          }
+          await dbExecute("UPDATE projects SET source_key=NULL, updated_at=? WHERE id=?", [nowIso(), projectId]);
+          // Auto-retry once per project: enqueue a fresh analyze job immediately.
+          if (!audioRetriedProjects.has(projectId)) {
+            audioRetriedProjects.add(projectId);
+            void emitLog("Purged video-only source + cache — auto re-downloading with merged audio", "warn");
+            const oldJob = await dbFetchOne<Record<string, unknown>>("SELECT options FROM jobs WHERE id=?", [jobId]);
+            const nnow = nowIso();
+            await dbExecute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?", ["video-only source purged, retrying with fresh download".slice(0, 500), nnow, jobId]);
+            await dbExecute("UPDATE projects SET status='queued', updated_at=? WHERE id=?", [nnow, projectId]);
+            const newJobId = randomUUID();
+            await dbExecute("INSERT INTO jobs (id, project_id, type, status, stage, progress, options, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)", [newJobId, projectId, "analyze", "queued", "queued", 0, String(oldJob?.options ?? "{}"), nnow, nnow]);
+            win?.webContents.send("job:progress", { jobId: newJobId, projectId, stage: "queued", progress: 0 });
+            void (async () => runJobInUtility(newJobId, projectId))();
+            return;
+          }
+          void emitLog("Purged video-only source again — the source video itself may have no audio track", "warn");
+        }
+      } catch {}
       try {
         await dbExecute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?", [err.slice(0, 500), nowIso(), jobId]);
         await dbExecute("UPDATE projects SET status='failed', updated_at=? WHERE id=?", [nowIso(), projectId]);

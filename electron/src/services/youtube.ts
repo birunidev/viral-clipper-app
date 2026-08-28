@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { createRequire } from "node:module";
-import { ytdlpPath } from "./bin.js";
+import { ytdlpPath, ffmpegPath } from "./bin.js";
 
 const require = createRequire(import.meta.url);
 
@@ -74,7 +74,11 @@ export function download(url: string, outDir: string, onProgress?: (f: number) =
   fs.mkdirSync(outDir, { recursive: true });
   const tmpl = path.join(outDir, "%(id)s.%(ext)s");
   const extra = cookiesArgs();
-  const args = [...extra, ...ejsArgs(), "-f", "bv*[height<=1080]+ba/b[height<=1080]/b", "--merge-output-format", "mp4", "-o", tmpl, "--newline", "--no-warnings", url];
+  // Point yt-dlp at our bundled ffmpeg — without it, bv*+ba merging is skipped
+  // and yt-dlp falls back to a VIDEO-ONLY stream (no audio → transcribe fails).
+  const ff = ffmpegPath();
+  const ffmpegArgs = fs.existsSync(ff) ? ["--ffmpeg-location", ff] : [];
+  const args = [...extra, ...ejsArgs(), ...ffmpegArgs, "-f", "bv*[height<=1080]+ba/b[height<=1080]/b", "--merge-output-format", "mp4", "-o", tmpl, "--newline", "--no-warnings", url];
   const binPath = bin();
   try {
     if (!fs.existsSync(binPath) && binPath !== "yt-dlp" && binPath !== "yt-dlp.exe") {

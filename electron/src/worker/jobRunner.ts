@@ -11,7 +11,19 @@ declare const process: any;
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { ffprobePath } from "../services/bin.js";
+
+// Suppress Node 22 ExperimentalWarning for JSON imports (node-llama-cpp) in utility process
+try {
+  process.on("warning", (w: { name?: string; message?: string; stack?: string }) => {
+    const msg = String(w?.message ?? "");
+    const name = String(w?.name ?? "");
+    if (name.includes("ExperimentalWarning") && msg.includes("JSON")) return;
+    // eslint-disable-next-line no-console
+    console.warn(w);
+  });
+} catch {}
 
 // Utility process entry — wait for start message from main
 // process.parentPort is set by Electron's utilityProcess
@@ -51,6 +63,18 @@ function ffmpegBin(): string {
     if (p) return p;
   } catch {}
   return process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
+}
+
+// True if the media file contains at least one audio stream. Used to reject
+// video-only sources (yt-dlp fallback without ffmpeg merge) BEFORE transcription.
+function probeHasAudio(file: string): boolean {
+  try {
+    const r = spawnSync(ffprobePath(), ["-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", file], { stdio: "pipe", timeout: 15000 });
+    const out = String(r.stdout ?? "").trim();
+    return r.status === 0 && out.length > 0;
+  } catch {
+    return true; // probe unavailable — let transcriber surface the real error
+  }
 }
 
 function thumbnail(src: string, at: number, dest: string): Promise<boolean> {
@@ -134,7 +158,13 @@ async function handleAnalyze(msg: StartAnalyzeMsg) {
     const existingKey = String(project.source_key ?? "");
     let reuseExisting = false;
     try {
-      if (existingKey && fs.statSync(existingKey).isFile() && fs.statSync(existingKey).size > 2000) reuseExisting = true;
+      if (existingKey && fs.statSync(existingKey).isFile() && fs.statSync(existingKey).size > 2000) {
+        if (probeHasAudio(existingKey)) reuseExisting = true;
+        else {
+          console.log(`[jobRunner] existing source ${existingKey} has NO audio track — deleting for re-download`);
+          try { fs.unlinkSync(existingKey); } catch {}
+        }
+      }
     } catch {}
     if (reuseExisting) {
       console.log(`[jobRunner] reusing downloaded source ${existingKey}`);
@@ -152,7 +182,10 @@ async function handleAnalyze(msg: StartAnalyzeMsg) {
         const vid = extractVideoId(source);
         if (vid) {
           const hit = cachedVideoMeta(vid);
-          if (hit) {
+          if (hit && !probeHasAudio(hit.path)) {
+            console.log(`[jobRunner] cached video ${vid} has NO audio track — purging ${hit.path}`);
+            try { fs.unlinkSync(hit.path); } catch {}
+          } else if (hit) {
             console.log(`[jobRunner] reusing cached video ${vid} from ${hit.path}`);
             const ext = path.extname(hit.path) || ".mp4";
             const dest = sp(projectId, ext);

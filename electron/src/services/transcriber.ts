@@ -60,11 +60,11 @@ async function ensureModel(name: string, onProgress?: (f: number) => void): Prom
     } else if (sz > 1024) return p;
   }
   const url = `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${name}.bin`;
-  await downloadFile(url, p, onProgress);
+  await downloadFile(url, p, onProgress, MODEL_EXPECTED[name] ?? 0);
   return p;
 }
 
-function downloadFile(url: string, dest: string, onProgress?: (f: number) => void): Promise<void> {
+function downloadFile(url: string, dest: string, onProgress?: (f: number) => void, expectedBytes = 0): Promise<void> {
   return new Promise((resolve, reject) => {
     const proto = url.startsWith("https") ? require("node:https") : require("node:http");
     const file = fs.createWriteStream(dest);
@@ -72,18 +72,22 @@ function downloadFile(url: string, dest: string, onProgress?: (f: number) => voi
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         file.close();
         fs.unlink(dest, () => {});
-        downloadFile(res.headers.location, dest, onProgress).then(resolve, reject);
+        downloadFile(res.headers.location, dest, onProgress, expectedBytes).then(resolve, reject);
         return;
       }
       if (res.statusCode !== 200) {
         reject(new TranscriptionError(`model download failed ${res.statusCode}`));
         return;
       }
-      const total = parseInt(res.headers["content-length"] ?? "0", 10);
+      // HF streams chunked (no content-length) — use known model size fallback
+      const total = parseInt(res.headers["content-length"] ?? "0", 10) || expectedBytes;
       let done = 0;
+      let lastMbLog = 0;
       res.on("data", (c: Buffer) => {
         done += c.length;
-        if (onProgress && total) onProgress(done / total);
+        if (!onProgress) return;
+        if (total) onProgress(Math.min(1, done / total));
+        else if (done - lastMbLog >= 10 * 1048576) { lastMbLog = done; console.log(`[transcriber] model downloaded ${(done / 1048576).toFixed(0)} MB`); }
       });
       res.pipe(file);
       file.on("finish", () => { file.close(); resolve(); });
@@ -98,7 +102,17 @@ function extractAudio(videoPath: string): Promise<string> {
     const p = spawn(ffmpegBin(), ["-y", "-hide_banner", "-loglevel", "error", "-i", videoPath, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", out], { stdio: "pipe" });
     let err = "";
     p.stderr.on("data", (d) => (err += d.toString()));
-    p.on("close", (code) => (code === 0 && fs.existsSync(out) ? resolve(out) : reject(new TranscriptionError(err || "ffmpeg extract failed"))));
+    p.on("close", (code) => {
+      if (code === 0 && fs.existsSync(out)) return resolve(out);
+      let msg = err || "ffmpeg extract failed";
+      // "Output file does not contain any stream" = the source has no audio track
+      // (video-only yt-dlp download or muted upload). NO_AUDIO_TRACK is a stable
+      // token — main.ts purges source + youtube-cache on it so retry re-downloads.
+      if (msg.includes("does not contain any stream")) {
+        msg = `NO_AUDIO_TRACK: source video has no audio stream (video-only download or muted file) — job will purge the cached source; press Start again to re-download with merged audio`;
+      }
+      reject(new TranscriptionError(msg));
+    });
     p.on("error", (e) => reject(new TranscriptionError(String(e))));
   });
 }
@@ -116,15 +130,30 @@ function mockTranscript(_videoPath: string, lang?: string): TranscriptResult {
   return { text, words, language: lang ?? "id" };
 }
 
+function mockAllowed(): boolean {
+  return process.env.CLIPZARD_ALLOW_MOCK === "1";
+}
+
+function whisperMissingError(bin: string): TranscriptionError {
+  return new TranscriptionError(
+    `whisper-cli not found at ${bin} — real transcription requires the binary. ` +
+    `Fix: run "npm run setup:whisper" in electron/ (auto-downloads official prebuilt whisper-cli.exe). ` +
+    `Dev-only mock opt-out: set CLIPZARD_ALLOW_MOCK=1`
+  );
+}
+
 export async function transcribeWithWords(videoPath: string, onProgress?: (f: number) => void, language?: string): Promise<TranscriptResult> {
   if (!fs.existsSync(videoPath)) throw new TranscriptionError(`File not found: ${videoPath}`);
   const bin = whisperBin();
   if (!fs.existsSync(bin)) {
-    console.warn(`[transcriber] whisper binary not found at ${bin}, using mock transcript`);
-    onProgress?.(0.5);
-    await new Promise((r) => setTimeout(r, 300));
-    onProgress?.(1);
-    return mockTranscript(videoPath, language);
+    if (mockAllowed()) {
+      console.log(`[transcriber] whisper binary not found at ${bin}, using mock transcript (CLIPZARD_ALLOW_MOCK=1)`);
+      onProgress?.(0.5);
+      await new Promise((r) => setTimeout(r, 300));
+      onProgress?.(1);
+      return mockTranscript(videoPath, language);
+    }
+    throw whisperMissingError(bin);
   }
   // The binary may exist but fail to load (missing libwhisper.so.1/libggml.so.0).
   // Do a cheap smoke test so we fall back to mock instead of hard-failing later.
@@ -136,11 +165,18 @@ export async function transcribeWithWords(videoPath: string, onProgress?: (f: nu
       probe.on("error", () => { clearTimeout(t); resolve(false); });
     });
     if (!probeOk) {
-      console.warn(`[transcriber] whisper binary at ${bin} failed to load (missing shared libs?), using mock transcript`);
-      onProgress?.(0.5);
-      await new Promise((r) => setTimeout(r, 300));
-      onProgress?.(1);
-      return mockTranscript(videoPath, language);
+      if (mockAllowed()) {
+        console.log(`[transcriber] whisper binary at ${bin} failed to load (missing shared libs?), using mock transcript (CLIPZARD_ALLOW_MOCK=1)`);
+        onProgress?.(0.5);
+        await new Promise((r) => setTimeout(r, 300));
+        onProgress?.(1);
+        return mockTranscript(videoPath, language);
+      }
+      throw new TranscriptionError(
+        `whisper-cli at ${bin} exists but failed to load (exit != 0 — missing DLLs?). ` +
+        `Fix: re-run "npm run setup:whisper" to reinstall the full prebuilt bundle (exe + DLLs). ` +
+        `Dev-only mock opt-out: set CLIPZARD_ALLOW_MOCK=1`
+      );
     }
   } catch {
     // ignore probe failures; let the real run surface any deeper error
@@ -152,18 +188,24 @@ export async function transcribeWithWords(videoPath: string, onProgress?: (f: nu
   try {
     model = await ensureModel(modelName, (f) => onProgress?.(0.05 + f * 0.15));
   } catch (e) {
-    console.warn(`[transcriber] model ensure failed ${e}, using mock`);
-    onProgress?.(1);
-    return mockTranscript(videoPath, language);
+    if (mockAllowed()) {
+      console.warn(`[transcriber] model ensure failed ${e}, using mock (CLIPZARD_ALLOW_MOCK=1)`);
+      onProgress?.(1);
+      return mockTranscript(videoPath, language);
+    }
+    throw new TranscriptionError(`whisper model download failed: ${String((e as Error).message ?? e)} — check network or set WHISPER_MODEL; dev-only mock opt-out: CLIPZARD_ALLOW_MOCK=1`);
   }
   onProgress?.(0.22);
   let wav: string;
   try {
     wav = await extractAudio(videoPath);
   } catch (e) {
-    console.warn(`[transcriber] extract failed ${e}, using mock`);
-    onProgress?.(1);
-    return mockTranscript(videoPath, language);
+    if (mockAllowed()) {
+      console.warn(`[transcriber] extract failed ${e}, using mock (CLIPZARD_ALLOW_MOCK=1)`);
+      onProgress?.(1);
+      return mockTranscript(videoPath, language);
+    }
+    throw new TranscriptionError(`ffmpeg audio extraction failed: ${String((e as Error).message ?? e)} (dev-only mock opt-out: CLIPZARD_ALLOW_MOCK=1)`);
   }
   onProgress?.(0.28);
   // Retry once if model file is corrupted (truncated) — delete and re-download.

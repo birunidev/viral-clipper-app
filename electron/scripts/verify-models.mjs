@@ -7,8 +7,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-const root = path.resolve(path.join(path.dirname(new URL(import.meta.url).pathname), ".."));
+const root = path.resolve(path.join(path.dirname(fileURLToPath(import.meta.url)), ".."));
 console.log(`[models-verify] node ${process.version} root=${root}`);
 console.log(`[models-verify] USER_DATA_PATH=${process.env.USER_DATA_PATH ?? "(default ~/.config/clipzard-desktop)"} LLM_TIER=${process.env.LLM_TIER ?? "(auto)"}`);
 
@@ -18,8 +19,8 @@ const check = (label, fn) => {
   catch(e){ console.error(`  ✗ ${label}: ${e.message}`); if(e.stack) console.error(e.stack.slice(0,500)); fail++; }
 };
 
-const { ramTier, llmModelForTier, llmModelForVariant, whisperModelForTier } = await import(path.join(root, "dist/services/system.js"));
-const { listVariants, currentSelectedVariant, whisperStatus, getVariantInfo } = await import(path.join(root, "dist/services/models.js"));
+const { ramTier, llmModelForTier, llmModelForVariant, whisperModelForTier } = await import(pathToFileURL(path.join(root, "dist/services/system.js")).href);
+const { listVariants, currentSelectedVariant, whisperStatus, getVariantInfo } = await import(pathToFileURL(path.join(root, "dist/services/models.js")).href);
 
 check("ramTier() in low|mid|high", () => {
   const t = ramTier();

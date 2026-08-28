@@ -10,12 +10,19 @@ import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url);
-const root = path.resolve(path.join(path.dirname(new URL(import.meta.url).pathname), ".."));
+const root = path.resolve(path.join(path.dirname(fileURLToPath(import.meta.url)), ".."));
 const keep = process.argv.includes("--keep");
 const tmp = process.env.USER_DATA_PATH ?? fs.mkdtempSync(path.join(os.tmpdir(), "cf-pipe-"));
 if (!process.env.USER_DATA_PATH) process.env.USER_DATA_PATH = tmp;
+// Quick CI check runs the MOCK pipeline (no whisper binary / models needed).
+// The app itself refuses to mock unless CLIPZARD_ALLOW_MOCK=1 — opt in here only.
+process.env.CLIPZARD_ALLOW_MOCK = "1";
+// Force the mock ANALYZER too — otherwise analyze() downloads a multi-GB LLM
+// GGUF before falling back to mock, which hangs the quick check on fresh machines.
+process.env.CLIPZARD_FORCE_MOCK = "1";
 console.log(`[pipe] root=${root}`);
 console.log(`[pipe] USER_DATA_PATH=${process.env.USER_DATA_PATH} tmp=${tmp} keep=${keep}`);
 console.log(`[pipe] node ${process.version}`);
@@ -34,8 +41,8 @@ for (const p of ["dist/main.js", "dist/services/db.js", "dist/services/pipeline.
   must(fs.existsSync(path.join(root, p)), `missing ${p} — run: npx tsc`);
 }
 
-const { getRaw, getDbPathExport, nowIso } = await import(path.join(root, "dist/services/db.js"));
-const { runAnalyze, runRender } = await import(path.join(root, "dist/services/pipeline.js"));
+const { getRaw, getDbPathExport, nowIso } = await import(pathToFileURL(path.join(root, "dist/services/db.js")).href);
+const { runAnalyze, runRender } = await import(pathToFileURL(path.join(root, "dist/services/pipeline.js")).href);
 const db = getRaw();
 console.log(`[pipe] db=${getDbPathExport()}`);
 
