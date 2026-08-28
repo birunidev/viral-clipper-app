@@ -8,17 +8,19 @@
 # Required in .env (project root):
 #   POSTGRES_PASSWORD   # strong password — compose refuses to start without it
 # Optional:
-#   POSTGRES_USER (default clipzard), POSTGRES_DB (default clipzard)
+#   POSTGRES_USER (default clipforge — matches the existing pgdata volume role), POSTGRES_DB (clipforge)
 #   FRONTEND_URLS, NEXT_PUBLIC_API_URL
+# NOTE: keep the DB role as `clipforge` (do NOT rename to clipzard). The pgdata
+# volume was initialized with this role; changing it breaks postgres auth.
 
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-clipzard}
+      POSTGRES_USER: ${POSTGRES_USER:-clipforge}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-      POSTGRES_DB: ${POSTGRES_DB:-clipzard}
+      POSTGRES_DB: ${POSTGRES_DB:-clipforge}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -99,7 +101,7 @@ services:
       FRONTEND_URLS: ${FRONTEND_URLS:-https://example.com}
       # Always talk to the internal postgres, never whatever localhost/dev
       # URL happens to be in backend/.env (compose overrides env_file).
-      DATABASE_URL: postgresql://${POSTGRES_USER:-clipzard}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipzard}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-clipforge}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipforge}
       # PO token sidecar (bgutil). Backend's yt-dlp plugin contacts this to fetch
       # Proof-of-Origin tokens. Disabled by default (empty = no POT); set to
       # http://pot:4416 to enable. Can also be overridden in backend/.env via
