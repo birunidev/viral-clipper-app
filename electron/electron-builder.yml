@@ -13,6 +13,12 @@ extraResources:
   - from: resources/bin
     to: bin
     filter: ["**/*"]
+# Models (whisper GGML + Qwen GGUF) are NOT bundled by default to keep installer small (~150MB vs +8GB).
+# They are lazily downloaded on first transcribe/analyze to userData/models/ (see src/services/transcriber.ts:39, analyzer.ts:147).
+# To pre-seed for offline installer, run `npm run models:download -- --out=resources/models` and uncomment:
+#  - from: resources/models
+#    to: models
+#    filter: ["**/*"]
 win:
   target: nsis
   icon: resources/icon.ico

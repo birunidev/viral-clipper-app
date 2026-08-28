@@ -1,7 +1,7 @@
 "use client";
 
-import { Check, Database, Warning, XCircle } from "@phosphor-icons/react";
-import { useState } from "react";
+import { Check, Database, Warning, XCircle, DownloadSimple, Trash, HardDrive } from "@phosphor-icons/react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useSettings, useUpdateSettings } from "@/hooks/use-settings";
@@ -35,9 +35,12 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-[22px] font-semibold tracking-tight text-ink">Settings</h1>
         <p className="mt-1 text-sm text-ink-tertiary">
-          Manage your storage and workspace.
+          Manage your storage, local AI models and workspace.
         </p>
       </div>
+
+      {/* Local AI Models */}
+      <LocalModelsCard />
 
       {/* Storage */}
       <Card className="p-5">
@@ -332,4 +335,130 @@ function fmtBytes(bytes: number): string {
   if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
   if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${bytes} B`;
+}
+
+type VariantInfo = {
+  key: "tiny" | "balanced" | "quality";
+  label: string;
+  file: string;
+  sizeMb: number;
+  installed: boolean;
+  bytesOnDisk: number;
+  description: string;
+};
+
+function LocalModelsCard() {
+  const [data, setData] = useState<{ variants: VariantInfo[]; selected: string; whisper: { model: string; installed: boolean; bytesOnDisk: number } | null } | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [progress, setProgress] = useState<Record<string, number>>({});
+  const [error, setError] = useState("");
+
+  const refresh = async () => {
+    const cf = (window as unknown as { clipforge?: { modelsList: () => Promise<unknown> } }).clipforge;
+    if (!cf?.modelsList) return;
+    try { setData((await cf.modelsList()) as unknown as typeof data); } catch {}
+  };
+
+  useEffect(() => {
+    refresh();
+    const cf = (window as unknown as { clipforge?: { onModelsProgress: (cb: (d: unknown) => void) => () => void } }).clipforge;
+    if (!cf?.onModelsProgress) return;
+    const off = cf.onModelsProgress((d) => {
+      const { variant, progress: p, done } = d as { variant: string; progress: number; done?: boolean };
+      setProgress((prev) => ({ ...prev, [variant]: p }));
+      if (done) { setBusy(null); refresh(); }
+    });
+    return off;
+  }, []);
+
+  const handleSelect = async (v: string) => {
+    const cf = (window as unknown as { clipforge?: { modelsSetVariant: (x: string) => Promise<unknown> } }).clipforge;
+    if (!cf?.modelsSetVariant) return;
+    setError("");
+    try { await cf.modelsSetVariant(v); await refresh(); } catch (e) { setError(String((e as Error).message)); }
+  };
+
+  const handleDownload = async (v: string) => {
+    const cf = (window as unknown as { clipforge?: { modelsEnsure: (x: string) => Promise<unknown> } }).clipforge;
+    if (!cf?.modelsEnsure) return;
+    setBusy(v); setError(""); setProgress((p) => ({ ...p, [v]: 0 }));
+    try { await cf.modelsEnsure(v); } catch (e) { setError(String((e as Error).message)); setBusy(null); }
+  };
+
+  const handleRemove = async (v: string) => {
+    if (!confirm(`Remove ${v} model? You can re-download later.`)) return;
+    const cf = (window as unknown as { clipforge?: { modelsRemove: (x: string) => Promise<unknown> } }).clipforge;
+    if (!cf?.modelsRemove) return;
+    setBusy(v); setError("");
+    try { await cf.modelsRemove(v); await refresh(); } catch (e) { setError(String((e as Error).message)); }
+    finally { setBusy(null); }
+  };
+
+  if (!data) {
+    // Fallback when not in Electron (dev web) — show static info
+    const isElectron = !!(window as unknown as { clipforge?: unknown }).clipforge;
+    if (!isElectron) return null;
+    return <Card className="p-5"><p className="text-xs text-ink-tertiary">Loading local models…</p></Card>;
+  }
+
+  return (
+    <Card className="p-5">
+      <div className="flex items-center gap-2 text-sm font-medium text-ink">
+        <HardDrive size={16} className="text-accent" />
+        Local AI Models
+      </div>
+      <p className="mt-1 text-xs text-ink-tertiary">
+        Pick the clip analyzer size. Smaller = faster download, weaker hooks. Current: <span className="font-medium text-ink-secondary">{data.selected}</span>
+        {data.whisper && <> · Whisper <span className="font-mono">{data.whisper.model}</span> {data.whisper.installed ? `(${fmtBytes(data.whisper.bytesOnDisk)})` : "(will download on first transcribe)"}</>}
+      </p>
+      {error && <p className="mt-2 flex items-center gap-1.5 text-xs text-danger"><Warning size={13} weight="fill" />{error}</p>}
+      <div className="mt-3 flex flex-col gap-2">
+        {data.variants.map((v) => {
+          const isSelected = data.selected === v.key;
+          const isBusy = busy === v.key;
+          const pct = progress[v.key] ?? 0;
+          return (
+            <div key={v.key} className={`flex flex-col gap-2 rounded-lg border px-3 py-2.5 ${isSelected ? "border-accent/40 bg-accent-soft" : "border-line bg-surface-2"}`}>
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="flex items-center gap-1.5 text-sm font-medium text-ink">
+                    {isSelected && <Check size={14} weight="bold" className="text-accent" />}
+                    {v.label}
+                    <span className="text-xs font-normal text-ink-tertiary">· {v.sizeMb} MB</span>
+                    {v.installed && <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600">installed · {fmtBytes(v.bytesOnDisk)}</span>}
+                  </p>
+                  <p className="text-xs text-ink-tertiary">{v.description}</p>
+                  <p className="text-[11px] text-ink-muted font-mono truncate">{v.file}</p>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {!isSelected && (
+                    <Button size="sm" variant="secondary" disabled={isBusy} onClick={() => handleSelect(v.key)}>
+                      Use
+                    </Button>
+                  )}
+                  {v.installed ? (
+                    <Button size="sm" variant="ghost" disabled={isBusy} onClick={() => handleRemove(v.key)}>
+                      <Trash size={13} /> Remove
+                    </Button>
+                  ) : (
+                    <Button size="sm" variant={isSelected ? "primary" : "secondary"} disabled={isBusy} onClick={() => handleDownload(v.key)}>
+                      <DownloadSimple size={13} /> {isBusy ? `${Math.round(pct * 100)}%` : "Download"}
+                    </Button>
+                  )}
+                </div>
+              </div>
+              {isBusy && pct > 0 && pct < 1 && (
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-2">
+                  <div className="h-full bg-accent transition-[width]" style={{ width: `${pct * 100}%` }} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-2 text-[11px] text-ink-muted">
+        Analyser runs locally via <span className="font-mono">node-llama-cpp</span>. If <span className="font-mono">LLM_API_KEY</span> is set, cloud is used instead (0 MB). Models live at <span className="font-mono">userData/models/llm/</span>.
+      </p>
+    </Card>
+  );
 }

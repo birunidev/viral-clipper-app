@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { getDb, getRaw, nowIso } from "./services/db.js";
 import { verifyLicense, isLicensed, getLicense } from "./services/license.js";
 import { ramTier, whisperModelForTier, llmModelForTier } from "./services/system.js";
+import { listVariants, currentSelectedVariant, whisperStatus, ensureVariant, removeVariant } from "./services/models.js";
 import { randomUUID } from "node:crypto";
 import { Worker } from "node:worker_threads";
 import { startLocalFastAPI, getLocalApiUrl, isLocalFastAPIEnabled, stopLocalFastAPI } from "./services/fastapi.js";
@@ -151,8 +152,35 @@ ipcMain.handle("license:status", async () => {
 ipcMain.handle("system:info", async () => {
   try {
     const tier = ramTier();
-    return { tier, whisperModel: whisperModelForTier(tier), llmModel: llmModelForTier(tier).file, licensed: isLicensed(), fastApiUrl };
-  } catch { return { tier: "low", whisperModel: "base", llmModel: "qwen2.5-3b-q4_k_m.gguf", licensed: false, fastApiUrl: null }; }
+    return { tier, whisperModel: whisperModelForTier(tier), llmModel: llmModelForTier(tier).file, licensed: isLicensed(), fastApiUrl, selectedVariant: currentSelectedVariant(), whisper: whisperStatus() };
+  } catch { return { tier: "low", whisperModel: "base", llmModel: "qwen2.5-1.5b-q4_k_m.gguf", licensed: false, fastApiUrl: null, selectedVariant: "balanced", whisper: null }; }
+});
+ipcMain.handle("models:list", async () => {
+  try { return { variants: listVariants(), selected: currentSelectedVariant(), whisper: whisperStatus() }; }
+  catch (e) { return { variants: [], selected: "balanced", whisper: null, error: String(e) }; }
+});
+ipcMain.handle("models:setVariant", async (_e, variant: string) => {
+  const v = String(variant).toLowerCase();
+  if (!["tiny","balanced","quality"].includes(v)) throw new Error("invalid variant");
+  try {
+    const Store = (await import("electron-store")).default as unknown as new (o: unknown)=> { set:(k:string,v:unknown)=>void; get:(k:string)=>unknown };
+    const store = new (Store as unknown as new (o: unknown)=> { set:(k:string,v:unknown)=>void })({ name: "clipforge-config" });
+    store.set("llmVariant", v);
+    process.env.LLM_TIER = v;
+    return { ok: true, selected: v };
+  } catch (e) { throw new Error(String((e as Error).message)); }
+});
+ipcMain.handle("models:ensure", async (_e, variant: string) => {
+  const v = String(variant).toLowerCase() as "tiny"|"balanced"|"quality";
+  if (!["tiny","balanced","quality"].includes(v)) throw new Error("invalid variant");
+  await ensureVariant(v, (p) => win?.webContents.send("models:progress", { variant: v, progress: p }));
+  win?.webContents.send("models:progress", { variant: v, progress: 1, done: true });
+  return { ok: true };
+});
+ipcMain.handle("models:remove", async (_e, variant: string) => {
+  const v = String(variant).toLowerCase() as "tiny"|"balanced"|"quality";
+  await removeVariant(v);
+  return { ok: true };
 });
 
 ipcMain.handle("projects:list", async () => {

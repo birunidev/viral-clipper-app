@@ -7,6 +7,10 @@
   "homepage": "https://clipforge.com",
   "type": "module",
   "main": "dist/main.js",
+  "engines": {
+    "node": ">=20.18.0 <24"
+  },
+  "engineStrict": false,
   "scripts": {
     "dev": "concurrently -k -n tsc,preload,renderer,electron -c blue,cyan,green,magenta \"tsc --watch\" \"esbuild src/preload.ts --bundle --platform=node --format=cjs --outfile=dist/preload.cjs --external:electron --watch\" \"npm --prefix renderer run dev\" \"wait-on http://localhost:5173 && ELECTRON_DEV_URL=http://localhost:5173 electron .\"",
     "dev:electron": "tsc && esbuild src/preload.ts --bundle --platform=node --format=cjs --outfile=dist/preload.cjs --external:electron && electron .",
@@ -16,6 +20,12 @@
     "build:mac": "tsc && esbuild src/preload.ts --bundle --platform=node --format=cjs --outfile=dist/preload.cjs --external:electron && electron-builder --mac",
     "build:linux": "tsc && esbuild src/preload.ts --bundle --platform=node --format=cjs --outfile=dist/preload.cjs --external:electron && electron-builder --linux",
     "typecheck": "tsc --noEmit",
+    "typecheck:renderer": "tsc --noEmit --project renderer/tsconfig.json",
+    "models:download": "node scripts/download-models.mjs",
+    "models:download:all": "node scripts/download-models.mjs --all",
+    "setup:local-ai": "node scripts/setup-local-ai.mjs",
+    "setup:whisper": "node scripts/setup-local-ai.mjs --build-whisper-only",
+    "setup:models": "node scripts/setup-local-ai.mjs --models-only",
     "rebuild": "electron-rebuild",
     "postinstall": "node -e \"try{require('fs').writeFileSync('node_modules/electron/path.txt','electron')}catch{};try{require('fs').chmodSync('node_modules/electron/dist/chrome-sandbox',0o4755)}catch{}\""
   },

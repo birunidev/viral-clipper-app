@@ -21,13 +21,22 @@ try {
   clipsList: (projectId: string) => ipcRenderer.invoke("clips:list", projectId),
   captionStylesList: () => ipcRenderer.invoke("caption-styles:list"),
   captionStyleCreate: (data: unknown) => ipcRenderer.invoke("caption-styles:create", data),
-  dialogOpenVideo: () => ipcRenderer.invoke("dialog:openVideo"),
-  shellOpenExternal: (url: string) => ipcRenderer.invoke("shell:openExternal", url),
-    onJobProgress: (cb: (data: unknown) => void) => {
-    const handler = (_: unknown, data: unknown) => cb(data);
-    ipcRenderer.on("job:progress", handler);
-    return () => ipcRenderer.removeListener("job:progress", handler);
-  },
+   dialogOpenVideo: () => ipcRenderer.invoke("dialog:openVideo"),
+   shellOpenExternal: (url: string) => ipcRenderer.invoke("shell:openExternal", url),
+   modelsList: () => ipcRenderer.invoke("models:list"),
+   modelsSetVariant: (v: string) => ipcRenderer.invoke("models:setVariant", v),
+   modelsEnsure: (v: string) => ipcRenderer.invoke("models:ensure", v),
+   modelsRemove: (v: string) => ipcRenderer.invoke("models:remove", v),
+   onModelsProgress: (cb: (data: unknown) => void) => {
+     const handler = (_: unknown, data: unknown) => cb(data);
+     ipcRenderer.on("models:progress", handler);
+     return () => ipcRenderer.removeListener("models:progress", handler);
+   },
+     onJobProgress: (cb: (data: unknown) => void) => {
+     const handler = (_: unknown, data: unknown) => cb(data);
+     ipcRenderer.on("job:progress", handler);
+     return () => ipcRenderer.removeListener("job:progress", handler);
+   },
   });
   console.log("[preload] exposed clipforge");
 } catch (e) {
