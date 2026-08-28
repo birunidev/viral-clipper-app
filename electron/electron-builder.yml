@@ -1,5 +1,5 @@
-appId: com.clipforge.desktop
-productName: ClipForge
+appId: com.snapclip.desktop
+productName: SnapClip
 directories:
   output: release
   buildResources: resources
@@ -47,10 +47,10 @@ linux:
     - deb
   icon: resources/icon.png
   category: Video
-  maintainer: ClipForge <hello@clipforge.com>
-  description: ClipForge Desktop - fully local viral clip engine
+  maintainer: SnapClip <hello@snapclip.mysaas.web.id>
+  description: SnapClip Desktop - fully local viral clip engine
 publish:
   provider: github
-  owner: clipforge
-  repo: clipforge
+  owner: snapclip
+  repo: snapclip
   private: false

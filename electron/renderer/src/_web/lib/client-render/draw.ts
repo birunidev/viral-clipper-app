@@ -205,7 +205,7 @@ export function drawCaptionEvent(
   ctx.shadowOffsetY = 0;
 }
 
-/** Brand watermark — mirrors cutter._watermark_filter: "ClipForge", Space
+/** Brand watermark — mirrors cutter._watermark_filter: "SnapClip", Space
  * Grotesk regular 26px @35% opacity, 24px from the right/bottom edges.
  * Fixed pixel size at final output resolution, like the ffmpeg filter. */
 export function drawWatermark(
@@ -217,6 +217,6 @@ export function drawWatermark(
   ctx.font = `26px "Space Grotesk", Arial, sans-serif`;
   ctx.fillStyle = cssColor("#FFFFFF", 0.35);
   ctx.textAlign = "right";
-  ctx.fillText("ClipForge", width - 24, height - 24);
+  ctx.fillText("SnapClip", width - 24, height - 24);
   ctx.restore();
 }

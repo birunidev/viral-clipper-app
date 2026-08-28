@@ -1,10 +1,10 @@
 {
-  "name": "clipforge-desktop",
+  "name": "snapclip-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "ClipForge Desktop - fully local viral clip engine",
-  "author": "ClipForge <hello@clipforge.com>",
-  "homepage": "https://clipforge.com",
+  "description": "SnapClip Desktop - fully local viral clip engine",
+  "author": "SnapClip <hello@snapclip.mysaas.web.id>",
+  "homepage": "https://snapclip.mysaas.web.id",
   "type": "module",
   "main": "dist/main.js",
   "engines": {

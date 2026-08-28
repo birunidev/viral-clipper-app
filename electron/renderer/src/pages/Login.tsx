@@ -12,7 +12,7 @@ export default function LoginPage() {
     e.preventDefault();
     setError("");
     if (!key.trim()) {
-      setError("Paste your license key from clipforge.com/account");
+      setError("Paste your license key from snapclip.mysaas.web.id/account");
       return;
     }
     setPending(true);
@@ -29,7 +29,7 @@ export default function LoginPage() {
 
   return (
     <div className="w-full max-w-sm">
-      <h1 className="text-xl font-semibold tracking-tight text-ink">Activate ClipForge</h1>
+      <h1 className="text-xl font-semibold tracking-tight text-ink">Activate SnapClip</h1>
       <p className="mt-1 text-sm text-ink-tertiary">Paste your one-time license key.</p>
       <form onSubmit={onSubmit} className="mt-6 flex flex-col gap-4">
         <label className="flex flex-col gap-1.5 text-sm">
@@ -62,7 +62,7 @@ export default function LoginPage() {
         </button>
       </form>
       <p className="mt-4 text-sm text-ink-tertiary">
-        No license? <a href="https://clipforge.com" target="_blank" className="font-medium text-ink underline underline-offset-4">Buy ClipForge — $49 one-time</a>
+        No license? <a href="https://snapclip.mysaas.web.id" target="_blank" className="font-medium text-ink underline underline-offset-4">Buy SnapClip — $49 one-time</a>
       </p>
       <p className="mt-2 text-xs text-ink-muted">
         Insider? <Link to="/register" className="underline">Use email login</Link> · Same input style as web/src/app/app/(auth)/login

@@ -13,8 +13,8 @@ import { startLocalFastAPI, getLocalApiUrl, isLocalFastAPIEnabled, stopLocalFast
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-app.setName("clipforge-desktop");
-if (process.platform === "win32") app.setAppUserModelId("com.clipforge.desktop");
+app.setName("snapclip-desktop");
+if (process.platform === "win32") app.setAppUserModelId("com.snapclip.desktop");
 
 let win: BrowserWindow | null = null;
 
@@ -52,7 +52,7 @@ function createWindow() {
       win.loadFile(p);
       win.webContents.openDevTools({ mode: "detach" });
       win.webContents.on("console-message", (_e, level, msg, line, src) => console.log(`[renderer:${level}] ${msg} @${src}:${line}`));
-    } else win.loadURL("data:text/html,<h1>ClipForge - renderer not built. Run: npm --prefix electron/renderer run build</h1>");
+    } else win.loadURL("data:text/html,<h1>SnapClip - renderer not built. Run: npm --prefix electron/renderer run build</h1>");
   }
 }
 

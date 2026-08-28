@@ -15,7 +15,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
           <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent text-accent-ink">
             <Scissors size={15} weight="bold" />
           </span>
-          <span className="text-[15px] font-semibold tracking-tight text-ink">ClipForge</span>
+          <span className="text-[15px] font-semibold tracking-tight text-ink">SnapClip</span>
         </Link>
         <div className="max-w-sm">
           <p className="text-2xl font-semibold leading-tight tracking-tight text-ink balance">Long videos in. Viral clips out.</p>

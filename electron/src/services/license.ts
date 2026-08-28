@@ -14,7 +14,7 @@ function isDevBypass(): boolean {
   }
 }
 
-const VERIFY_URL = process.env.LICENSE_VERIFY_URL ?? "https://clipforge.com/api/license/verify";
+const VERIFY_URL = process.env.LICENSE_VERIFY_URL ?? "https://snapclip.mysaas.web.id/api/license/verify";
 const GRACE_DAYS = 30;
 
 function deviceHash(): string {
