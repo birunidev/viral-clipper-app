@@ -36,9 +36,29 @@ function modelPath(name: string): string {
   return path.join(modelsDir(), `ggml-${name}.bin`);
 }
 
+const MODEL_EXPECTED: Record<string, number> = {
+  tiny: 75680328,
+  base: 148000000, // ~141 MB actual, allow 10% slack
+  small: 488000000,
+  medium: 1533763059,
+  large: 3090000000,
+  "large-v1": 3090000000,
+  "large-v2": 3090000000,
+  "large-v3": 3090000000,
+};
+
 async function ensureModel(name: string, onProgress?: (f: number) => void): Promise<string> {
   const p = modelPath(name);
-  if (fs.existsSync(p) && fs.statSync(p).size > 1024) return p;
+  if (fs.existsSync(p)) {
+    const sz = fs.statSync(p).size;
+    const exp = MODEL_EXPECTED[name] ?? 0;
+    // If file >1 MB and within 15% of expected, treat as valid. If truncated (<85%), re-download.
+    if (sz > 1024 && (!exp || sz > exp * 0.85)) return p;
+    if (exp && sz < exp * 0.85) {
+      console.warn(`[transcriber] model ${name} truncated ${sz} < ${exp} (85%), re-downloading`);
+      try { fs.unlinkSync(p); } catch {}
+    } else if (sz > 1024) return p;
+  }
   const url = `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${name}.bin`;
   await downloadFile(url, p, onProgress);
   return p;
@@ -127,43 +147,126 @@ export async function transcribeWithWords(videoPath: string, onProgress?: (f: nu
     return mockTranscript(videoPath, language);
   }
   onProgress?.(0.28);
+  // Retry once if model file is corrupted (truncated) — delete and re-download.
+  let attempt = 0;
   try {
-    const args = ["-m", model, "-f", wav, "--output-json", "--word-th timestamps", "-t", String(threadCount()), "--print-progress"];
+  while (attempt < 2) {
+    try {
+    // whisper.cpp writes JSON to a file: <base>.json when using -oj / -ojf
+    // Use -of <base> + -ojf (full JSON with tokens) so we can read it reliably.
+    const base = wav.replace(/\.wav$/i, "");
+    const jsonPath = `${base}.json`;
+    // Clean any previous json
+    try { fs.unlinkSync(jsonPath); } catch {}
+    const args = ["-m", model, "-f", wav, "-ojf", "-of", base, "-t", String(threadCount())];
+    // --print-progress writes to stderr, useful but not needed for parse
+    // language: 'auto' triggers auto-detect
     if (language) args.push("-l", language);
+    else args.push("-l", "auto");
+    console.log(`[transcriber] spawn ${bin} ${args.join(" ")} (attempt ${attempt+1})`);
     const result = await new Promise<{ text: string; words: Word[] }>((resolve, reject) => {
       const p = spawn(bin, args, { stdio: "pipe" });
       let out = "", err = "";
       p.stdout.on("data", (d) => (out += d.toString()));
       p.stderr.on("data", (d) => (err += d.toString()));
       p.on("close", (code) => {
-        if (code !== 0) { reject(new TranscriptionError(err || `whisper failed code ${code}`)); return; }
+        console.log(`[transcriber] exit ${code} out=${out.slice(0,300)} err=${err.slice(0,600)} jsonExists=${fs.existsSync(jsonPath)}`);
+        if (code !== 0) {
+          // Detect truncated model: "not all tensors loaded ... expected 947, got 725"
+          if (err.includes("not all tensors loaded") || err.includes("failed to load model")) {
+            reject(new TranscriptionError(`CORRUPT_MODEL:${err.slice(0,400)}`));
+          } else {
+            reject(new TranscriptionError(err || out || `whisper failed code ${code}`));
+          }
+          return;
+        }
         try {
-          const j = JSON.parse(out);
+          // Prefer file output (whisper.cpp v1.7+ writes to <base>.json with -ojf)
+          let j: unknown = null;
+          if (fs.existsSync(jsonPath)) {
+            const raw = fs.readFileSync(jsonPath, "utf8");
+            j = JSON.parse(raw);
+            // cleanup json file after read
+            try { fs.unlinkSync(jsonPath); } catch {}
+          } else if (out.trim()) {
+            // Fallback: some builds print JSON to stdout
+            j = JSON.parse(out);
+          } else {
+            throw new Error(`no JSON output (stdout ${out.length} chars, err ${err.slice(0,200)}, json file missing)`);
+          }
+          const jo = j as Record<string, unknown>;
           const words: Word[] = [];
           const textParts: string[] = [];
-          for (const seg of j.transcription ?? j.segments ?? []) {
-            for (const tok of seg.tokens ?? seg.words ?? []) {
-              const text = String(tok.text ?? tok.word ?? "").trim();
-              if (!text) continue;
-              textParts.push(text);
-              const s = Math.round(Number(tok.offsets?.from ?? tok.start ?? 0));
-              const e = Math.round(Number(tok.offsets?.to ?? tok.end ?? s + 200));
-              words.push({ text, start_ms: s, end_ms: e });
-            }
-            if (!seg.tokens && seg.text) {
-              const t = String(seg.text).trim();
-              if (t) textParts.push(t);
+          // whisper.cpp json shape: { transcription: [{ timestamps: { from, to }, offsets: { from,to }, text, tokens: [{ text, offsets, ...}] }] }
+          // older shape: { segments: [...] }
+          const segments = (jo.transcription ?? jo.segments ?? []) as unknown[];
+          for (const seg of segments as Record<string, unknown>[]) {
+            const segText = String((seg as Record<string, unknown>).text ?? "").trim();
+            if (segText) textParts.push(segText);
+            const tokens = (seg as Record<string, unknown>).tokens as unknown[] | undefined;
+            const segTokens = tokens ?? ((seg as Record<string, unknown>).words as unknown[]);
+            if (Array.isArray(segTokens) && segTokens.length) {
+              for (const tok of segTokens as Record<string, unknown>[]) {
+                const text = String(tok.text ?? tok.word ?? "").trim();
+                if (!text) continue;
+                // offsets in whisper.cpp json are in ms? Actually from/to are ms strings.
+                const off = tok.offsets as Record<string, unknown> | undefined;
+                const ts = tok.timestamps as Record<string, unknown> | undefined;
+                const sRaw = off?.from ?? ts?.from ?? tok.start ?? tok.t0 ?? 0;
+                const eRaw = off?.to ?? ts?.to ?? tok.end ?? tok.t1 ?? 0;
+                // handle centiseconds? whisper.cpp uses ms*? Let's coerce: if value > 100000, assume 10ms units?
+                const s = Math.round(Number(sRaw));
+                const e = Math.round(Number(eRaw ?? s + 200));
+                // whisper.cpp token offsets are in ms already? Validate: 0-30000 for 30s.
+                // If s > 60000 for 2s clip, it's likely centiseconds (x10). Normalize.
+                const sMs = s > 60000 && s < 600000 ? Math.round(s / 10) : s;
+                const eMs = e > 60000 && e < 600000 ? Math.round(e / 10) : e;
+                textParts.push(text);
+                words.push({ text, start_ms: sMs, end_ms: Math.max(eMs, sMs + 80) });
+              }
+            } else {
+              // Fallback: split seg text into words distributed over segment interval
+              const ts = (seg as Record<string, unknown>).timestamps as Record<string, unknown> | undefined;
+              const off = (seg as Record<string, unknown>).offsets as Record<string, unknown> | undefined;
+              const s = Number(ts?.from ?? off?.from ?? 0);
+              const e = Number(ts?.to ?? off?.to ?? s + 1000);
+              if (segText) {
+                const parts = segText.split(/\s+/).filter(Boolean);
+                const dur = Math.max(e - s, parts.length * 200);
+                for (let i = 0; i < parts.length; i++) {
+                  const ws = Math.round(s + (i * dur) / parts.length);
+                  const we = Math.round(s + ((i + 1) * dur) / parts.length);
+                  words.push({ text: parts[i], start_ms: ws, end_ms: we });
+                }
+              }
             }
           }
-          const fallbackText = j.text ?? textParts.join(" ");
+          // Dedupe textParts vs words to avoid duplicate push above
+          const uniqText = [...new Set(textParts)].join(" ");
+          const fallbackText = (jo.text as string | undefined) ?? uniqText ?? words.map(w=>w.text).join(" ");
+          if (!words.length) throw new Error(`no words parsed from ${JSON.stringify(jo).slice(0,500)}`);
           resolve({ text: fallbackText, words });
-        } catch (e) { reject(new TranscriptionError(`parse whisper output: ${String(e)}`)); }
+        } catch (e) { reject(new TranscriptionError(`parse whisper output: ${String(e)} | stdout=${out.slice(0,300)} err=${err.slice(0,300)}`)); }
       });
       p.on("error", (e) => reject(new TranscriptionError(String(e))));
     });
     onProgress?.(1);
     return { text: result.text, words: result.words, language };
+    } catch (e) {
+      const msg = String((e as Error).message ?? e);
+      if (msg.includes("CORRUPT_MODEL") && attempt === 0) {
+        console.warn(`[transcriber] model corrupted for ${modelName}, deleting and re-downloading...`);
+        try { fs.unlinkSync(model); } catch {}
+        model = await ensureModel(modelName, (f) => onProgress?.(0.05 + f * 0.15));
+        attempt++;
+        continue;
+      }
+      throw e;
+    }
+    } // while
+    throw new TranscriptionError("transcribe failed after retry");
   } finally {
     try { fs.unlinkSync(wav); } catch {}
+    try { fs.unlinkSync(wav.replace(/\.wav$/i, "") + ".json"); } catch {}
   }
 }

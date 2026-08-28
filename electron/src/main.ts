@@ -333,5 +333,30 @@ ipcMain.handle("dialog:openVideo", async () => {
   if (res.canceled || !res.filePaths[0]) return null;
   return res.filePaths[0];
 });
+ipcMain.handle("dialog:saveVideo", async (_e, { sourcePath, defaultName }: { sourcePath: string; defaultName?: string }) => {
+  const safe = isSafeMediaPath(sourcePath);
+  if (!safe) throw new Error("forbidden path");
+  if (!fs.existsSync(safe)) throw new Error("file not found");
+  const { canceled, filePath } = await dialog.showSaveDialog(win!, {
+    defaultPath: defaultName ?? path.basename(safe),
+    filters: [{ name: "Video", extensions: ["mp4"] }],
+  });
+  if (canceled || !filePath) return null;
+  fs.copyFileSync(safe, filePath);
+  return filePath;
+});
+ipcMain.handle("shell:showItemInFolder", async (_e, filePath: string) => {
+  const safe = isSafeMediaPath(filePath) ?? (fs.existsSync(filePath) ? filePath : null);
+  if (!safe) throw new Error("forbidden");
+  shell.showItemInFolder(safe);
+  return { ok: true };
+});
+ipcMain.handle("shell:openPath", async (_e, filePath: string) => {
+  const safe = isSafeMediaPath(filePath) ?? (fs.existsSync(filePath) ? filePath : null);
+  if (!safe) throw new Error("forbidden");
+  const r = await shell.openPath(safe);
+  if (r) throw new Error(r);
+  return { ok: true };
+});
 ipcMain.handle("shell:openExternal", async (_e, url: string) => { await shell.openExternal(url); });
 ipcMain.handle("app:getPath", async (_e, name: string) => app.getPath(name as Parameters<typeof app.getPath>[0]));

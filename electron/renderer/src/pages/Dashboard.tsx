@@ -20,8 +20,7 @@ import { Card, EmptyState, Skeleton } from "@/components/ui/card";
 import { StatusPill } from "@/components/ui/status-pill";
 import { SourceTypeIcon } from "@/components/project/source-icon";
 import { UpgradeRequired, isPaywall } from "@/components/upgrade-required";
-import { useCreateProject, useDeleteProject, usePurgeProject, usePresignUpload, useProjects, useRestoreProject, useTrashProjects } from "@/hooks/use-projects";
-import { api } from "@/lib/api";
+import { useCreateProject, useDeleteProject, usePurgeProject, useProjects, useRestoreProject, useTrashProjects } from "@/hooks/use-projects";
 
 const TRASH_RETENTION_DAYS = 30;
 
@@ -38,7 +37,6 @@ export default function DashboardPage() {
   const projectsQuery = useProjects();
   const trashQuery = useTrashProjects();
   const createProject = useCreateProject();
-  const presignUpload = usePresignUpload();
   const deleteProject = useDeleteProject();
   const restoreProject = useRestoreProject();
   const purgeProject = usePurgeProject();
@@ -70,14 +68,40 @@ export default function DashboardPage() {
       createProject.mutate(
         { title, source: url.trim(), source_type: "youtube" },
         {
-          onSuccess: (project) => {
-            const pid = (project as { id: string }).id;
-            api.post(`/projects/${pid}/start`, { orientation: "portrait", max_clips: 10, min_clip_seconds: 15, max_clip_seconds: 90 }).catch((e) => {
-              console.error("auto-start failed", e);
-              setError(String((e as Error).message ?? e));
-            });
-            navigate(`/projects/${pid}`);
-          },
+          onSuccess: (project) => navigate(`/projects/${(project as { id: string }).id}`),
+          onError: fail,
+        }
+      );
+      return;
+    }
+
+    // Desktop: pure local files — no S3 presign. Use path from file input or dialog.
+    const pickedViaDialog = async (): Promise<string | null> => {
+      const picker = (window as unknown as { clipforge?: { dialogOpenVideo?: () => Promise<string | null> } }).clipforge?.dialogOpenVideo;
+      if (!picker) return null;
+      return (await picker()) ?? null;
+    };
+
+    // If we have a File with path (Electron file input) use it
+    const filePath = (file as unknown as { path?: string })?.path ?? null;
+    if (filePath && file) {
+      createProject.mutate(
+        { title, source: filePath, source_type: "upload", source_size_bytes: file.size },
+        {
+          onSuccess: (project) => navigate(`/projects/${(project as { id: string }).id}`),
+          onError: fail,
+        }
+      );
+      return;
+    }
+
+    // Fallback: open native dialog (no file chosen yet, or path missing)
+    const picked = await pickedViaDialog();
+    if (picked) {
+      createProject.mutate(
+        { title, source: picked, source_type: "upload" },
+        {
+          onSuccess: (project) => navigate(`/projects/${(project as { id: string }).id}`),
           onError: fail,
         }
       );
@@ -85,84 +109,26 @@ export default function DashboardPage() {
     }
 
     if (!file) {
-      setError("Choose a video file.");
+      setError("Choose a video file or click Browse to pick one.");
       return;
     }
-
-    const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
-    if (isDesktop) {
-      const filePath = (file as unknown as { path?: string }).path;
-      if (filePath) {
-        createProject.mutate(
-          { title, source: filePath, source_type: "upload", source_size_bytes: file.size },
-          {
-            onSuccess: (project) => {
-              const pid = (project as { id: string }).id;
-              api.post(`/projects/${pid}/start`, { orientation: "portrait", max_clips: 10, min_clip_seconds: 15, max_clip_seconds: 90 }).catch((e) => {
-                console.error("auto-start failed", e);
-                setError(String((e as Error).message ?? e));
-              });
-              navigate(`/projects/${pid}`);
-            },
-            onError: fail,
-          }
-        );
-        return;
-      }
-      const picked = await (window as unknown as { clipforge: { dialogOpenVideo?: () => Promise<string | null> } }).clipforge?.dialogOpenVideo?.();
-      if (picked) {
-        createProject.mutate(
-          { title, source: picked, source_type: "upload", source_size_bytes: file.size },
-          {
-            onSuccess: (project) => {
-              const pid = (project as { id: string }).id;
-              api.post(`/projects/${pid}/start`, { orientation: "portrait", max_clips: 10, min_clip_seconds: 15, max_clip_seconds: 90 }).catch((e) => {
-                console.error("auto-start failed", e);
-                setError(String((e as Error).message ?? e));
-              });
-              navigate(`/projects/${pid}`);
-            },
-            onError: fail,
-          }
-        );
-        return;
-      }
-    }
-
-    try {
-      const { url: putUrl, key } = await presignUpload.mutateAsync({
-        file_name: file.name,
-        content_type: file.type || "application/octet-stream",
-      });
-
-      const uploadRes = await fetch(putUrl, {
-        method: "PUT",
-        headers: { "Content-Type": file.type || "application/octet-stream" },
-        body: file,
-      });
-      if (!uploadRes.ok) throw new Error("Upload failed. Try again.");
-
+    // Last resort: file without path (web compat) — still desktop, ask dialog
+    const fallbackPicked = await pickedViaDialog();
+    if (fallbackPicked) {
       createProject.mutate(
-        { title, source: key, source_type: "upload", source_size_bytes: file.size },
+        { title, source: fallbackPicked, source_type: "upload" },
         {
-          onSuccess: (project) => {
-            const pid = (project as { id: string }).id;
-            api.post(`/projects/${pid}/start`, { orientation: "portrait", max_clips: 10, min_clip_seconds: 15, max_clip_seconds: 90 }).catch((e) => {
-              console.error("auto-start failed", e);
-              setError(String((e as Error).message ?? e));
-            });
-            navigate(`/projects/${pid}`);
-          },
+          onSuccess: (project) => navigate(`/projects/${(project as { id: string }).id}`),
           onError: fail,
         }
       );
-    } catch (err) {
-      fail(err);
+    } else {
+      setError("Please pick a video file via Browse.");
     }
   }
 
   const projects = projectsQuery.data;
-  const isUploading = presignUpload.isPending || createProject.isPending;
+  const isUploading = createProject.isPending;
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-8">
@@ -200,9 +166,11 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {paywallMessage ? (
-        <UpgradeRequired message={paywallMessage} />
-      ) : composerOpen && (
+      {(() => {
+        const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
+        if (paywallMessage && !isDesktop) return <UpgradeRequired message={paywallMessage} />;
+        if (!composerOpen) return null;
+        return (
         <Card className="p-5">
           <form onSubmit={onSubmit} className="flex flex-col gap-4">
             <div className="flex items-center justify-between">
@@ -308,7 +276,8 @@ export default function DashboardPage() {
             </div>
           </form>
         </Card>
-      )}
+        );
+      })()}
 
       <div className="flex flex-col gap-3">
         {view === "trash" ? (

@@ -188,6 +188,17 @@ export function useSmartRenderClip(
   const serverRender = useRenderClip(projectId);
   return useMutation<SmartRenderResult, Error, SmartRenderPayload>({
     mutationFn: async (payload) => {
+      const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
+      // Desktop: 100% local ffmpeg — no S3, no mediabunny. Use serverRender path which maps to main.ts jobs:render → local file.
+      if (isDesktop) {
+        payload.onFallback?.(); // not needed but keeps parity
+        const job = await serverRender.mutateAsync({
+          clipId: payload.clip.id,
+          orientation: payload.orientation,
+          captionStyleId: payload.captionStyleId ?? null,
+        });
+        return { mode: "server", job };
+      }
       const { clip, sourceUrl } = payload;
       if (
         clientRenderEnabled(billing) &&
@@ -226,7 +237,6 @@ export function useSmartRenderClip(
           return { mode: "server", job };
         }
 
-        // Local render succeeded — auto-download
         const objectUrl = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = objectUrl;
@@ -236,9 +246,6 @@ export function useSmartRenderClip(
         a.remove();
         setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
 
-        // Upload: presign → PUT (direct R2) → complete. On CORS/network failure,
-        // retry via same-origin proxy. Upload failures MUST NOT fall back to
-        // server render — the local file is already downloaded.
         const presign = await api.post<{ url: string; key: string }>(
           `/projects/${projectId}/clips/${clip.id}/client-render/presign`,
           {}
@@ -265,7 +272,6 @@ export function useSmartRenderClip(
           );
           return { mode: "client", clip: registered };
         }
-        // Proxy upload fallback — same-origin, no CORS
         const proxyRegistered = await fetch(
           `${API_URL}/projects/${projectId}/clips/${clip.id}/client-render/upload?key=${encodeURIComponent(presign.key)}`,
           { method: "POST", credentials: "include", body: blob, headers: { "Content-Type": "video/mp4" } }
@@ -345,8 +351,12 @@ export function usePurgeProject() {
 }
 
 export function usePresignUpload() {
+  // Desktop: no S3 — file is local path, no presign needed. Keep stub for web compat.
   return useMutation({
-    mutationFn: (payload: { file_name: string; content_type: string }) =>
-      api.post<{ url: string; key: string }>("/uploads/presign", payload),
+    mutationFn: async (_payload: { file_name: string; content_type: string }) => {
+      const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
+      if (isDesktop) throw new Error("Upload is local file on desktop — no presign needed");
+      return api.post<{ url: string; key: string }>("/uploads/presign", _payload);
+    },
   });
 }

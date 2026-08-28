@@ -124,6 +124,7 @@ export default function ProjectPage() {
   }, [isActive, activeId]);
 
   const startJob = useStartJob(id);
+  const isDesktopPage = typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
 
   // keep optimistic job in sync when real job arrives
   useEffect(() => {
@@ -209,7 +210,7 @@ export default function ProjectPage() {
 
       {/* Pipeline control */}
       <Card className="p-5">
-        {paywallMessage ? (
+        {paywallMessage && !isDesktopPage ? (
           <UpgradeRequired message={paywallMessage} />
         ) : isActive && job ? (
           <div className="flex flex-col gap-4">
@@ -390,6 +391,14 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
   const canDownload = Boolean(clip.signed_video_url);
   const hasCaptionWords = Boolean(clip.caption_json?.length);
   const filename = `${clip.title.replace(/[^\w]+/g, "-").toLowerCase() || "clip"}.mp4`;
+  const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
+  // Resolve absolute local path from media:// URL for save dialog
+  const localClipPath = (() => {
+    const u = clip.signed_video_url ?? clip.video_url;
+    if (!u) return null;
+    if (u.startsWith("media://")) return decodeURIComponent(u.slice("media://".length));
+    return null;
+  })();
 
   function handleRender(styleId: string | null) {
     setSelectedStyleId(styleId);
@@ -401,6 +410,8 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
           | Record<string, unknown>
           | undefined) ?? null
       : null;
+    // Desktop: no S3, no watermark, no resolution cap
+    const isDesktopRender = typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
     renderClip.mutate(
       {
         clip,
@@ -408,8 +419,8 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
         orientation: "portrait",
         captionStyleId: styleId,
         captionStyleConfig: styleConfig,
-        watermark: billingQuery.data?.limits.watermark ?? false,
-        maxResolution: billingQuery.data?.limits.max_resolution ?? null,
+        watermark: isDesktopRender ? false : (billingQuery.data?.limits.watermark ?? false),
+        maxResolution: isDesktopRender ? null : (billingQuery.data?.limits.max_resolution ?? null),
         onProgress: setLocalProgress,
         onFallback: () => setLocalProgress(null),
       },
@@ -503,7 +514,18 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
                     size="sm"
                     variant="secondary"
                     className="flex-1"
-                    onClick={() => {
+                    onClick={async () => {
+                      if (isDesktop && localClipPath) {
+                        const cf = (window as unknown as { clipforge?: { dialogSaveVideo?: (p: string, n?: string) => Promise<string | null>; shellShowItemInFolder?: (p: string) => Promise<void> } }).clipforge;
+                        try {
+                          const saved = await cf?.dialogSaveVideo?.(localClipPath, filename);
+                          if (saved) await cf?.shellShowItemInFolder?.(saved);
+                          return;
+                        } catch (e) {
+                          setRenderError(String((e as Error).message));
+                          return;
+                        }
+                      }
                       const a = document.createElement("a");
                       a.href = clip.signed_video_url!;
                       a.download = filename;
@@ -513,7 +535,21 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
                     }}
                   >
                     <Download size={13} />
-                    Download
+                    {isDesktop ? "Save to…" : "Download"}
+                  </Button>
+                )}
+                {canDownload && isDesktop && localClipPath && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={async () => {
+                      const cf = (window as unknown as { clipforge?: { shellShowItemInFolder?: (p: string) => Promise<void> } }).clipforge;
+                      try { await cf?.shellShowItemInFolder?.(localClipPath); } catch (e) { setRenderError(String((e as Error).message)); }
+                    }}
+                    title="Reveal in folder"
+                  >
+                    <FilmReel size={13} />
+                    Reveal
                   </Button>
                 )}
                 <Button

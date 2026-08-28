@@ -25,15 +25,23 @@ export function resolveBin(name: string): string | null {
   const base = getResourceBase();
   const plat = platformDir();
   const arch = archSuffix();
+  const electronRoot = path.resolve(path.join(path.dirname(new URL(import.meta.url).pathname), "..", ".."));
   const candidates = [
     path.join(base, "bin", `${plat}-${arch}`, name),
     path.join(base, "bin", plat, name),
     path.join(base, "bin", name),
     path.join(base, "resources", "bin", `${plat}-${arch}`, name),
     path.join(base, "resources", "bin", plat, name),
+    path.join(base, "electron", "resources", "bin", `${plat}-${arch}`, name),
+    path.join(base, "electron", "resources", "bin", plat, name),
+    path.join(electronRoot, "resources", "bin", `${plat}-${arch}`, name),
+    path.join(electronRoot, "resources", "bin", plat, name),
     path.join(process.cwd(), "resources", "bin", `${plat}-${arch}`, name),
     path.join(process.cwd(), "resources", "bin", plat, name),
     path.join(process.cwd(), "resources", "bin", name),
+    path.join(process.cwd(), "electron", "resources", "bin", `${plat}-${arch}`, name),
+    path.join(process.cwd(), "electron", "resources", "bin", plat, name),
+    path.join(process.cwd(), "electron", "resources", "bin", name),
   ];
   for (const p of candidates) {
     if (fs.existsSync(p)) {
