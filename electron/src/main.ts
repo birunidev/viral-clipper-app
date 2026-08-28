@@ -8,7 +8,7 @@ import { verifyLicense, isLicensed, getLicense } from "./services/license.js";
 import { ramTier, whisperModelForTier, llmModelForTier } from "./services/system.js";
 import { listVariants, currentSelectedVariant, whisperStatus, ensureVariant, removeVariant } from "./services/models.js";
 import { randomUUID } from "node:crypto";
-import { Worker } from "node:worker_threads";
+import { utilityProcess } from "electron";
 import { startLocalFastAPI, getLocalApiUrl, isLocalFastAPIEnabled, stopLocalFastAPI } from "./services/fastapi.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -139,8 +139,18 @@ function toMediaUrl(p: string | null): string | null {
   return `media://${p}`;
 }
 
-app.on("window-all-closed", () => { stopLocalFastAPI(); if (process.platform !== "darwin") app.quit(); });
-app.on("before-quit", () => stopLocalFastAPI());
+app.on("window-all-closed", () => {
+  for (const [, child] of activeUtilities) { try { child.kill(); } catch {} }
+  stopLocalFastAPI();
+  if (process.platform !== "darwin") app.quit();
+});
+app.on("before-quit", () => {
+  for (const [, child] of activeUtilities) { try { child.kill(); } catch {} }
+  stopLocalFastAPI();
+});
+app.on("child-process-gone", (_e, details) => {
+  if (details.type === "Utility") console.warn(`[main] utility gone reason=${details.reason} exitCode=${details.exitCode}`);
+});
 
 ipcMain.handle("fastapi:getUrl", async () => fastApiUrl);
 ipcMain.handle("license:verify", async (_e, { key, email }: { key: string; email?: string }) => {
@@ -254,50 +264,209 @@ ipcMain.handle("caption-styles:create", async (_e, data: { label: string; config
   return getRaw().prepare("SELECT * FROM caption_styles WHERE id=?").get(id);
 });
 
-function runJobInWorker(jobId: string, projectId: string, clipId?: string) {
-  console.log(`[main] runJobInWorker jobId=${jobId} projectId=${projectId} clipId=${clipId} isLicensed=${isLicensed()} packaged=${app.isPackaged}`);
+const activeUtilities = new Map<string, Electron.UtilityProcess>();
+
+function runJobInUtility(jobId: string, projectId: string, clipId?: string) {
+  console.log(`[main] runJobInUtility jobId=${jobId} projectId=${projectId} clipId=${clipId} isLicensed=${isLicensed()} packaged=${app.isPackaged}`);
   const userDataPath = app.getPath("userData");
   const resourcesPath = process.resourcesPath ?? process.cwd();
-  const workerPath = path.join(__dirname, "worker", "jobWorker.js");
-  const fallbackPath = path.join(__dirname, "worker/jobWorker.js");
-  const resolved = fs.existsSync(workerPath) ? workerPath : fallbackPath;
-  console.log(`[main] worker path ${resolved} exists ${fs.existsSync(resolved)}`);
+  const runnerPath = path.join(__dirname, "worker", "jobRunner.js");
+  const fallbackRunner = path.join(__dirname, "worker/jobRunner.js");
+  const resolved = fs.existsSync(runnerPath) ? runnerPath : fallbackRunner;
+  console.log(`[main] utility runner ${resolved} exists ${fs.existsSync(resolved)} userData=${userDataPath}`);
+
   if (!fs.existsSync(resolved)) {
-    console.warn("[main] worker not found, falling back to in-process");
-    const { runAnalyze: ra, runRender: rr } = require("./services/pipeline.js") as { runAnalyze: typeof import("./services/pipeline.js").runAnalyze; runRender: typeof import("./services/pipeline.js").runRender };
-    const fn = clipId ? rr : ra;
-    setImmediate(() => {
-      console.log(`[main] fallback run ${clipId ? "render" : "analyze"} for ${jobId}`);
-      (fn as (id: string, cb: (s: string, p: number) => void) => Promise<void>)(jobId, (stage, progress) => {
-        console.log(`[main] fallback progress ${stage} ${progress}`);
-        win?.webContents.send("job:progress", { jobId, projectId, clipId, stage, progress });
-      })
-        .then(() => {
-          console.log(`[main] fallback done ${jobId}`);
-          win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "completed", progress: 100 });
-        })
-        .catch((err: unknown) => {
-          console.error(`[main] fallback failed ${jobId}`, err);
-          win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "failed", error: String(err) });
-        });
-    });
+    console.error("[main] jobRunner not found, marking job failed");
+    try {
+      const db = getRaw();
+      db.prepare("UPDATE jobs SET status='failed', error=? WHERE id=?").run("jobRunner missing", jobId);
+      db.prepare("UPDATE projects SET status='failed' WHERE id=?").run(projectId);
+    } catch {}
+    win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "failed", error: "jobRunner missing" });
     return;
   }
-  console.log(`[main] spawning worker for ${jobId}`);
-  const worker = new Worker(resolved, { workerData: { jobId, userDataPath, resourcesPath } });
-  worker.on("message", (msg: { type: string; stage?: string; progress?: number; error?: string }) => {
-    console.log(`[main] worker message ${JSON.stringify(msg)}`);
-    if (msg.type === "progress" && msg.stage) win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: msg.stage, progress: msg.progress ?? 0 });
-    else if (msg.type === "done") win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "completed", progress: 100 });
-    else if (msg.type === "error") win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "failed", error: msg.error ?? "unknown" });
+
+  // Gather snapshot for the utility (so it doesn't need SQLite)
+  const db = getRaw();
+  const project = db.prepare("SELECT * FROM projects WHERE id=?").get(projectId) as Record<string, unknown> | undefined;
+  const job = db.prepare("SELECT * FROM jobs WHERE id=?").get(jobId) as Record<string, unknown> | undefined;
+  if (!project || !job) {
+    console.error("[main] project/job not found for utility", projectId, jobId);
+    return;
+  }
+  const jobType = String(job.type ?? "analyze");
+
+  // Mark running immediately (main owns DB, not utility)
+  const now = nowIso();
+  db.prepare("UPDATE jobs SET status='running', stage='downloading', progress=2, updated_at=? WHERE id=?").run(now, jobId);
+  db.prepare("UPDATE projects SET status='running', updated_at=? WHERE id=?").run(now, projectId);
+  win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "downloading", progress: 2 });
+
+  // For analyze, include cached timeline_words if any (so utility can skip transcribe on re-run)
+  let cachedWords: unknown[] | undefined;
+  try {
+    const rows = db.prepare("SELECT text, start_ms, end_ms FROM timeline_words WHERE project_id=? ORDER BY idx").all(projectId) as Record<string, unknown>[];
+    if (rows.length) cachedWords = rows.map((r) => ({ text: String(r.text), start_ms: Number(r.start_ms), end_ms: Number(r.end_ms) }));
+  } catch {}
+
+  let child: Electron.UtilityProcess;
+  try {
+    child = utilityProcess.fork(resolved, [], {
+      serviceName: `clipzard-job-${jobId.slice(0, 8)}`,
+      stdio: "pipe",
+      env: { ...process.env, USER_DATA_PATH: userDataPath, RESOURCES_PATH: resourcesPath },
+    });
+  } catch (e) {
+    console.error("[main] utilityProcess.fork failed", e);
+    try {
+      db.prepare("UPDATE jobs SET status='failed', error=? WHERE id=?").run(String((e as Error).message).slice(0, 500), jobId);
+      db.prepare("UPDATE projects SET status='failed' WHERE id=?").run(projectId);
+    } catch {}
+    win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "failed", error: String(e) });
+    return;
+  }
+
+  activeUtilities.set(jobId, child);
+
+  child.on("spawn", () => {
+    console.log(`[main] utility spawned pid=${child.pid} for ${jobId}`);
+    child.stdout?.on("data", (d: Buffer) => console.log(`[utility:${jobId.slice(0,6)} out] ${d.toString().trim()}`));
+    child.stderr?.on("data", (d: Buffer) => console.error(`[utility:${jobId.slice(0,6)} err] ${d.toString().trim()}`));
+
+    // Send start payload after spawn so parentPort is ready
+    const payload: Record<string, unknown> = clipId
+      ? {
+          type: "start",
+          jobId,
+          projectId,
+          clipId,
+          jobType: "render",
+          project: { id: projectId, source_key: String(project.source_key ?? "") },
+          clip: (() => {
+            const c = db.prepare("SELECT * FROM clips WHERE id=?").get(clipId) as Record<string, unknown> | undefined;
+            if (!c) return null;
+            return { id: String(c.id), title: String(c.title), start_time: Number(c.start_time), end_time: Number(c.end_time), caption_json: c.caption_json as string | null, thumbnail_url: c.thumbnail_url as string | null };
+          })(),
+          opts: (() => {
+            try { return JSON.parse(String(job.options ?? "{}")); } catch { return {}; }
+          })(),
+        }
+      : {
+          type: "start",
+          jobId,
+          projectId,
+          jobType: "analyze",
+          project: { id: projectId, title: String(project.title), source: String(project.source), source_type: String(project.source_type ?? "youtube"), source_key: project.source_key as string | null, language: (project.language as string | null) ?? null },
+          opts: (() => {
+            try { return JSON.parse(String(job.options ?? "{}")); } catch { return {}; }
+          })(),
+          cachedWords: cachedWords ?? undefined,
+        };
+
+    if (clipId && !(payload as Record<string, unknown>).clip) {
+      console.error("[main] clip not found for render", clipId);
+      child.kill();
+      return;
+    }
+    child.postMessage(payload as never);
   });
-  worker.on("error", (err) => {
-    console.error("[worker] error", err);
+
+  child.on("message", (msg: unknown) => {
+    const m = msg as Record<string, unknown>;
+    if (!m || typeof m.type !== "string") return;
+    // console.log(`[main] utility message ${jobId} ${JSON.stringify(m).slice(0,400)}`);
+
+    if (m.type === "progress" && typeof m.stage === "string") {
+      const stage = String(m.stage);
+      const progress = Number(m.progress ?? 0);
+      try { getRaw().prepare("UPDATE jobs SET stage=?, progress=?, updated_at=? WHERE id=?").run(stage, progress, nowIso(), jobId); } catch {}
+      win?.webContents.send("job:progress", { jobId, projectId, clipId, stage, progress });
+    } else if (m.type === "sourceReady" && typeof m.sourceKey === "string") {
+      try {
+        getRaw().prepare("UPDATE projects SET source_key=?, updated_at=? WHERE id=?").run(String(m.sourceKey), nowIso(), projectId);
+        if (m.language) getRaw().prepare("UPDATE projects SET language=? WHERE id=?").run(String(m.language), projectId);
+      } catch {}
+    } else if (m.type === "meta" && typeof m.language === "string") {
+      try { getRaw().prepare("UPDATE projects SET language=? WHERE id=?").run(String(m.language), projectId); } catch {}
+    } else if (m.type === "words" && Array.isArray(m.words)) {
+      try {
+        const words = m.words as { text: string; start_ms: number; end_ms: number }[];
+        const lang = (m.language as string | null) ?? null;
+        if (lang) getRaw().prepare("UPDATE projects SET language=? WHERE id=?").run(lang, projectId);
+        const dbr = getRaw();
+        const insert = dbr.prepare("INSERT INTO timeline_words (id, project_id, idx, text, start_ms, end_ms) VALUES (?,?,?,?,?,?)");
+        const tx = dbr.transaction(() => {
+          dbr.prepare("DELETE FROM timeline_words WHERE project_id=?").run(projectId);
+          for (let i = 0; i < words.length; i++) insert.run(`${projectId}_${i}`, projectId, i, words[i].text, words[i].start_ms, words[i].end_ms);
+        });
+        (tx as () => void)();
+      } catch (e) { console.warn("[main] words persist failed", e); }
+    } else if (m.type === "done") {
+      const payload = m.payload as Record<string, unknown> | undefined;
+      try {
+        if (jobType === "render" || clipId) {
+          const videoUrl = String((payload as Record<string, unknown>)?.videoUrl ?? "");
+          const thumbPath = (payload as Record<string, unknown>)?.thumbPath as string | null | undefined;
+          if (videoUrl) getRaw().prepare("UPDATE clips SET video_url=? WHERE id=?").run(videoUrl, clipId!);
+          if (thumbPath) {
+            const existing = getRaw().prepare("SELECT thumbnail_url FROM clips WHERE id=?").get(clipId!) as Record<string, unknown> | undefined;
+            if (!existing?.thumbnail_url) getRaw().prepare("UPDATE clips SET thumbnail_url=? WHERE id=?").run(thumbPath, clipId!);
+          }
+          getRaw().prepare("UPDATE jobs SET status='completed', stage=NULL, progress=100, updated_at=? WHERE id=?").run(nowIso(), jobId);
+          win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "completed", progress: 100 });
+        } else {
+          // Analyze done: payload contains clips, words (already persisted), language
+          const clips = (payload as Record<string, unknown>)?.clips as { title: string; hook?: string; start: number; end: number; thumbPath: string | null; captionJson: string | null }[] | undefined;
+          if (Array.isArray(clips) && clips.length) {
+            const dbr = getRaw();
+            for (let i = 0; i < clips.length; i++) {
+              const c = clips[i];
+              const clipIdNew = `${jobId}_${i}`;
+              dbr.prepare("INSERT INTO clips (id, project_id, job_id, title, viral_hook, start_time, end_time, thumbnail_url, caption_json, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+                .run(clipIdNew, projectId, jobId, c.title, c.hook ?? null, c.start, c.end, c.thumbPath, c.captionJson, nowIso());
+            }
+          }
+          getRaw().prepare("UPDATE jobs SET status='completed', stage=NULL, progress=100, updated_at=? WHERE id=?").run(nowIso(), jobId);
+          getRaw().prepare("UPDATE projects SET status='completed', updated_at=? WHERE id=?").run(nowIso(), projectId);
+          win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "completed", progress: 100 });
+        }
+      } catch (e) { console.error("[main] done handling failed", e); }
+    } else if (m.type === "error") {
+      const err = String(m.error ?? "unknown").slice(0, 800);
+      console.error(`[main] utility error ${jobId} ${err}`);
+      try {
+        getRaw().prepare("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?").run(err.slice(0, 500), nowIso(), jobId);
+        getRaw().prepare("UPDATE projects SET status='failed', updated_at=? WHERE id=?").run(nowIso(), projectId);
+      } catch {}
+      win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "failed", error: err });
+    }
+  });
+
+  // UtilityProcess has no 'error' event in types; handle via exit/message
+  (child as unknown as { on: (e: string, cb: (err: Error) => void) => void }).on("error", (err: Error) => {
+    console.error(`[utility] error ${jobId}`, err);
+    activeUtilities.delete(jobId);
+    try {
+      getRaw().prepare("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?").run(String(err).slice(0, 500), nowIso(), jobId);
+      getRaw().prepare("UPDATE projects SET status='failed', updated_at=? WHERE id=?").run(nowIso(), projectId);
+    } catch {}
     win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "failed", error: String(err) });
   });
-  worker.on("exit", (code) => {
-    console.log(`[worker] exit ${jobId} code ${code}`);
-    if (code !== 0) console.warn("[worker] exit code", code);
+
+  child.on("exit", (code: number) => {
+    console.log(`[utility] exit ${jobId} code ${code}`);
+    activeUtilities.delete(jobId);
+    // If exit without done/error and job still running, mark failed
+    try {
+      const j = getRaw().prepare("SELECT status FROM jobs WHERE id=?").get(jobId) as Record<string, unknown> | undefined;
+      if (j && (j.status === "running" || j.status === "queued")) {
+        if (code !== 0) {
+          getRaw().prepare("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?").run(`utility exit ${code}`, nowIso(), jobId);
+          getRaw().prepare("UPDATE projects SET status='failed', updated_at=? WHERE id=?").run(nowIso(), projectId);
+          win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "failed", error: `utility exit ${code}` });
+        }
+      }
+    } catch {}
   });
 }
 
@@ -308,7 +477,7 @@ ipcMain.handle("jobs:start", async (_e, { projectId, opts }: { projectId: string
   getRaw().prepare("INSERT INTO jobs (id, project_id, type, status, stage, progress, options, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)")
     .run(id, projectId, "analyze", "queued", "queued", 0, JSON.stringify(opts ?? {}), now, now);
   getRaw().prepare("UPDATE projects SET status='queued', updated_at=? WHERE id=?").run(now, projectId);
-  runJobInWorker(id, projectId);
+  runJobInUtility(id, projectId);
   const job = getRaw().prepare("SELECT * FROM jobs WHERE id=?").get(id) as Record<string, unknown>;
   return job ?? { id, project_id: projectId, type: "analyze", status: "queued", stage: "queued", progress: 0, options: JSON.stringify(opts ?? {}), created_at: now, updated_at: now };
 });
@@ -321,9 +490,21 @@ ipcMain.handle("jobs:render", async (_e, { projectId, clipId, opts }: { projectI
   const now = nowIso();
   getRaw().prepare("INSERT INTO jobs (id, project_id, type, clip_id, status, stage, progress, options, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
     .run(id, projectId, "render", clipId, "queued", "queued", 0, JSON.stringify(opts ?? {}), now, now);
-  runJobInWorker(id, projectId, clipId);
+  runJobInUtility(id, projectId, clipId);
   const job = getRaw().prepare("SELECT * FROM jobs WHERE id=?").get(id) as Record<string, unknown>;
   return job ?? { id, project_id: projectId, type: "render", clip_id: clipId, status: "queued", stage: "queued", progress: 0, options: JSON.stringify(opts ?? {}), created_at: now, updated_at: now };
+});
+
+ipcMain.handle("jobs:cancel", async (_e, jobId: string) => {
+  const child = activeUtilities.get(jobId);
+  if (child) { try { child.kill(); } catch {} activeUtilities.delete(jobId); }
+  try {
+    const j = getRaw().prepare("SELECT status FROM jobs WHERE id=?").get(jobId) as Record<string, unknown> | undefined;
+    if (j && (j.status === "queued" || j.status === "running")) {
+      getRaw().prepare("UPDATE jobs SET status='failed', error='cancelled', updated_at=? WHERE id=?").run(nowIso(), jobId);
+    }
+  } catch {}
+  return { ok: true };
 });
 
 ipcMain.handle("jobs:get", async (_e, id: string) => getRaw().prepare("SELECT * FROM jobs WHERE id=?").get(id));
