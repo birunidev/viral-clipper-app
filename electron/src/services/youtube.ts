@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { createRequire } from "node:module";
 import { ytdlpPath } from "./bin.js";
 
@@ -10,10 +11,33 @@ export class DownloadError extends Error {}
 
 function bin(): string { return ytdlpPath(); }
 
+function cookiesArgs(): string[] {
+  // Prefer explicit env, then persistent app cookies, then /tmp fallback, then browser import
+  const candidates = [
+    process.env.YTDLP_COOKIEFILE,
+    process.env.YTDLP_COOKIES,
+    path.join(process.env.USER_DATA_PATH ?? "", "cookies.txt"),
+    path.join(os.homedir(), ".config", "clipzard-desktop", "cookies.txt"),
+    "/tmp/cookies.txt",
+    path.join(process.cwd(), "cookies.txt"),
+    path.join(path.join(process.cwd(), "electron", "cookies.txt")),
+  ].filter(Boolean) as string[];
+  for (const c of candidates) {
+    try { if (c && fs.existsSync(c) && fs.statSync(c).size > 200) return ["--cookies", c]; } catch {}
+  }
+  // Fallback: try to steal from local Chrome (works on dev VM)
+  try {
+    const chromeCookies = path.join(os.homedir(), ".config", "google-chrome", "Default", "Cookies");
+    if (fs.existsSync(chromeCookies)) return ["--cookies-from-browser", "chrome"];
+  } catch {}
+  return [];
+}
+
 export async function getInfo(url: string): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let resolved = false;
-    const p = spawn(bin(), ["--dump-json", "--no-playlist", "--skip-download", url], { stdio: "pipe" });
+    const extra = cookiesArgs();
+    const p = spawn(bin(), [...extra, "--dump-json", "--no-playlist", "--skip-download", url], { stdio: "pipe" });
     let out = "", err = "";
     const t = setTimeout(() => {
       if (!resolved) {
@@ -45,7 +69,8 @@ export async function getInfo(url: string): Promise<Record<string, unknown>> {
 export function download(url: string, outDir: string, onProgress?: (f: number) => void): Promise<string> {
   fs.mkdirSync(outDir, { recursive: true });
   const tmpl = path.join(outDir, "%(id)s.%(ext)s");
-  const args = ["-f", "bv*[height<=1080]+ba/b[height<=1080]/b", "--merge-output-format", "mp4", "-o", tmpl, "--newline", "--no-warnings", url];
+  const extra = cookiesArgs();
+  const args = [...extra, "-f", "bv*[height<=1080]+ba/b[height<=1080]/b", "--merge-output-format", "mp4", "-o", tmpl, "--newline", "--no-warnings", url];
   const binPath = bin();
   try {
     if (!fs.existsSync(binPath) && binPath !== "yt-dlp" && binPath !== "yt-dlp.exe") {
