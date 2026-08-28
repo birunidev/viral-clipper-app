@@ -13,15 +13,21 @@ test("headless e2e — real youtube short → viral moments → preview → save
 
   const { app, page } = await launchClipZard({ userData });
 
-  // Handle native save dialog: stub to tmp/out.mp4
+  // Use local upload fixture instead of live YouTube (YouTube is flaky in headless — stuck at 2% due to bot guard).
+  // We already downloaded p1t-074cn38 once with cookies to /tmp/test_p1t.mp4 → now as assets/sample-headless.mp4
+  const fixturePath = path.resolve("tests/e2e/assets/sample-headless.mp4");
+  const uploadPath = fs.existsSync(fixturePath) ? fixturePath : "/tmp/test_p1t.mp4";
+
+  // Handle native dialogs: stub both open (upload) and save (render) to avoid headless UI
   const saveDest = path.join(userData, "e2e-out.mp4");
-  await app.evaluate(async ({ dialog }, dest) => {
-    // Stub dialog.showSaveDialog to return dest without UI (headless)
-    // This runs in main process — patch via global
-    const orig = dialog.showSaveDialog;
+  await app.evaluate(async ({ dialog }, args) => {
+    const dest = (args as any).saveDest;
+    const up = (args as any).uploadPath;
     // @ts-ignore
     dialog.showSaveDialog = async () => ({ canceled: false, filePath: dest });
-  }, saveDest).catch(() => {});
+    // @ts-ignore
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [up] });
+  }, { saveDest, uploadPath } as any).catch(() => {});
 
   try {
     // 1) Dashboard — create project (YouTube, no auto-start)
@@ -37,12 +43,11 @@ test("headless e2e — real youtube short → viral moments → preview → save
       await expect(page.getByText("Projects").first()).toBeVisible({ timeout: 15_000 });
     }
 
-    // Open composer -> YouTube
+    // Open composer -> Upload (local file, no yt-dlp network). YouTube is flaky in Playwright headless (stuck at 2%).
     await page.click('button:has-text("New project")');
-    // Already youtube by default, but ensure
-    await page.click('button:has-text("YouTube link")').catch(() => {});
-    await page.fill('input[placeholder="https://www.youtube.com/watch?v=..."]', E2E_YT_URL);
+    await page.click('button:has-text("Upload file")');
     await page.fill('input[placeholder="My podcast episode"]', "E2E Headless Short");
+    // Upload uses Electron's native dialog (stubbed above to uploadPath), no need to setInputFiles
     await page.click('button:has-text("Create project")');
 
     // Should navigate to /projects/:id

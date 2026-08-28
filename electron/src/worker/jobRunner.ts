@@ -127,16 +127,37 @@ async function handleAnalyze(msg: StartAnalyzeMsg) {
   postProgress("downloading", 2);
 
   if (sourceType === "youtube") {
+    console.log(`[jobRunner] getInfo ${source}`);
     try {
       const info = await getInfo(source);
       sourceLanguage = String((info as Record<string, unknown>).language ?? (info as Record<string, unknown>).original_language ?? "") || null;
       if (sourceLanguage) parentPort?.postMessage({ type: "meta", language: sourceLanguage });
-    } catch {}
+      console.log(`[jobRunner] getInfo ok lang=${sourceLanguage} title=${String((info as any).title ?? "").slice(0,60)}`);
+    } catch (e) {
+      console.warn(`[jobRunner] getInfo failed ${(e as Error).message?.slice(0,300)}`);
+    }
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clipzard_dl_"));
+    console.log(`[jobRunner] download start tmp=${tmpDir}`);
+    try {
+      const { ytdlpPath } = await import("../services/bin.js");
+      const bin = ytdlpPath();
+      console.log(`[jobRunner] ytdlp bin=${bin} exists=${fs.existsSync(bin)}`);
+      const { cookiesArgs } = await import("../services/youtube.js").then(() => ({ cookiesArgs: null })).catch(() => ({ cookiesArgs: null }));
+      // log cookies candidates via direct check
+      const candidates = [
+        process.env.YTDLP_COOKIEFILE,
+        process.env.USER_DATA_PATH ? `${process.env.USER_DATA_PATH}/cookies.txt` : null,
+        `${os.homedir()}/.config/clipzard-desktop/cookies.txt`,
+        "/tmp/cookies.txt",
+      ].filter(Boolean) as string[];
+      console.log(`[jobRunner] cookies candidates ${candidates.map(c => `${c}:${fs.existsSync(c as string)}`).join(", ")}`);
+    } catch {}
     localVideo = await download(source, tmpDir, (f: number) => {
       const p = Math.round(2 + 23 * f);
+      console.log(`[jobRunner] download progress ${Math.round(f*100)}% -> ${p}%`);
       postProgress("downloading", p);
     });
+    console.log(`[jobRunner] download done ${localVideo}`);
     const ext = path.extname(localVideo) || ".mp4";
     const dest = sourcePath(projectId, ext);
     fs.copyFileSync(localVideo, dest);
