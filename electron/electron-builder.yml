@@ -3,6 +3,9 @@ productName: ClipZard
 directories:
   output: release
   buildResources: resources
+asarUnpack:
+  - "**/node_modules/sqlite-electron/**"
+  - "**/sqlite-electron/**"
 files:
   - dist/**/*
   - renderer/dist/**/*
