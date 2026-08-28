@@ -557,7 +557,7 @@ def download_video(
     import tempfile
     _tmp_created = False
     if out_dir is None:
-        out_dir = tempfile.mkdtemp(prefix="snapclip_dl_")
+        out_dir = tempfile.mkdtemp(prefix="clipzard_dl_")
         _tmp_created = True
     else:
         os.makedirs(out_dir, exist_ok=True)

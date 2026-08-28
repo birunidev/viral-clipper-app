@@ -1,4 +1,4 @@
-"""ClipForge backend: FastAPI service owning auth, CRUD, and the clipping pipeline."""
+"""ClipZard backend: FastAPI service owning auth, CRUD, and the clipping pipeline."""
 
 from __future__ import annotations
 
@@ -84,7 +84,7 @@ def health() -> dict:
         v = _current_ytdlp_version()
     except Exception:
         v = "unknown"
-    return {"ok": True, "service": "clipforge-backend", "ytdlp_version": v}
+    return {"ok": True, "service": "clipzard-backend", "ytdlp_version": v}
 
 
 @app.get("/health/ytdlp")

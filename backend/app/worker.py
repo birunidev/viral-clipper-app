@@ -78,7 +78,7 @@ class WorkerPool:
         for _ in range(self._count):
             thread = threading.Thread(
                 target=self._loop,
-                name=f"snapclip-worker-{len(self._threads)}",
+                name=f"clipzard-worker-{len(self._threads)}",
                 daemon=True,
             )
             thread.start()

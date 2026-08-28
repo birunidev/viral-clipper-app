@@ -24,7 +24,7 @@ export default function AccountPage() {
   return (
     <div className="mx-auto max-w-3xl px-6 py-12">
       <h1 className="text-2xl font-semibold tracking-tight">Account</h1>
-      <p className="mt-2 text-sm text-ink-tertiary">Manage your ClipForge Desktop license and downloads.</p>
+      <p className="mt-2 text-sm text-ink-tertiary">Manage your ClipZard Desktop license and downloads.</p>
       {me ? <p className="mt-4 text-sm">Signed in as <span className="font-medium">{me.email}</span></p> : <p className="mt-4 text-sm text-ink-tertiary">Not signed in — <Link href="/app/login" className="underline">Sign in</Link> or <Link href="/app/register" className="underline">Register</Link></p>}
       <div className="mt-8 rounded-xl border border-line bg-surface-1 p-6">
         <h2 className="text-sm font-semibold">License key</h2>
@@ -39,7 +39,7 @@ export default function AccountPage() {
       </div>
       <div className="mt-8 flex flex-col gap-3">
         <Link href="/" className="text-sm underline">Back to marketing</Link>
-        <a href="https://github.com/clipforge/releases" className="text-sm text-ink-tertiary">Download ClipForge Desktop — Windows (.exe) / Linux (.AppImage)</a>
+        <a href="https://github.com/clipzard/releases" className="text-sm text-ink-tertiary">Download ClipZard Desktop — Windows (.exe) / Linux (.AppImage)</a>
       </div>
     </div>
   );

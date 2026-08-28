@@ -29,7 +29,7 @@ type SnapWindow = Window & {
 };
 
 export default function BillingPage() {
-  const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
+  const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipzard?: unknown }).clipzard;
   if (isDesktop) {
     return (
       <div className="mx-auto flex max-w-4xl flex-col gap-6">

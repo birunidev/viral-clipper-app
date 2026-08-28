@@ -19,12 +19,12 @@ function getDbPath(): string {
   const envPath = process.env.USER_DATA_PATH;
   if (envPath) {
     fs.mkdirSync(envPath, { recursive: true });
-    return path.join(envPath, "clipforge.db");
+    return path.join(envPath, "clipzard.db");
   }
   const appPath = getAppUserData();
   const base = appPath ?? path.join(process.cwd(), ".data");
   fs.mkdirSync(base, { recursive: true });
-  return path.join(base, "clipforge.db");
+  return path.join(base, "clipzard.db");
 }
 
 const SCHEMA = `

@@ -3,8 +3,8 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 
-const STORAGE_KEY = "snapclip_cookie_consent";
-const YT_KEY = "snapclip_youtube_cookie_consent";
+const STORAGE_KEY = "clipzard_cookie_consent";
+const YT_KEY = "clipzard_youtube_cookie_consent";
 
 type Consent = {
   necessary: true;
@@ -58,13 +58,13 @@ export function CookieConsent() {
         const txt = await getClientYoutubeCookies();
         if (txt) {
           try {
-            sessionStorage.setItem("snapclip_youtube_cookies", txt);
+            sessionStorage.setItem("clipzard_youtube_cookies", txt);
           } catch {}
         }
       } catch {}
     } else {
       try {
-        sessionStorage.removeItem("snapclip_youtube_cookies");
+        sessionStorage.removeItem("clipzard_youtube_cookies");
       } catch {}
     }
     // Notify dashboard to re-check consent without reload
@@ -82,7 +82,7 @@ export function CookieConsent() {
           <div>
             <p className="text-sm font-semibold text-ink">We use cookies</p>
             <p className="mt-1 text-sm leading-relaxed text-ink-tertiary">
-              SnapClip uses necessary cookies to keep you signed in. With your consent, we can also use your YouTube session cookies — sent from your browser only when you create a YouTube project — to download videos on your behalf and bypass YouTube’s bot check. Your YouTube cookies are never stored; they’re used once per download and discarded.
+              ClipZard uses necessary cookies to keep you signed in. With your consent, we can also use your YouTube session cookies — sent from your browser only when you create a YouTube project — to download videos on your behalf and bypass YouTube’s bot check. Your YouTube cookies are never stored; they’re used once per download and discarded.
               <span className="mt-2 block text-xs text-ink-muted">
                 Learn more in <Link href="/privacy" className="underline underline-offset-4 hover:text-ink">Privacy</Link> and <Link href="/terms" className="underline underline-offset-4 hover:text-ink">Terms</Link>.
               </span>

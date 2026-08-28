@@ -46,7 +46,7 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
       - uses: actions/upload-artifact@v4
         with:
-          name: clipforge-${{ matrix.os }}
+          name: clipzard-${{ matrix.os }}
           path: |
             electron/release/*.AppImage
             electron/release/*.deb

@@ -1,5 +1,5 @@
-appId: com.snapclip.desktop
-productName: SnapClip
+appId: com.clipzard.desktop
+productName: ClipZard
 directories:
   output: release
   buildResources: resources
@@ -47,10 +47,10 @@ linux:
     - deb
   icon: resources/icon.png
   category: Video
-  maintainer: SnapClip <hello@snapclip.mysaas.web.id>
-  description: SnapClip Desktop - fully local viral clip engine
+  maintainer: ClipZard <hello@clipzard.web.id>
+  description: ClipZard Desktop - fully local viral clip engine
 publish:
   provider: github
-  owner: snapclip
-  repo: snapclip
+  owner: clipzard
+  repo: clipzard
   private: false

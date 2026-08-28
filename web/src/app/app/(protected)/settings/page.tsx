@@ -50,8 +50,8 @@ export default function SettingsPage() {
             type="button"
             onClick={() => {
               try {
-                localStorage.removeItem("snapclip_cookie_consent");
-                localStorage.removeItem("snapclip_youtube_cookie_consent");
+                localStorage.removeItem("clipzard_cookie_consent");
+                localStorage.removeItem("clipzard_youtube_cookie_consent");
                 document.cookie = "cookie_consent=; path=/; max-age=0";
                 window.location.reload();
               } catch {}
@@ -63,7 +63,7 @@ export default function SettingsPage() {
           <span className="text-xs text-ink-muted">
             Current: {(() => {
               try {
-                const raw = localStorage.getItem("snapclip_cookie_consent");
+                const raw = localStorage.getItem("clipzard_cookie_consent");
                 const c = raw ? JSON.parse(raw) : null;
                 if (!c) return "not decided";
                 return c.youtube ? "YouTube allowed" : c.analytics ? "Analytics only" : "Necessary only";

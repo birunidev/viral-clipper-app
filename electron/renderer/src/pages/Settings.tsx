@@ -354,14 +354,14 @@ function LocalModelsCard() {
   const [error, setError] = useState("");
 
   const refresh = async () => {
-    const cf = (window as unknown as { clipforge?: { modelsList: () => Promise<unknown> } }).clipforge;
+    const cf = (window as unknown as { clipzard?: { modelsList: () => Promise<unknown> } }).clipzard;
     if (!cf?.modelsList) return;
     try { setData((await cf.modelsList()) as unknown as typeof data); } catch {}
   };
 
   useEffect(() => {
     refresh();
-    const cf = (window as unknown as { clipforge?: { onModelsProgress: (cb: (d: unknown) => void) => () => void } }).clipforge;
+    const cf = (window as unknown as { clipzard?: { onModelsProgress: (cb: (d: unknown) => void) => () => void } }).clipzard;
     if (!cf?.onModelsProgress) return;
     const off = cf.onModelsProgress((d) => {
       const { variant, progress: p, done } = d as { variant: string; progress: number; done?: boolean };
@@ -372,14 +372,14 @@ function LocalModelsCard() {
   }, []);
 
   const handleSelect = async (v: string) => {
-    const cf = (window as unknown as { clipforge?: { modelsSetVariant: (x: string) => Promise<unknown> } }).clipforge;
+    const cf = (window as unknown as { clipzard?: { modelsSetVariant: (x: string) => Promise<unknown> } }).clipzard;
     if (!cf?.modelsSetVariant) return;
     setError("");
     try { await cf.modelsSetVariant(v); await refresh(); } catch (e) { setError(String((e as Error).message)); }
   };
 
   const handleDownload = async (v: string) => {
-    const cf = (window as unknown as { clipforge?: { modelsEnsure: (x: string) => Promise<unknown> } }).clipforge;
+    const cf = (window as unknown as { clipzard?: { modelsEnsure: (x: string) => Promise<unknown> } }).clipzard;
     if (!cf?.modelsEnsure) return;
     setBusy(v); setError(""); setProgress((p) => ({ ...p, [v]: 0 }));
     try { await cf.modelsEnsure(v); } catch (e) { setError(String((e as Error).message)); setBusy(null); }
@@ -387,7 +387,7 @@ function LocalModelsCard() {
 
   const handleRemove = async (v: string) => {
     if (!confirm(`Remove ${v} model? You can re-download later.`)) return;
-    const cf = (window as unknown as { clipforge?: { modelsRemove: (x: string) => Promise<unknown> } }).clipforge;
+    const cf = (window as unknown as { clipzard?: { modelsRemove: (x: string) => Promise<unknown> } }).clipzard;
     if (!cf?.modelsRemove) return;
     setBusy(v); setError("");
     try { await cf.modelsRemove(v); await refresh(); } catch (e) { setError(String((e as Error).message)); }
@@ -396,7 +396,7 @@ function LocalModelsCard() {
 
   if (!data) {
     // Fallback when not in Electron (dev web) — show static info
-    const isElectron = !!(window as unknown as { clipforge?: unknown }).clipforge;
+    const isElectron = !!(window as unknown as { clipzard?: unknown }).clipzard;
     if (!isElectron) return null;
     return <Card className="p-5"><p className="text-xs text-ink-tertiary">Loading local models…</p></Card>;
   }

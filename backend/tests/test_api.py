@@ -12,7 +12,7 @@ def test_health():
         res = client.get("/health")
         assert res.status_code == 200
         assert res.json()["ok"] is True
-        assert res.json()["service"] == "clipforge-backend"
+        assert res.json()["service"] == "clipzard-backend"
 
 
 def test_api_v1_routers_registered():

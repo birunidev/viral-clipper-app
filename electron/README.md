@@ -1,4 +1,4 @@
-# SnapClip Desktop (Electron)
+# ClipZard Desktop (Electron)
 
 Fully local viral clip engine — Electron main + Vite renderer + Node pipeline (ffmpeg + yt-dlp + whisper.cpp + Qwen GGUF).
 
@@ -53,11 +53,11 @@ npm --prefix renderer run build  # produce renderer/dist
 
 **Data location:** `app.getPath('userData')` →
 
-- Linux: `~/.config/snapclip-desktop/snapclip.db` (+ `projects/`, `models/`)
-- macOS: `~/Library/Application Support/snapclip-desktop/`
-- Win: `%APPDATA%\snapclip-desktop\`
+- Linux: `~/.config/clipzard-desktop/clipzard.db` (+ `projects/`, `models/`)
+- macOS: `~/Library/Application Support/clipzard-desktop/`
+- Win: `%APPDATA%\clipzard-desktop\`
 
-Override with `USER_DATA_PATH=/tmp/clipforge-data npm run dev`.
+Override with `USER_DATA_PATH=/tmp/clipzard-data npm run dev`.
 
 ---
 
@@ -95,7 +95,7 @@ Selected by RAM tier (`src/services/system.ts:5`):
 **Pre-seed for offline / faster installer:**
 
 ```bash
-# download for this machine's tier into its userData (~/.config/snapclip-desktop/models)
+# download for this machine's tier into its userData (~/.config/clipzard-desktop/models)
 npm run models:download
 
 # all tiers (for universal installer staging)
@@ -135,8 +135,8 @@ node electron/scripts/verify-pipeline.mjs --keep   # should show real words/clip
 **How it works:**
 - `whisper-cli` is built from `ggerganov/whisper.cpp` (`cmake`) into `resources/bin/<platform>-<arch>/whisper-cli` (`src/services/bin.ts:91`). If binary missing, pipeline falls back to mock — so dev never breaks.
 - LLM via `node-llama-cpp@3.6.0` (optionalDependency). If `LLM_API_KEY`+`LLM_BASE_URL` are set in `.env`, cloud is used instead (`analyzer.ts:202`); unset them to force local GGUF.
-- Models live at `<userData>/models/...` (`~/.config/snapclip-desktop/models/` on Linux). Override `USER_DATA_PATH` to stage elsewhere. The installer can pre-seed `resources/models/` and copy on first run (see `electron-builder.yml:15`).
-- To force re-download: `rm -rf ~/.config/snapclip-desktop/models` then `npm run setup:models`.
+- Models live at `<userData>/models/...` (`~/.config/clipzard-desktop/models/` on Linux). Override `USER_DATA_PATH` to stage elsewhere. The installer can pre-seed `resources/models/` and copy on first run (see `electron-builder.yml:15`).
+- To force re-download: `rm -rf ~/.config/clipzard-desktop/models` then `npm run setup:models`.
 
 ---
 
@@ -159,7 +159,7 @@ LLM_MODEL_URL=https://...
 USE_FASTAPI_LOCAL=1
 
 # License server (optional, only if you run a real verifier):
-LICENSE_VERIFY_URL=https://snapclip.mysaas.web.id/api/license/verify
+LICENSE_VERIFY_URL=https://clipzard.web.id/api/license/verify
 ```
 
 ---
@@ -174,7 +174,7 @@ npm run build:win                 # nsis (requires Windows or wine)
 npm run build:mac                 # dmg + zip (requires macOS)
 ```
 
-Builder config: `electron-builder.yml` (`appId com.snapclip.desktop`). Binaries under `resources/bin/<plat>-<arch>/` are auto-included as `extraResources/bin`.
+Builder config: `electron-builder.yml` (`appId com.clipzard.desktop`). Binaries under `resources/bin/<plat>-<arch>/` are auto-included as `extraResources/bin`.
 
 ---
 
@@ -184,5 +184,5 @@ Builder config: `electron-builder.yml` (`appId com.snapclip.desktop`). Binaries 
 - **chrome-sandbox permission denied (Linux)**: `postinstall` does `chmod 4755`; re-run `npm install` or `sudo chmod 4755 node_modules/electron/dist/chrome-sandbox`.
 - **yt-dlp 403 / bot guard**: Try `Upload` instead of YouTube URL, or retry (yt-dlp fallback chain). On dev, bot guard surfaces as `DownloadError` hint.
 - **whisper/LLM large download stalls**: Check disk space, re-run `npm run models:download`; partial files are skipped only if >1 MB, delete to retry.
-- **DB locked / JSON fallback**: Node <22.5 can't load `node:sqlite` → JSON file at `snapclip.json` is used (`src/services/db.ts:278`). Upgrade Node or set `USER_DATA_PATH` to a writable dir.
+- **DB locked / JSON fallback**: Node <22.5 can't load `node:sqlite` → JSON file at `clipzard.json` is used (`src/services/db.ts:278`). Upgrade Node or set `USER_DATA_PATH` to a writable dir.
 - **`media://` 403**: Path must be under `userData/projects` or `os.tmpdir()` (`src/main.ts:58`); renderer gets URLs via `toMediaUrl()` (`main.ts:135`).

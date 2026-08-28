@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate 30 reels from 4 YouTube URLs via SnapClip API, download, and prepare for YouTube upload."""
+"""Generate 30 reels from 4 YouTube URLs via ClipZard API, download, and prepare for YouTube upload."""
 import os, sys, time, json, random, pathlib, requests
 from urllib.parse import urlparse
 
@@ -190,9 +190,9 @@ def main():
         # find which project this pid belongs to
         try:
             p_idx = [p[0] for p in projects].index(pid)
-            handle = handles[p_idx] if p_idx < len(handles) else "@snapclip"
+            handle = handles[p_idx] if p_idx < len(handles) else "@clipzard"
         except:
-            handle = "@snapclip"
+            handle = "@clipzard"
 
         reels_meta.append({
             "file": f"/reels/reel_{idx:02d}.mp4",

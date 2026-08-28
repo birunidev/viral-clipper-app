@@ -1,5 +1,5 @@
 /**
- * Thin fetch wrapper for the ClipForge FastAPI backend.
+ * Thin fetch wrapper for the ClipZard FastAPI backend.
  *
  * All requests go to `NEXT_PUBLIC_API_URL` (e.g. https://app.example.com/api/v1
  * in prod via Caddy, http://localhost:8000/api/v1 in dev) with credentials
@@ -19,11 +19,11 @@ export class ApiError extends Error {
 }
 
 function isDesktop(): boolean {
-  return typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
+  return typeof window !== "undefined" && !!(window as unknown as { clipzard?: unknown }).clipzard;
 }
 
-function desktop(): Window["clipforge"] {
-  return (window as unknown as { clipforge: Window["clipforge"] }).clipforge;
+function desktop(): Window["clipzard"] {
+  return (window as unknown as { clipzard: Window["clipzard"] }).clipzard;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

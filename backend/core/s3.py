@@ -69,9 +69,9 @@ def _client_kwargs() -> dict:
 
     if endpoint:
         # R2 endpoint must be just the host (https://<account>.r2.cloudflarestorage.com).
-        # Users commonly paste it with a bucket/path suffix (e.g. .../snapclip or
-        # .../snapclip-prod-bucket or .../closingku-media) which makes boto3 sign
-        # the wrong canonical URI (`/bucket/key` becomes `/snapclip/bucket/key`) and
+        # Users commonly paste it with a bucket/path suffix (e.g. .../clipzard or
+        # .../clipzard-prod-bucket or .../closingku-media) which makes boto3 sign
+        # the wrong canonical URI (`/bucket/key` becomes `/clipzard/bucket/key`) and
         # R2 returns SignatureDoesNotMatch on every object operation. Strip any path/query.
         from urllib.parse import urlparse
 
@@ -137,7 +137,7 @@ def _ext_for(path: str) -> str:
 
 def upload_file(
     file_path: str,
-    key_prefix: str = "clipforge",
+    key_prefix: str = "clipzard",
     content_type: str | None = None,
     progress: Callable[[float], None] | None = None,
 ) -> S3Upload:
@@ -201,7 +201,7 @@ def upload_audio(
         if progress is not None:
             progress(0.06 + 0.09 * fraction)
 
-    return upload_file(file_path, "clipforge", "audio/mpeg", _cb)
+    return upload_file(file_path, "clipzard", "audio/mpeg", _cb)
 
 
 def presigned_get_url(bucket: str, key: str, expires: int = PRESIGNED_EXPIRY) -> str:

@@ -35,7 +35,7 @@ function getPythonBin(): string {
   if (process.env.PYTHON_BIN && fs.existsSync(process.env.PYTHON_BIN)) return process.env.PYTHON_BIN;
   const candidates = [
     path.join(getBackendDir(), ".venv", "bin", "python"),
-    path.join(os.homedir(), ".cache", "pypoetry", "virtualenvs", "clipforge*"),
+    path.join(os.homedir(), ".cache", "pypoetry", "virtualenvs", "clipzard*"),
     "python3",
     "python",
   ];
@@ -51,7 +51,7 @@ export async function startLocalFastAPI(): Promise<string> {
   const port = await getFreePort();
   const backendDir = getBackendDir();
   const userData = app.getPath("userData");
-  const dbPath = path.join(userData, "clipforge_local.db");
+  const dbPath = path.join(userData, "clipzard_local.db");
   const dbUrl = `sqlite:///${dbPath}`;
 
   const env: NodeJS.ProcessEnv = {

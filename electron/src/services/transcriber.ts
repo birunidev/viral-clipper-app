@@ -14,7 +14,7 @@ function getUserDataPath(): string {
     const { app } = require("electron") as { app: { getPath: (n: string) => string } };
     return app.getPath("userData");
   } catch {
-    return path.join(os.homedir(), ".clipforge");
+    return path.join(os.homedir(), ".clipzard");
   }
 }
 
@@ -93,7 +93,7 @@ function downloadFile(url: string, dest: string, onProgress?: (f: number) => voi
 }
 
 function extractAudio(videoPath: string): Promise<string> {
-  const out = path.join(os.tmpdir(), `clipforge_${Date.now()}.wav`);
+  const out = path.join(os.tmpdir(), `clipzard_${Date.now()}.wav`);
   return new Promise((resolve, reject) => {
     const p = spawn(ffmpegBin(), ["-y", "-hide_banner", "-loglevel", "error", "-i", videoPath, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", out], { stdio: "pipe" });
     let err = "";

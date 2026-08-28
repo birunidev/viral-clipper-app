@@ -13,8 +13,8 @@ import { startLocalFastAPI, getLocalApiUrl, isLocalFastAPIEnabled, stopLocalFast
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-app.setName("snapclip-desktop");
-if (process.platform === "win32") app.setAppUserModelId("com.snapclip.desktop");
+app.setName("clipzard-desktop");
+if (process.platform === "win32") app.setAppUserModelId("com.clipzard.desktop");
 
 let win: BrowserWindow | null = null;
 
@@ -52,7 +52,7 @@ function createWindow() {
       win.loadFile(p);
       win.webContents.openDevTools({ mode: "detach" });
       win.webContents.on("console-message", (_e, level, msg, line, src) => console.log(`[renderer:${level}] ${msg} @${src}:${line}`));
-    } else win.loadURL("data:text/html,<h1>SnapClip - renderer not built. Run: npm --prefix electron/renderer run build</h1>");
+    } else win.loadURL("data:text/html,<h1>ClipZard - renderer not built. Run: npm --prefix electron/renderer run build</h1>");
   }
 }
 
@@ -164,7 +164,7 @@ ipcMain.handle("models:setVariant", async (_e, variant: string) => {
   if (!["tiny","balanced","quality"].includes(v)) throw new Error("invalid variant");
   try {
     const Store = (await import("electron-store")).default as unknown as new (o: unknown)=> { set:(k:string,v:unknown)=>void; get:(k:string)=>unknown };
-    const store = new (Store as unknown as new (o: unknown)=> { set:(k:string,v:unknown)=>void })({ name: "clipforge-config" });
+    const store = new (Store as unknown as new (o: unknown)=> { set:(k:string,v:unknown)=>void })({ name: "clipzard-config" });
     store.set("llmVariant", v);
     process.env.LLM_TIER = v;
     return { ok: true, selected: v };

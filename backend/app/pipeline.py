@@ -464,7 +464,7 @@ def _run_analyze(job_id: str) -> None:
     db.update_project(project_id, status="running")
     db.update_job(job_id, status="running", stage="downloading", progress=2)
 
-    workdir = tempfile.mkdtemp(prefix="clipforge_analyze_")
+    workdir = tempfile.mkdtemp(prefix="clipzard_analyze_")
     local_video: str | None = None
     # True when we pulled a fresh copy from YouTube this run (vs reusing
     # the canonical source already stored in S3 from an earlier attempt).
@@ -786,7 +786,7 @@ def _run_render(job_id: str) -> None:
 
     db.update_job(job_id, status="running", stage="downloading", progress=2)
 
-    workdir = tempfile.mkdtemp(prefix="clipforge_render_")
+    workdir = tempfile.mkdtemp(prefix="clipzard_render_")
     try:
         ext = os.path.splitext(source_key)[1] or ".mp4"
         local_video = s3.download_object(source_key, os.path.join(workdir, f"src{ext}"))

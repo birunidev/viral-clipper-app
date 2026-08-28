@@ -132,7 +132,7 @@ def test_transcribe_uses_s3_when_configured(session, fake_audio, monkeypatch):
         "core.transcriber.upload_audio",
         lambda file_path, progress=None: S3Upload(
             bucket="my-bucket",
-            key="clipforge/abc.mp3",
+            key="clipzard/abc.mp3",
             url="https://presigned.example/audio.mp3",
         ),
     )
@@ -159,7 +159,7 @@ def test_transcribe_deletes_uploaded_audio(session, fake_audio, monkeypatch):
         "core.transcriber.upload_audio",
         lambda file_path, progress=None: S3Upload(
             bucket="my-bucket",
-            key="clipforge/abc.mp3",
+            key="clipzard/abc.mp3",
             url="https://presigned.example/audio.mp3",
         ),
     )
@@ -174,7 +174,7 @@ def test_transcribe_deletes_uploaded_audio(session, fake_audio, monkeypatch):
 
     transcribe("video.mp4", "test-key")
 
-    assert deleted == [("my-bucket", "clipforge/abc.mp3")]
+    assert deleted == [("my-bucket", "clipzard/abc.mp3")]
 
 
 def test_transcribe_deletes_audio_on_error(session, fake_audio, monkeypatch):
@@ -185,7 +185,7 @@ def test_transcribe_deletes_audio_on_error(session, fake_audio, monkeypatch):
         "core.transcriber.upload_audio",
         lambda file_path, progress=None: S3Upload(
             bucket="my-bucket",
-            key="clipforge/abc.mp3",
+            key="clipzard/abc.mp3",
             url="https://presigned.example/audio.mp3",
         ),
     )
@@ -201,7 +201,7 @@ def test_transcribe_deletes_audio_on_error(session, fake_audio, monkeypatch):
     with pytest.raises(TranscriptionError, match="boom"):
         transcribe("video.mp4", "test-key")
 
-    assert deleted == [("my-bucket", "clipforge/abc.mp3")]
+    assert deleted == [("my-bucket", "clipzard/abc.mp3")]
 
 
 def test_transcribe_s3_failure_is_transcription_error(session, fake_audio, monkeypatch):

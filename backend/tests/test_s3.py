@@ -56,7 +56,7 @@ def test_upload_audio_success(monkeypatch, tmp_path, fake_client):
 
     assert upload.url == client.url
     assert upload.bucket == "my-bucket"
-    assert upload.key.startswith("clipforge/")
+    assert upload.key.startswith("clipzard/")
     assert upload.key.endswith(".mp3")
     assert len(client.uploaded) == 1
     _, bucket, key, extra = client.uploaded[0]
@@ -94,9 +94,9 @@ def test_delete_object_uses_bucket_and_key(monkeypatch, tmp_path, fake_client):
     monkeypatch.setenv("S3_BUCKET", "my-bucket")
     client = fake_client()
 
-    delete_object("my-bucket", "clipforge/abc.mp3")
+    delete_object("my-bucket", "clipzard/abc.mp3")
 
-    assert client.deleted == [("my-bucket", "clipforge/abc.mp3")]
+    assert client.deleted == [("my-bucket", "clipzard/abc.mp3")]
 
 
 def test_delete_object_ignores_errors(monkeypatch, tmp_path):
@@ -109,4 +109,4 @@ def test_delete_object_ignores_errors(monkeypatch, tmp_path):
         "core.s3.boto3.client", lambda *args, **kwargs: BoomClient()
     )
 
-    delete_object("my-bucket", "clipforge/abc.mp3")  # must not raise
+    delete_object("my-bucket", "clipzard/abc.mp3")  # must not raise

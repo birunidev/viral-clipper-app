@@ -1,9 +1,9 @@
-export const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
+export const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipzard?: unknown }).clipzard;
 
-type Clipforge = Window["clipforge"];
+type Clipforge = Window["clipzard"];
 
 function desktop(): Clipforge {
-  return (window as unknown as { clipforge: Clipforge }).clipforge;
+  return (window as unknown as { clipzard: Clipforge }).clipzard;
 }
 
 export function toMediaUrl(filePath: string | null | undefined): string | null {

@@ -15,6 +15,6 @@ export type ClipforgeAPI = {
 
 declare global {
   interface Window {
-    clipforge?: ClipforgeAPI;
+    clipzard?: ClipforgeAPI;
   }
 }

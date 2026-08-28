@@ -12,7 +12,7 @@ function getUserDataPath(): string {
     const { app } = require("electron") as { app: { getPath: (n: string) => string } };
     return app.getPath("userData");
   } catch {
-    return path.join(os.homedir(), ".clipforge");
+    return path.join(os.homedir(), ".clipzard");
   }
 }
 

@@ -18,7 +18,7 @@ function Logo() {
   );
 }
 
-const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
+const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipzard?: unknown }).clipzard;
 
 const NAV = [
   { href: "/", label: "Projects", icon: SquaresFour },

@@ -1,7 +1,7 @@
-"""Shared pytest fixtures for the ClipForge backend test suite.
+"""Shared pytest fixtures for the ClipZard backend test suite.
 
 API/DB tests run against a *dedicated* test database
-(``clipforge_test`` on the same Postgres as ``docker-compose.dev.yml``,
+(``clipzard_test`` on the same Postgres as ``docker-compose.dev.yml``,
 or any ``DATABASE_URL`` already set in the environment). The test DB is
 created automatically if missing, so tests never touch the development
 database's data. Tables are created directly from the SQLAlchemy metadata
@@ -18,10 +18,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.engine import make_url as make_db_url
 
-DEFAULT_DEV_URL = "postgresql+psycopg://clipforge:clipforge@localhost:5438/clipforge"
+DEFAULT_DEV_URL = "postgresql+psycopg://clipzard:clipzard@localhost:5438/clipzard"
 # Dedicated throwaway database so running the suite never wipes dev data.
 # Runs on its own postgres-test service from docker-compose.dev.yml (:5439).
-DEFAULT_TEST_URL = "postgresql+psycopg://clipforge:clipforge@localhost:5439/clipforge_test"
+DEFAULT_TEST_URL = "postgresql+psycopg://clipzard:clipzard@localhost:5439/clipzard_test"
 
 
 def _ensure_test_database(url: str) -> None:

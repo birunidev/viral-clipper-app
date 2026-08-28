@@ -77,7 +77,7 @@ export default function DashboardPage() {
 
     // Desktop: pure local files — no S3 presign. Use path from file input or dialog.
     const pickedViaDialog = async (): Promise<string | null> => {
-      const picker = (window as unknown as { clipforge?: { dialogOpenVideo?: () => Promise<string | null> } }).clipforge?.dialogOpenVideo;
+      const picker = (window as unknown as { clipzard?: { dialogOpenVideo?: () => Promise<string | null> } }).clipzard?.dialogOpenVideo;
       if (!picker) return null;
       return (await picker()) ?? null;
     };
@@ -167,7 +167,7 @@ export default function DashboardPage() {
       </div>
 
       {(() => {
-        const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
+        const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipzard?: unknown }).clipzard;
         if (paywallMessage && !isDesktop) return <UpgradeRequired message={paywallMessage} />;
         if (!composerOpen) return null;
         return (

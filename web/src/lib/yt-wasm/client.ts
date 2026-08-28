@@ -11,7 +11,7 @@ let logCb: ((s: string) => void) | null = null;
 
 function getProxyBase() {
   // backend proxy base: `${API_URL}/yt-wasm`  (worker appends /proxy?url=)
-  // API_URL is like https://snapclip.mysaas.web.id/api/v1
+  // API_URL is like https://clipzard.web.id/api/v1
   // ensure no trailing slash duplication
   const base = API_URL.replace(/\/$/, "");
   // if API_URL already ends with /api/v1, keep that, worker will do /proxy?url=

@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "clipforge-backend"
+name = "clipzard-backend"
 version = "0.1.0"
 description = "Viral clipping engine (FastAPI job service)"
 authors = ["birunidev"]

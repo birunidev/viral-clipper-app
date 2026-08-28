@@ -14,7 +14,7 @@ def test_register_creates_user_and_sets_cookie(client):
     data = res.json()
     assert data["email"] == "user@example.com"
     assert data["name"] == "Test User"
-    assert "clipforge_session" in res.cookies
+    assert "clipzard_session" in res.cookies
 
 
 def test_register_duplicate_email_409(client):
@@ -113,7 +113,7 @@ def test_logout_clears_cookie_even_with_dead_session(client):
     expired/unknown — otherwise a stale cookie rides along forever."""
     res = client.post(
         "/api/v1/auth/logout",
-        cookies={"clipforge_session": "bogus-expired-token"},
+        cookies={"clipzard_session": "bogus-expired-token"},
     )
     assert res.status_code == 204
 

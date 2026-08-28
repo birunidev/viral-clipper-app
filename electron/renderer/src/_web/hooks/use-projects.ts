@@ -188,7 +188,7 @@ export function useSmartRenderClip(
   const serverRender = useRenderClip(projectId);
   return useMutation<SmartRenderResult, Error, SmartRenderPayload>({
     mutationFn: async (payload) => {
-      const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
+      const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipzard?: unknown }).clipzard;
       // Desktop: 100% local ffmpeg — no S3, no mediabunny. Use serverRender path which maps to main.ts jobs:render → local file.
       if (isDesktop) {
         payload.onFallback?.(); // not needed but keeps parity
@@ -354,7 +354,7 @@ export function usePresignUpload() {
   // Desktop: no S3 — file is local path, no presign needed. Keep stub for web compat.
   return useMutation({
     mutationFn: async (_payload: { file_name: string; content_type: string }) => {
-      const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
+      const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipzard?: unknown }).clipzard;
       if (isDesktop) throw new Error("Upload is local file on desktop — no presign needed");
       return api.post<{ url: string; key: string }>("/uploads/presign", _payload);
     },

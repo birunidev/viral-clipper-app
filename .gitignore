@@ -11,7 +11,7 @@ backend/.env
 web/.env
 cookies.txt
 **/cookies.txt
-/tmp/clipforge-cookies.txt
+/tmp/clipzard-cookies.txt
 
 # local cookie sync (contains VPS host assumption, not for repo)
 scripts/export_cookies.py

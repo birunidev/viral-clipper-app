@@ -74,7 +74,7 @@ export async function runAnalyze(jobId: string, onProgress?: (stage: string, pro
         sourceLanguage = String((info as Record<string, unknown>).language ?? (info as Record<string, unknown>).original_language ?? "") || null;
         if (sourceLanguage) db.prepare("UPDATE projects SET language=? WHERE id=?").run(sourceLanguage, projectId);
       } catch {}
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clipforge_dl_"));
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clipzard_dl_"));
       localVideo = await download(source, tmpDir, (f) => {
         const p = Math.round(2 + 23 * f);
         db.prepare("UPDATE jobs SET progress=? WHERE id=?").run(p, jobId);
@@ -201,7 +201,7 @@ export async function runRender(jobId: string, onProgress?: (stage: string, prog
       const dims: [number, number] = [1280, 720];
       const [outW, outH] = cropDimensions(dims[0], dims[1], orientation);
       const ass = buildAss(words, config, outW, outH);
-      const tmpDir = path.join(os.tmpdir(), `clipforge_render_${jobId}`);
+      const tmpDir = path.join(os.tmpdir(), `clipzard_render_${jobId}`);
       fs.mkdirSync(tmpDir, { recursive: true });
       assPath = path.join(tmpDir, "captions.ass");
       fs.writeFileSync(assPath, ass, "utf-8");

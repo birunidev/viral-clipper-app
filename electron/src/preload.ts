@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 
 console.log("[preload] loading, contextBridge available:", typeof contextBridge !== "undefined");
 try {
-  contextBridge.exposeInMainWorld("clipforge", {
+  contextBridge.exposeInMainWorld("clipzard", {
   fastapiUrl: null as string | null,
   getFastApiUrl: () => ipcRenderer.invoke("fastapi:getUrl"),
   licenseVerify: (key: string, email?: string) => ipcRenderer.invoke("license:verify", { key, email }),
@@ -41,14 +41,14 @@ try {
      return () => ipcRenderer.removeListener("job:progress", handler);
    },
   });
-  console.log("[preload] exposed clipforge");
+  console.log("[preload] exposed clipzard");
 } catch (e) {
   console.error("[preload] expose failed", e);
 }
 
 declare global {
   interface Window {
-    clipforge: {
+    clipzard: {
       licenseVerify: (k: string, e?: string) => Promise<{ valid: boolean; message?: string }>;
       licenseStatus: () => Promise<unknown>;
       systemInfo: () => Promise<unknown>;

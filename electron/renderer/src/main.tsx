@@ -20,10 +20,10 @@ const qc = new QueryClient({
 function LicenseGate({ children }: { children: React.ReactNode }) {
   const [licensed, setLicensed] = React.useState<boolean | null>(null);
   React.useEffect(() => {
-    console.log("[renderer] LicenseGate checking, clipforge=", !!(window as unknown as { clipforge?: unknown }).clipforge);
-    const cf = (window as unknown as { clipforge?: { licenseStatus: () => Promise<{ licensed: boolean }> } }).clipforge;
+    console.log("[renderer] LicenseGate checking, clipzard=", !!(window as unknown as { clipzard?: unknown }).clipzard);
+    const cf = (window as unknown as { clipzard?: { licenseStatus: () => Promise<{ licensed: boolean }> } }).clipzard;
     if (!cf?.licenseStatus) {
-      console.warn("[renderer] no clipforge, treating as dev licensed");
+      console.warn("[renderer] no clipzard, treating as dev licensed");
       setLicensed(true);
       return;
     }
@@ -85,7 +85,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
 
 declare global {
   interface Window {
-    clipforge?: {
+    clipzard?: {
       licenseStatus: () => Promise<{ licensed: boolean }>;
       licenseVerify: (k: string, e?: string) => Promise<{ valid: boolean; message?: string }>;
       projectsList: () => Promise<unknown[]>;

@@ -1,5 +1,5 @@
 /**
- * Thin fetch wrapper for the SnapClip FastAPI backend.
+ * Thin fetch wrapper for the ClipZard FastAPI backend.
  *
  * All requests go to `NEXT_PUBLIC_API_URL` (e.g. https://app.example.com/api/v1
  * in prod via Caddy, http://localhost:8000/api/v1 in dev) with credentials
@@ -19,11 +19,11 @@ export class ApiError extends Error {
 }
 
 function isDesktop(): boolean {
-  return typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
+  return typeof window !== "undefined" && !!(window as unknown as { clipzard?: unknown }).clipzard;
 }
 
-function desktop(): Window["clipforge"] & { getFastApiUrl?: () => Promise<string | null>; fastapiUrl?: string | null } {
-  return (window as unknown as { clipforge: Window["clipforge"] & { getFastApiUrl?: () => Promise<string | null>; fastapiUrl?: string | null } }).clipforge;
+function desktop(): Window["clipzard"] & { getFastApiUrl?: () => Promise<string | null>; fastapiUrl?: string | null } {
+  return (window as unknown as { clipzard: Window["clipzard"] & { getFastApiUrl?: () => Promise<string | null>; fastapiUrl?: string | null } }).clipzard;
 }
 
 let cachedFastApiUrl: string | null | undefined = undefined;
@@ -127,13 +127,13 @@ async function desktopRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (path === "/auth/me" && method === "GET") {
     const s = await (d.licenseStatus as () => Promise<{ licensed: boolean; license?: { license_key?: string } }>)();
     if (!s.licensed) throw new ApiError(401, "Not licensed");
-    return { id: "desktop", email: "licensed@snapclip.local", name: "Licensed", terms_accepted_at: new Date().toISOString() } as T;
+    return { id: "desktop", email: "licensed@clipzard.local", name: "Licensed", terms_accepted_at: new Date().toISOString() } as T;
   }
   if ((path === "/auth/logout" || path === "/auth/register" || path === "/auth/login") && method === "POST") {
-    return { id: "desktop", email: "licensed@snapclip.local", name: "Licensed", terms_accepted_at: new Date().toISOString() } as T;
+    return { id: "desktop", email: "licensed@clipzard.local", name: "Licensed", terms_accepted_at: new Date().toISOString() } as T;
   }
   if (path === "/auth/accept-terms" && method === "POST") {
-    return { id: "desktop", email: "licensed@snapclip.local", name: "Licensed", terms_accepted_at: new Date().toISOString() } as T;
+    return { id: "desktop", email: "licensed@clipzard.local", name: "Licensed", terms_accepted_at: new Date().toISOString() } as T;
   }
   if (path === "/billing/status" && method === "GET") {
     const info = await (d.systemInfo as () => Promise<{ tier: string }>)().catch(() => ({ tier: "mid" }));
@@ -155,8 +155,8 @@ async function desktopRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (path === "/settings" && method === "PUT") return { transcription_provider: "local", storage_used_bytes: 0, storage_cap_bytes: 1024*1024*1024*100 } as T;
 
   if (path === "/billing/checkout" && method === "POST") {
-    await (d.shellOpenExternal as (u:string)=>Promise<void>)("https://snapclip.mysaas.web.id/account");
-    return { provider: "paddle", url: "https://snapclip.mysaas.web.id/account" } as T;
+    await (d.shellOpenExternal as (u:string)=>Promise<void>)("https://clipzard.web.id/account");
+    return { provider: "paddle", url: "https://clipzard.web.id/account" } as T;
   }
   if (path === "/projects" && method === "GET") return (await (d.projectsList as ()=>Promise<unknown>)()) as T;
   if (path === "/projects" && method === "POST") return (await (d.projectCreate as (b:unknown)=>Promise<unknown>)(body)) as T;

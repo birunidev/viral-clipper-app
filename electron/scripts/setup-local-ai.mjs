@@ -165,7 +165,7 @@ async function rebuildLlama() {
   spawnSync("node", [path.join(root, "scripts/verify-pipeline.mjs")], { stdio: "inherit" });
   console.log(`\n[setup-ai] done whisper=${okWhisper?"ok":"skip"} models=${okModels?"ok":"check"} llama=${okLlama?"ok":"skip"}`);
   console.log(`[setup-ai] whisper binary: ${whisperBin} ${fs.existsSync(whisperBin) ? "EXISTS" : "MISSING (mocks will be used)"}`);
-  console.log(`[setup-ai] models under: ${process.env.USER_DATA_PATH ?? path.join(os.homedir(), ".config", "clipforge-desktop", "models")}`);
+  console.log(`[setup-ai] models under: ${process.env.USER_DATA_PATH ?? path.join(os.homedir(), ".config", "clipzard-desktop", "models")}`);
   console.log(`[setup-ai] To use real local AI, ensure:`);
   console.log(`  - whisper-cli at ${whisperBin}`);
   console.log(`  - models at <userData>/models/whisper/ggml-*.bin and <userData>/models/llm/*.gguf`);

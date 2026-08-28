@@ -65,7 +65,7 @@ export function HeroReel() {
     file: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
     poster: "https://picsum.photos/seed/hero-reel/360/640",
     youtubeId: null,
-    handle: "@snapclip",
+    handle: "@clipzard",
     hook: "The hook that made it blow up",
     title: "The hook that made it blow up",
     views: "2.4M",

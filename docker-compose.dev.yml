@@ -7,24 +7,24 @@
 # After the first start, create the schema (from backend/):
 #   poetry run alembic upgrade head
 #
-# Dev DB:   postgresql://clipforge:clipforge@localhost:5438/clipforge
-# Test DB:  postgresql://clipforge:clipforge@localhost:5439/clipforge_test
+# Dev DB:   postgresql://clipzard:clipzard@localhost:5438/clipzard
+# Test DB:  postgresql://clipzard:clipzard@localhost:5439/clipzard_test
 
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: clipforge-dev-db
+    container_name: clipzard-dev-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: clipforge
-      POSTGRES_PASSWORD: clipforge
-      POSTGRES_DB: clipforge
+      POSTGRES_USER: clipzard
+      POSTGRES_PASSWORD: clipzard
+      POSTGRES_DB: clipzard
     ports:
       - "5438:5432"
     volumes:
-      - clipforge_pgdata:/var/lib/postgresql/data
+      - clipzard_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U clipforge"]
+      test: ["CMD-SHELL", "pg_isready -U clipzard"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -33,22 +33,22 @@ services:
   # recreated by every test run — never point the app itself at this one.
   postgres-test:
     image: postgres:16-alpine
-    container_name: clipforge-dev-db-test
+    container_name: clipzard-dev-db-test
     restart: unless-stopped
     environment:
-      POSTGRES_USER: clipforge
-      POSTGRES_PASSWORD: clipforge
-      POSTGRES_DB: clipforge_test
+      POSTGRES_USER: clipzard
+      POSTGRES_PASSWORD: clipzard
+      POSTGRES_DB: clipzard_test
     ports:
       - "5439:5432"
     volumes:
-      - clipforge_pgdata_test:/var/lib/postgresql/data
+      - clipzard_pgdata_test:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U clipforge"]
+      test: ["CMD-SHELL", "pg_isready -U clipzard"]
       interval: 5s
       timeout: 3s
       retries: 10
 
 volumes:
-  clipforge_pgdata:
-  clipforge_pgdata_test:
+  clipzard_pgdata:
+  clipzard_pgdata_test:

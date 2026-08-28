@@ -124,7 +124,7 @@ export default function ProjectPage() {
   }, [isActive, activeId]);
 
   const startJob = useStartJob(id);
-  const isDesktopPage = typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
+  const isDesktopPage = typeof window !== "undefined" && !!(window as unknown as { clipzard?: unknown }).clipzard;
 
   // keep optimistic job in sync when real job arrives
   useEffect(() => {
@@ -135,7 +135,7 @@ export default function ProjectPage() {
 
   // also listen for direct progress events for instant UI
   useEffect(() => {
-    const off = (window as unknown as { clipforge?: { onJobProgress?: (cb: (d: unknown) => void) => () => void } }).clipforge?.onJobProgress?.((data) => {
+    const off = (window as unknown as { clipzard?: { onJobProgress?: (cb: (d: unknown) => void) => () => void } }).clipzard?.onJobProgress?.((data) => {
       const d = data as { jobId?: string; stage?: string; progress?: number; projectId?: string };
       if (d.projectId === id && d.jobId) {
         // force refetch
@@ -391,7 +391,7 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
   const canDownload = Boolean(clip.signed_video_url);
   const hasCaptionWords = Boolean(clip.caption_json?.length);
   const filename = `${clip.title.replace(/[^\w]+/g, "-").toLowerCase() || "clip"}.mp4`;
-  const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
+  const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipzard?: unknown }).clipzard;
   // Resolve absolute local path from media:// URL for save dialog
   const localClipPath = (() => {
     const u = clip.signed_video_url ?? clip.video_url;
@@ -411,7 +411,7 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
           | undefined) ?? null
       : null;
     // Desktop: no S3, no watermark, no resolution cap
-    const isDesktopRender = typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
+    const isDesktopRender = typeof window !== "undefined" && !!(window as unknown as { clipzard?: unknown }).clipzard;
     renderClip.mutate(
       {
         clip,
@@ -516,7 +516,7 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
                     className="flex-1"
                     onClick={async () => {
                       if (isDesktop && localClipPath) {
-                        const cf = (window as unknown as { clipforge?: { dialogSaveVideo?: (p: string, n?: string) => Promise<string | null>; shellShowItemInFolder?: (p: string) => Promise<void> } }).clipforge;
+                        const cf = (window as unknown as { clipzard?: { dialogSaveVideo?: (p: string, n?: string) => Promise<string | null>; shellShowItemInFolder?: (p: string) => Promise<void> } }).clipzard;
                         try {
                           const saved = await cf?.dialogSaveVideo?.(localClipPath, filename);
                           if (saved) await cf?.shellShowItemInFolder?.(saved);
@@ -543,7 +543,7 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
                     size="sm"
                     variant="ghost"
                     onClick={async () => {
-                      const cf = (window as unknown as { clipforge?: { shellShowItemInFolder?: (p: string) => Promise<void> } }).clipforge;
+                      const cf = (window as unknown as { clipzard?: { shellShowItemInFolder?: (p: string) => Promise<void> } }).clipzard;
                       try { await cf?.shellShowItemInFolder?.(localClipPath); } catch (e) { setRenderError(String((e as Error).message)); }
                     }}
                     title="Reveal in folder"

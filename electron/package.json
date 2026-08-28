@@ -1,10 +1,10 @@
 {
-  "name": "snapclip-desktop",
+  "name": "clipzard-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "SnapClip Desktop - fully local viral clip engine",
-  "author": "SnapClip <hello@snapclip.mysaas.web.id>",
-  "homepage": "https://snapclip.mysaas.web.id",
+  "description": "ClipZard Desktop - fully local viral clip engine",
+  "author": "ClipZard <hello@clipzard.web.id>",
+  "homepage": "https://clipzard.web.id",
   "type": "module",
   "main": "dist/main.js",
   "engines": {
@@ -26,6 +26,9 @@
     "setup:local-ai": "node scripts/setup-local-ai.mjs",
     "setup:whisper": "node scripts/setup-local-ai.mjs --build-whisper-only",
     "setup:models": "node scripts/setup-local-ai.mjs --models-only",
+    "test:e2e:headless": "xvfb-run -a npx playwright test --config=playwright.config.headless.ts",
+    "test:e2e:headed": "npx playwright test --config=playwright.config.headless.ts --headed",
+    "test:e2e:debug": "npx playwright test --config=playwright.config.headless.ts --headed --debug",
     "rebuild": "electron-rebuild",
     "postinstall": "node -e \"try{require('fs').writeFileSync('node_modules/electron/path.txt','electron')}catch{};try{require('fs').chmodSync('node_modules/electron/dist/chrome-sandbox',0o4755)}catch{}\""
   },
@@ -36,6 +39,7 @@
     "yt-dlp-exec": "^1.0.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/node": "^20.0.0",
     "concurrently": "^10.0.5",
     "electron": "^32.3.3",

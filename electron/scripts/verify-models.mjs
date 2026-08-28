@@ -10,7 +10,7 @@ import os from "node:os";
 
 const root = path.resolve(path.join(path.dirname(new URL(import.meta.url).pathname), ".."));
 console.log(`[models-verify] node ${process.version} root=${root}`);
-console.log(`[models-verify] USER_DATA_PATH=${process.env.USER_DATA_PATH ?? "(default ~/.config/clipforge-desktop)"} LLM_TIER=${process.env.LLM_TIER ?? "(auto)"}`);
+console.log(`[models-verify] USER_DATA_PATH=${process.env.USER_DATA_PATH ?? "(default ~/.config/clipzard-desktop)"} LLM_TIER=${process.env.LLM_TIER ?? "(auto)"}`);
 
 let ok=0, fail=0;
 const check = (label, fn) => {

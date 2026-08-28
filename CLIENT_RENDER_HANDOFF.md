@@ -1,4 +1,4 @@
-# SnapClip — Client-Side Rendering Handoff Notes
+# ClipZard — Client-Side Rendering Handoff Notes
 
 **Purpose:** everything another agent needs to continue the client-side video rendering feature without re-discovering context. Written mid-implementation on 2026-08-26.
 
@@ -6,10 +6,10 @@
 
 ## 1. Product & stack snapshot
 
-- **SnapClip** (rebranded from ClipForge/BandarClip): paste YouTube link or upload video → backend downloads (yt-dlp), transcribes (AssemblyAI Universal-2 or local whisper.cpp), finds viral moments via LLM (OpenRouter `openrouter/free`), user renders/downloads TikTok-style captioned clips.
+- **ClipZard** (rebranded from ClipForge/BandarClip): paste YouTube link or upload video → backend downloads (yt-dlp), transcribes (AssemblyAI Universal-2 or local whisper.cpp), finds viral moments via LLM (OpenRouter `openrouter/free`), user renders/downloads TikTok-style captioned clips.
 - **Backend**: FastAPI (`backend/app`), SQLAlchemy+Postgres, credit-based billing (Paddle global / Midtrans ID). Worker pool = tier-priority queue (`backend/app/worker.py`, `WORKERS=1` default).
 - **Frontend**: Next.js 16 App Router (`web/src`), TanStack Query, Tailwind v4 tokens (`globals.css`: `--accent #f6403f` dark theme, ink/line/surface vars).
-- **Deploy**: VM `ubuntu@VM-14-117-ubuntu:~/apps/snapclip`, host-level Caddy (`Caddyfile`, domain **snapclip.mysaas.web.id**, ACME email hello@birunidev.com), docker-compose publishes loopback-only: backend `127.0.0.1:8000`, web `127.0.0.1:**3005**→container 3000`... see §6 port note. DB internal-only.
+- **Deploy**: VM `ubuntu@VM-14-117-ubuntu:~/apps/clipzard`, host-level Caddy (`Caddyfile`, domain **clipzard.web.id**, ACME email hello@birunidev.com), docker-compose publishes loopback-only: backend `127.0.0.1:8000`, web `127.0.0.1:**3005**→container 3000`... see §6 port note. DB internal-only.
 - **Tests**: `cd backend && poetry run pytest` — 285 passing as of this handoff. Web typecheck: `npx tsc --noEmit`.
 
 ---
@@ -113,7 +113,7 @@ Rules to mirror exactly:
 - **Sanitize word text**: strip `{ } \` and `\n\r` before drawing (parity + safety).
 - Colors are `#RRGGBB`; outline width float; shadow int.
 - `y` fraction of height → margin from bottom (`margin_v = (1-y)*h`, clamp [8, h//2]).
-- Watermark: server draws "SnapClip" text bottom-right-ish (see `core/cutter.py` drawtext) — replicate position/opacity.
+- Watermark: server draws "ClipZard" text bottom-right-ish (see `core/cutter.py` drawtext) — replicate position/opacity.
 - Reference: `tests/test_captions.py` documents expected behavior; screenshot-diff against server-rendered clips during tuning.
 
 Fonts: Anton + Space Grotesk live in `backend/assets/fonts` and must be served to the browser — copy into `web/public/fonts/` and load via `FontFace` API before first draw (`document.fonts.add`).
@@ -137,7 +137,7 @@ Fonts: Anton + Space Grotesk live in `backend/assets/fonts` and must be served t
 
 - **Ports**: VPS host port **3005** for web (host 3000 runs ANOTHER app). Container internally listens 3000; compose maps `127.0.0.1:3005:3000`; Caddy upstreams: `127.0.0.1:8000` (backend `/health`) and `127.0.0.1:3005` (web `/`).
 - **Healthchecks probe unauthenticated endpoints only** — auth'd routes 401 and read as failure (this broke deploy once). Use `/health`.
-- **NEXT_PUBLIC_* are BUILD-TIME baked**: pass as compose build args (`NEXT_PUBLIC_API_URL=https://snapclip.mysaas.web.id/api/v1`, `NEXT_PUBLIC_GA_ID`), rebuild web after changes.
+- **NEXT_PUBLIC_* are BUILD-TIME baked**: pass as compose build args (`NEXT_PUBLIC_API_URL=https://clipzard.web.id/api/v1`, `NEXT_PUBLIC_GA_ID`), rebuild web after changes.
 - **Session tokens hashed** sha256 at rest; cookie `Secure` auto-on when FRONTEND_URLS https.
 - **Queue**: tier priority Studio>Creator>Starter>Free; `MAX_QUEUE_DEPTH` backpressure → 429; startup recovers queued/stale-running jobs.
 - **Soft delete/trash**: `deleted_at`, restore + purge endpoints, 30-day lazy sweep.
@@ -156,7 +156,7 @@ Fonts: Anton + Space Grotesk live in `backend/assets/fonts` and must be served t
 4. Build order on VM after merge: set `NEXT_PUBLIC_GA_ID` in root `.env` → `docker compose build web backend` → `up -d` → curl checks:
    - `curl -sI http://127.0.0.1:3005` → 200
    - `curl -si http://127.0.0.1:8000/health | head -1` → 200
-   - `https://snapclip.mysaas.web.id` → HTTP/2 200 (was verified working 2026-08-26).
+   - `https://clipzard.web.id` → HTTP/2 200 (was verified working 2026-08-26).
 5. Manual E2E for client render: Chrome desktop → project page → Download → observe local progress → downloaded mp4 has burned captions; clip card shows rendered state; storage_used increases.
 
 

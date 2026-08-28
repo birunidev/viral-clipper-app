@@ -6,7 +6,7 @@ let _isPackaged: boolean | null = null;
 function isDevBypass(): boolean {
   // Allow dev to verify against prod when LICENSE_VERIFY_URL points to prod or LICENSE_ENFORCE=1
   if (process.env.LICENSE_ENFORCE === "1") return false;
-  if (process.env.LICENSE_VERIFY_URL?.includes("snapclip.mysaas.web.id")) return false;
+  if (process.env.LICENSE_VERIFY_URL?.includes("clipzard.web.id")) return false;
   if (_isPackaged !== null) return !_isPackaged;
   try {
     const { app } = require("electron") as { app: { isPackaged: boolean } };
@@ -18,7 +18,7 @@ function isDevBypass(): boolean {
 }
 
 // Dev now hits prod directly. Override via LICENSE_VERIFY_URL env for local testing.
-const VERIFY_URL = process.env.LICENSE_VERIFY_URL ?? "https://snapclip.mysaas.web.id/api/license/verify";
+const VERIFY_URL = process.env.LICENSE_VERIFY_URL ?? "https://clipzard.web.id/api/license/verify";
 const GRACE_DAYS = 30;
 
 function deviceHash(): string {

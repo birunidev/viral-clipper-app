@@ -53,7 +53,7 @@ def list_reels() -> list[dict]:
     listing objects if manifest is missing.
 
     Uses dedicated `testing-bucket` (REELS_BUCKET) for reels, separate from
-    main app bucket `snapclip-prod-bucket`.
+    main app bucket `clipzard-prod-bucket`.
     """
     from core.s3 import _client
 
@@ -92,7 +92,7 @@ def list_reels() -> list[dict]:
                     "file": file_url,
                     "poster": poster_url,
                     "youtubeId": entry.get("youtubeId"),
-                    "handle": entry.get("handle", "@snapclip"),
+                    "handle": entry.get("handle", "@clipzard"),
                     "hook": entry.get("hook", ""),
                     "title": entry.get("title", ""),
                     "dur": entry.get("dur", ""),
@@ -123,7 +123,7 @@ def list_reels() -> list[dict]:
                     "file": _presigned(key) or f"/{key}",
                     "poster": _presigned(poster_key) if has_poster else None,
                     "youtubeId": None,
-                    "handle": "@snapclip",
+                    "handle": "@clipzard",
                     "hook": "Viral moment",
                     "title": key.split("/")[-1],
                     "dur": "",

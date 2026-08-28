@@ -2,7 +2,7 @@
 
 Passwords are hashed with Argon2 (argon2-cffi). Sessions are opaque random
 tokens stored in the ``sessions`` table and delivered as an httpOnly,
-SameSite=Lax cookie named ``clipforge_session``.
+SameSite=Lax cookie named ``clipzard_session``.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from fastapi import Cookie, HTTPException, Response
 from . import db
 from .database import session_scope
 
-SESSION_COOKIE = "clipforge_session"
+SESSION_COOKIE = "clipzard_session"
 SESSION_DAYS = 30
 
 

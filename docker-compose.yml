@@ -8,7 +8,7 @@
 # Required in .env (project root):
 #   POSTGRES_PASSWORD   # strong password — compose refuses to start without it
 # Optional:
-#   POSTGRES_USER (default clipforge), POSTGRES_DB (default clipforge)
+#   POSTGRES_USER (default clipzard), POSTGRES_DB (default clipzard)
 #   FRONTEND_URLS, NEXT_PUBLIC_API_URL
 
 services:
@@ -16,9 +16,9 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-clipforge}
+      POSTGRES_USER: ${POSTGRES_USER:-clipzard}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-      POSTGRES_DB: ${POSTGRES_DB:-clipforge}
+      POSTGRES_DB: ${POSTGRES_DB:-clipzard}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -99,7 +99,7 @@ services:
       FRONTEND_URLS: ${FRONTEND_URLS:-https://example.com}
       # Always talk to the internal postgres, never whatever localhost/dev
       # URL happens to be in backend/.env (compose overrides env_file).
-      DATABASE_URL: postgresql://${POSTGRES_USER:-clipforge}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipforge}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-clipzard}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipzard}
       # PO token sidecar (bgutil). Backend's yt-dlp plugin contacts this to fetch
       # Proof-of-Origin tokens. Disabled by default (empty = no POT); set to
       # http://pot:4416 to enable. Can also be overridden in backend/.env via
@@ -168,12 +168,12 @@ services:
       args:
         # Browser-facing API origin. With the host Caddy proxying /api/* on
         # the same domain as the web app, this can be a same-origin path.
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://snapclip.mysaas.web.id/api/v1}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://clipzard.web.id/api/v1}
         # GA4 measurement id (empty = analytics disabled).
         NEXT_PUBLIC_GA_ID: ${NEXT_PUBLIC_GA_ID:-}
     environment:
       BACKEND_URL: http://backend:8000
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://snapclip.mysaas.web.id/api/v1}
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://clipzard.web.id/api/v1}
     restart: unless-stopped
     init: true
     # Loopback-only publication: host Caddy reaches web at 127.0.0.1:3005

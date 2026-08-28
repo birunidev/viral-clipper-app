@@ -28,7 +28,7 @@ function getStoredVariant(): string | null {
   try {
     const Store = require("electron-store") as unknown as { default: new (o: unknown)=> { get:(k:string, d?:unknown)=>unknown } };
     const Ctor = (Store.default ?? Store) as unknown as new (o: unknown)=> { get:(k:string,d?:unknown)=>unknown };
-    const store = new Ctor({ name: "clipforge-config" });
+    const store = new Ctor({ name: "clipzard-config" });
     const v = String(store.get("llmVariant", "") ?? "");
     if (v) return v;
   } catch {}
