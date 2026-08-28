@@ -1,18 +1,17 @@
 "use client";
 
-// Client-side YouTube cookie extraction after consent opt-in.
-// SO 75426272: chrome.cookies.getAll({domain:"youtube.com"}) misses HttpOnly/partitioned;
-// correct is getAll({url:"https://www.youtube.com"}) with host_permissions.
+// Client-side YouTube cookie extraction — auth-only mode.
+// Previously gated behind clipzard_youtube_cookie_consent; that consent
+// banner has been removed. We keep the extractor helpers but without a
+// stored opt-in check: callers can invoke them directly when the user
+// explicitly provides a cookies.txt file or grants extension access.
 
 export const YT_CONSENT_KEY = "clipzard_youtube_cookie_consent";
 export const COOKIE_CONSENT_KEY = "clipzard_cookie_consent";
 
+// Kept for compatibility; always returns true now (auth-only).
 export function hasYoutubeConsent(): boolean {
-  try {
-    return localStorage.getItem(YT_CONSENT_KEY) === "1";
-  } catch {
-    return false;
-  }
+  return true;
 }
 
 // Try chrome.cookies API (requires extension with "cookies" + host_permissions).
@@ -66,9 +65,9 @@ export function readCookiesFile(file: File): Promise<string> {
   });
 }
 
-// Unified helper: try sessionStorage (pre-captured after consent), then extension, else null
+// Unified helper: try sessionStorage (pre-captured), then extension, else null
+// No consent gate — auth-only.
 export async function getClientYoutubeCookies(): Promise<string | null> {
-  if (!hasYoutubeConsent()) return null;
   try {
     const cached = sessionStorage.getItem("clipzard_youtube_cookies");
     if (cached && cached.toLowerCase().includes("youtube.com")) return cached;
