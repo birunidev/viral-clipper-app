@@ -1,6 +1,6 @@
-# ClipForge Web
+# ClipZard Web
 
-Next.js app for ClipForge.
+Next.js app for ClipZard.
 
 - **SSR marketing pages** at `/` — pure content, no server-side data access.
 - **Client-only app** at `/app/*` (login, register, dashboard, project

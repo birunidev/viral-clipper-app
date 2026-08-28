@@ -3,7 +3,7 @@ import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "Privacy Policy",
-  description: "How SnapClip collects, uses, and protects your personal data.",
+  description: "How ClipZard collects, uses, and protects your personal data.",
 };
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -28,14 +28,14 @@ export default function PrivacyPage() {
           Privacy Policy
         </h1>
         <p className="mt-3 text-sm text-ink-tertiary">
-          SnapClip is provided by BiruniDev. Contact:{" "}
+          ClipZard is provided by BiruniDev. Contact:{" "}
           <a href="mailto:hello@birunidev.com" className="text-accent underline underline-offset-4">
             hello@birunidev.com
           </a>
         </p>
 
         <Section title="1. Data We Collect">
-          <p>We collect the following data when you use SnapClip:</p>
+          <p>We collect the following data when you use ClipZard:</p>
           <ul className="list-disc space-y-1 pl-5">
             <li>
               <strong className="text-ink">Account data</strong> — your name and email address.
@@ -156,7 +156,7 @@ export default function PrivacyPage() {
 
         <div className="mt-12 border-t border-line pt-6">
           <Link href="/" className="text-sm text-ink-tertiary underline underline-offset-4 hover:text-ink">
-            Back to SnapClip
+            Back to ClipZard
           </Link>
         </div>
       </div>

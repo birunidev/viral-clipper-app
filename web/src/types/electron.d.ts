@@ -1,4 +1,4 @@
-export type ClipforgeAPI = {
+export type ClipzardAPI = {
   licenseVerify: (k: string, e?: string) => Promise<{ valid: boolean; message?: string }>;
   licenseStatus: () => Promise<unknown>;
   systemInfo: () => Promise<unknown>;
@@ -15,6 +15,6 @@ export type ClipforgeAPI = {
 
 declare global {
   interface Window {
-    clipzard?: ClipforgeAPI;
+    clipzard?: ClipzardAPI;
   }
 }

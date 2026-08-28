@@ -24,12 +24,12 @@ const GA_ID = process.env.NEXT_PUBLIC_GA_ID ?? "";
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: {
-    default: "SnapClip — Turn long videos into viral short clips",
-    template: "%s · SnapClip",
+    default: "ClipZard — Turn long videos into viral short clips",
+    template: "%s · ClipZard",
   },
   description:
-    "Paste a YouTube link or upload a video. SnapClip transcribes it, finds the moments that hook, and cuts them to 9:16 — automatically.",
-  applicationName: "SnapClip",
+    "Paste a YouTube link or upload a video. ClipZard transcribes it, finds the moments that hook, and cuts them to 9:16 — automatically.",
+  applicationName: "ClipZard",
   keywords: [
     "video clips",
     "viral clips",
@@ -43,18 +43,18 @@ export const metadata: Metadata = {
   ],
   openGraph: {
     type: "website",
-    siteName: "SnapClip",
-    title: "SnapClip — Turn long videos into viral short clips",
+    siteName: "ClipZard",
+    title: "ClipZard — Turn long videos into viral short clips",
     description:
-      "Paste a YouTube link or upload a video. SnapClip transcribes it, finds the moments that hook, and cuts them to 9:16 — automatically.",
+      "Paste a YouTube link or upload a video. ClipZard transcribes it, finds the moments that hook, and cuts them to 9:16 — automatically.",
     url: SITE_URL,
-    images: [{ url: "/og.png", width: 1200, height: 630, alt: "SnapClip" }],
+    images: [{ url: "/og.png", width: 1200, height: 630, alt: "ClipZard" }],
   },
   twitter: {
     card: "summary_large_image",
-    title: "SnapClip — Turn long videos into viral short clips",
+    title: "ClipZard — Turn long videos into viral short clips",
     description:
-      "Paste a YouTube link or upload a video. SnapClip transcribes it, finds the moments that hook, and cuts them to 9:16 — automatically.",
+      "Paste a YouTube link or upload a video. ClipZard transcribes it, finds the moments that hook, and cuts them to 9:16 — automatically.",
     images: ["/og.png"],
   },
   alternates: { canonical: "/" },

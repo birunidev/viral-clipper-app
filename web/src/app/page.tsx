@@ -73,7 +73,7 @@ export default function HomePage() {
             <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent text-accent-ink">
               <Scissors size={15} weight="bold" />
             </span>
-            <span className="text-[15px] font-semibold tracking-tight text-ink">SnapClip</span>
+            <span className="text-[15px] font-semibold tracking-tight text-ink">ClipZard</span>
           </Link>
           <nav className="flex items-center gap-2">
             <Link href="/terms" className="hidden rounded-full px-3.5 py-2 text-sm text-ink-tertiary transition-colors hover:text-ink md:inline-flex">
@@ -103,7 +103,7 @@ export default function HomePage() {
             <span className="text-ink-tertiary">Viral clips out.</span>
           </h1>
           <p className="max-w-[48ch] text-base leading-relaxed text-ink-tertiary pretty">
-            Paste a YouTube link or upload a file. SnapClip transcribes, finds the hooks, and cuts ready-to-post 9:16 clips — captioned if you want.
+            Paste a YouTube link or upload a file. ClipZard transcribes, finds the hooks, and cuts ready-to-post 9:16 clips — captioned if you want.
           </p>
           <div className="flex flex-wrap items-center gap-3">
             <Link href="/app/register" className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-accent px-6 text-sm font-medium text-accent-ink transition-colors hover:bg-accent-strong">
@@ -235,7 +235,7 @@ export default function HomePage() {
             <p className="mt-2 text-sm text-ink-tertiary">Unlimited projects, clips & exports. Runs 100% on your PC — no credits, no limits.</p>
           </div>
           <div className="mx-auto mt-10 flex max-w-xl justify-center">
-            <PricingTier name="ClipForge Desktop" price="$49" sub="One-time purchase — lifetime updates" features={["Unlimited projects & clips", "Unlimited local storage & exports", "4K + no watermark", "Whisper + Qwen auto-picked for your RAM", "Works fully offline after activation"]} cta="Buy ClipForge" highlight={true} />
+            <PricingTier name="ClipZard Desktop" price="$49" sub="One-time purchase — lifetime updates" features={["Unlimited projects & clips", "Unlimited local storage & exports", "4K + no watermark", "Whisper + Qwen auto-picked for your RAM", "Works fully offline after activation"]} cta="Buy ClipZard" highlight={true} />
           </div>
           <p className="mx-auto mt-8 max-w-2xl text-center text-xs leading-relaxed text-ink-muted pretty">
             One license unlocks everything. In Indonesia? Pay in rupiah via GoPay, QRIS, bank transfer, or card — same one-time price, localized checkout.
@@ -262,7 +262,7 @@ export default function HomePage() {
       </section>
 
       <footer className="flex flex-col gap-3 border-t border-line px-6 py-6 md:flex-row md:items-center md:justify-between md:px-10">
-        <span className="text-xs leading-relaxed text-ink-muted">SnapClip — private by default, runs locally. © 2026 BiruniDev. <Link href="mailto:hello@birunidev.com" className="underline underline-offset-4 hover:text-ink">hello@birunidev.com</Link></span>
+        <span className="text-xs leading-relaxed text-ink-muted">ClipZard — private by default, runs locally. © 2026 BiruniDev. <Link href="mailto:hello@birunidev.com" className="underline underline-offset-4 hover:text-ink">hello@birunidev.com</Link></span>
         <nav className="flex items-center gap-4 text-xs">
           <Link href="/terms" className="text-ink-tertiary hover:text-ink">Terms</Link>
           <Link href="/privacy" className="text-ink-tertiary hover:text-ink">Privacy</Link>

@@ -3,7 +3,7 @@ import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "Terms of Service",
-  description: "The Terms of Service governing your use of SnapClip.",
+  description: "The Terms of Service governing your use of ClipZard.",
 };
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -28,7 +28,7 @@ export default function TermsPage() {
           Terms of Service
         </h1>
         <p className="mt-3 text-sm text-ink-tertiary">
-          SnapClip is provided by BiruniDev. Contact:{" "}
+          ClipZard is provided by BiruniDev. Contact:{" "}
           <a href="mailto:hello@birunidev.com" className="text-accent underline underline-offset-4">
             hello@birunidev.com
           </a>
@@ -36,7 +36,7 @@ export default function TermsPage() {
 
         <Section title="1. The Service">
           <p>
-            SnapClip is a tool that transcribes long-form videos, identifies the moments most
+            ClipZard is a tool that transcribes long-form videos, identifies the moments most
             likely to go viral, and cuts them into short clips. By using the Service you agree to
             be bound by these Terms and our Privacy Policy.
           </p>
@@ -53,7 +53,7 @@ export default function TermsPage() {
 
         <Section title="3. Credits &amp; Entitlements">
           <p>
-            SnapClip operates on a prepaid credit model. One credit equals one minute of source
+            ClipZard operates on a prepaid credit model. One credit equals one minute of source
             video processed. Credits never expire. Purchasing a credit pack permanently unlocks
             the entitlement tier associated with that pack (storage, resolution, project limits,
             and watermark removal). Limits are described in the app at the time of purchase.
@@ -115,7 +115,7 @@ export default function TermsPage() {
 
         <Section title="9. Limitation of Liability">
           <p>
-            To the maximum extent permitted by law, BiruniDev and SnapClip shall not be liable for
+            To the maximum extent permitted by law, BiruniDev and ClipZard shall not be liable for
             any indirect, incidental, special, consequential, or punitive damages, or for any loss
             of profits, data, or goodwill arising from your use of the Service.
           </p>
@@ -148,7 +148,7 @@ export default function TermsPage() {
 
         <div className="mt-12 border-t border-line pt-6">
           <Link href="/" className="text-sm text-ink-tertiary underline underline-offset-4 hover:text-ink">
-            Back to SnapClip
+            Back to ClipZard
           </Link>
         </div>
       </div>

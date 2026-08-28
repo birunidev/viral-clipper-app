@@ -1,6 +1,6 @@
 /**
  * Formats a seconds value as a timestamp (e.g. 83.4 -> "1:23").
- * Mono + tabular-nums is the ClipForge signature — time is the primary
+ * Mono + tabular-nums is the ClipZard signature — time is the primary
  * identity of a clip, so it gets the strongest numeric treatment.
  */
 
