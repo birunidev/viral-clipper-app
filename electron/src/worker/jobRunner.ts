@@ -124,7 +124,8 @@ async function handleAnalyze(msg: StartAnalyzeMsg) {
   let localVideo: string | null = null;
   let sourceLanguage: string | null = project.language ?? null;
 
-  postProgress("downloading", 2);
+  const isUpload = sourceType === "upload";
+  if (!isUpload) postProgress("downloading", 2);
 
   if (sourceType === "youtube") {
     console.log(`[jobRunner] getInfo ${source}`);
@@ -165,6 +166,8 @@ async function handleAnalyze(msg: StartAnalyzeMsg) {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
     parentPort?.postMessage({ type: "sourceReady", sourceKey: dest, language: sourceLanguage });
   } else {
+    // upload: copy is instant, go straight to transcribing — no downloading stage
+    postProgress("transcribing", 5);
     const srcKey = String(project.source_key ?? project.source);
     if (!srcKey || !fs.existsSync(srcKey)) throw new Error("source not found");
     const ext = path.extname(srcKey) || ".mp4";
