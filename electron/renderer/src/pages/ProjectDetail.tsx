@@ -109,9 +109,19 @@ export default function ProjectPage() {
   const activeId = optimisticJob?.id ?? activeJobFromProject?.id ?? "";
   const jobQuery = useJob(activeId);
   const job = (jobQuery.data as import("@/hooks/types").Job | undefined) ?? optimisticJob ?? activeJobFromProject;
-  const isActive = job?.status === "queued" || job?.status === "running";
+  const isActive = job?.status === "queued" || job?.status === "running" || project?.status === "queued" || project?.status === "running";
 
   useRefreshProjectOnJobDone(id, jobQuery.data as import("@/hooks/types").Job | undefined);
+
+  // Poll project when job is active (covers auto-start from Dashboard where optimisticJob is null)
+  useEffect(() => {
+    if (!isActive) return;
+    const t = setInterval(() => {
+      projectQuery.refetch();
+      if (activeId) jobQuery.refetch();
+    }, 2000);
+    return () => clearInterval(t);
+  }, [isActive, activeId]);
 
   const startJob = useStartJob(id);
 

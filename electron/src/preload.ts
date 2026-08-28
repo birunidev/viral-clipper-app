@@ -3,6 +3,8 @@ import { contextBridge, ipcRenderer } from "electron";
 console.log("[preload] loading, contextBridge available:", typeof contextBridge !== "undefined");
 try {
   contextBridge.exposeInMainWorld("clipforge", {
+  fastapiUrl: null as string | null,
+  getFastApiUrl: () => ipcRenderer.invoke("fastapi:getUrl"),
   licenseVerify: (key: string, email?: string) => ipcRenderer.invoke("license:verify", { key, email }),
   licenseStatus: () => ipcRenderer.invoke("license:status"),
   systemInfo: () => ipcRenderer.invoke("system:info"),

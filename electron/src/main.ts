@@ -8,8 +8,12 @@ import { verifyLicense, isLicensed, getLicense } from "./services/license.js";
 import { ramTier, whisperModelForTier, llmModelForTier } from "./services/system.js";
 import { randomUUID } from "node:crypto";
 import { Worker } from "node:worker_threads";
+import { startLocalFastAPI, getLocalApiUrl, isLocalFastAPIEnabled, stopLocalFastAPI } from "./services/fastapi.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+app.setName("clipforge-desktop");
+if (process.platform === "win32") app.setAppUserModelId("com.clipforge.desktop");
 
 let win: BrowserWindow | null = null;
 
@@ -59,7 +63,18 @@ function isSafeMediaPath(p: string): string | null {
   return null;
 }
 
-app.whenReady().then(() => {
+let fastApiUrl: string | null = null;
+
+app.whenReady().then(async () => {
+  console.log("[main] userData", app.getPath("userData"), "appName", app.getName(), "isPackaged", app.isPackaged);
+  if (isLocalFastAPIEnabled()) {
+    try {
+      fastApiUrl = await startLocalFastAPI();
+      console.log("[main] FastAPI local ready at", fastApiUrl);
+    } catch (e) {
+      console.error("[main] FastAPI failed to start, falling back to Node pipeline", e);
+    }
+  }
   protocol.handle("media", async (req) => {
     try {
       const url = new URL(req.url);
@@ -123,8 +138,10 @@ function toMediaUrl(p: string | null): string | null {
   return `media://${p}`;
 }
 
-app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
+app.on("window-all-closed", () => { stopLocalFastAPI(); if (process.platform !== "darwin") app.quit(); });
+app.on("before-quit", () => stopLocalFastAPI());
 
+ipcMain.handle("fastapi:getUrl", async () => fastApiUrl);
 ipcMain.handle("license:verify", async (_e, { key, email }: { key: string; email?: string }) => {
   try { return await verifyLicense(key, email); } catch (e) { return { valid: false, message: String((e as Error).message ?? e) }; }
 });
@@ -134,8 +151,8 @@ ipcMain.handle("license:status", async () => {
 ipcMain.handle("system:info", async () => {
   try {
     const tier = ramTier();
-    return { tier, whisperModel: whisperModelForTier(tier), llmModel: llmModelForTier(tier).file, licensed: isLicensed() };
-  } catch { return { tier: "low", whisperModel: "base", llmModel: "qwen2.5-3b-q4_k_m.gguf", licensed: false }; }
+    return { tier, whisperModel: whisperModelForTier(tier), llmModel: llmModelForTier(tier).file, licensed: isLicensed(), fastApiUrl };
+  } catch { return { tier: "low", whisperModel: "base", llmModel: "qwen2.5-3b-q4_k_m.gguf", licensed: false, fastApiUrl: null }; }
 });
 
 ipcMain.handle("projects:list", async () => {
@@ -210,24 +227,38 @@ ipcMain.handle("caption-styles:create", async (_e, data: { label: string; config
 });
 
 function runJobInWorker(jobId: string, projectId: string, clipId?: string) {
+  console.log(`[main] runJobInWorker jobId=${jobId} projectId=${projectId} clipId=${clipId} isLicensed=${isLicensed()} packaged=${app.isPackaged}`);
   const userDataPath = app.getPath("userData");
   const resourcesPath = process.resourcesPath ?? process.cwd();
   const workerPath = path.join(__dirname, "worker", "jobWorker.js");
   const fallbackPath = path.join(__dirname, "worker/jobWorker.js");
   const resolved = fs.existsSync(workerPath) ? workerPath : fallbackPath;
+  console.log(`[main] worker path ${resolved} exists ${fs.existsSync(resolved)}`);
   if (!fs.existsSync(resolved)) {
-    // fallback to in-process if worker not built
+    console.warn("[main] worker not found, falling back to in-process");
     const { runAnalyze: ra, runRender: rr } = require("./services/pipeline.js") as { runAnalyze: typeof import("./services/pipeline.js").runAnalyze; runRender: typeof import("./services/pipeline.js").runRender };
     const fn = clipId ? rr : ra;
     setImmediate(() => {
-      (fn as (id: string, cb: (s: string, p: number) => void) => Promise<void>)(jobId, (stage, progress) => win?.webContents.send("job:progress", { jobId, projectId, clipId, stage, progress }))
-        .then(() => win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "completed", progress: 100 }))
-        .catch((err: unknown) => win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "failed", error: String(err) }));
+      console.log(`[main] fallback run ${clipId ? "render" : "analyze"} for ${jobId}`);
+      (fn as (id: string, cb: (s: string, p: number) => void) => Promise<void>)(jobId, (stage, progress) => {
+        console.log(`[main] fallback progress ${stage} ${progress}`);
+        win?.webContents.send("job:progress", { jobId, projectId, clipId, stage, progress });
+      })
+        .then(() => {
+          console.log(`[main] fallback done ${jobId}`);
+          win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "completed", progress: 100 });
+        })
+        .catch((err: unknown) => {
+          console.error(`[main] fallback failed ${jobId}`, err);
+          win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "failed", error: String(err) });
+        });
     });
     return;
   }
+  console.log(`[main] spawning worker for ${jobId}`);
   const worker = new Worker(resolved, { workerData: { jobId, userDataPath, resourcesPath } });
   worker.on("message", (msg: { type: string; stage?: string; progress?: number; error?: string }) => {
+    console.log(`[main] worker message ${JSON.stringify(msg)}`);
     if (msg.type === "progress" && msg.stage) win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: msg.stage, progress: msg.progress ?? 0 });
     else if (msg.type === "done") win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "completed", progress: 100 });
     else if (msg.type === "error") win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "failed", error: msg.error ?? "unknown" });
@@ -237,6 +268,7 @@ function runJobInWorker(jobId: string, projectId: string, clipId?: string) {
     win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "failed", error: String(err) });
   });
   worker.on("exit", (code) => {
+    console.log(`[worker] exit ${jobId} code ${code}`);
     if (code !== 0) console.warn("[worker] exit code", code);
   });
 }

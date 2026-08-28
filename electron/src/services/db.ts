@@ -206,32 +206,34 @@ function createJsonFallback(p: string) {
               if (setMatch && whereMatch) {
                 const setParts = setMatch[1].split(",").map((s) => s.trim());
                 const setCols: string[] = [];
-                const placeholders: number[] = [];
+                const setVals: unknown[] = [];
                 setParts.forEach((part) => {
-                  const [col, val] = part.split("=").map((s) => s.trim());
+                  const eqIdx = part.indexOf("=");
+                  const col = part.slice(0, eqIdx).trim();
+                  const valRaw = part.slice(eqIdx + 1).trim();
                   setCols.push(col);
-                  placeholders.push(val === "?" ? 1 : 0);
+                  if (valRaw === "?") setVals.push("__PLACEHOLDER__");
+                  else if (valRaw.toUpperCase() === "NULL") setVals.push(null);
+                  else if (/^'.*'$/.test(valRaw) || /^".*"$/.test(valRaw)) setVals.push(valRaw.slice(1, -1));
+                  else if (!isNaN(Number(valRaw))) setVals.push(Number(valRaw));
+                  else setVals.push(valRaw);
                 });
                 const wherePart = whereMatch[1].trim().toLowerCase();
                 if (wherePart.includes("id=?")) {
-                  // count placeholders before where
-                  const numSetPlaceholders = placeholders.reduce((a, b) => a + b, 0);
-                  const idVal = params[numSetPlaceholders];
+                  const idVal = params[params.length - 1];
                   const valMap: Record<string, unknown> = {};
                   let pIdx = 0;
                   setCols.forEach((c, i) => {
-                    if (placeholders[i] === 1) {
+                    if (setVals[i] === "__PLACEHOLDER__") {
                       valMap[c] = params[pIdx++];
                     } else {
-                      // literal NULL
-                      valMap[c] = null;
+                      valMap[c] = setVals[i];
                     }
                   });
                   for (const r of data[table] as Record<string, unknown>[]) {
                     if (String(r.id) === String(idVal)) Object.assign(r, valMap);
                   }
                 } else if (wherePart.includes("project_id=?")) {
-                  const pid = params[setCols.filter((_, i) => placeholders[i] === 1).length];
                   // not used currently
                 }
                 persist();

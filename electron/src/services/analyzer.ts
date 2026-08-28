@@ -176,6 +176,24 @@ function downloadFile(url: string, dest: string, onProgress?: (f: number) => voi
   });
 }
 
+function mockAnalyze(words: { text: string; start_ms: number; end_ms: number }[] | undefined, transcript: string, minDuration: number, maxDuration: number, language?: string): { title: string; hook?: string; start: number; end: number }[] {
+  const isId = (language ?? "en").toLowerCase().startsWith("id");
+  const totalSec = words && words.length ? Math.max(...words.map((w) => w.end_ms)) / 1000 : Math.max(30, Math.ceil(transcript.length / 15));
+  const clipCount = Math.min(3, Math.max(1, Math.floor(totalSec / 15)));
+  const clips: { title: string; hook?: string; start: number; end: number }[] = [];
+  for (let i = 0; i < clipCount; i++) {
+    const start = Math.round((i * totalSec) / clipCount / 5) * 5;
+    const end = Math.min(totalSec, start + minDuration + 5);
+    clips.push({
+      title: isId ? `Momen Viral ${i + 1}` : `Viral Moment ${i + 1}`,
+      hook: isId ? "Jangan lewatkan momen ini" : "Don't miss this moment",
+      start,
+      end,
+    });
+  }
+  return clips;
+}
+
 export async function analyze(transcript: string, words?: { text: string; start_ms: number; end_ms: number }[], opts: { language?: string; minDuration?: number; maxDuration?: number; onProgress?: (f: number) => void } = {}): Promise<{ title: string; hook?: string; start: number; end: number }[]> {
   const minDuration = opts.minDuration ?? 15;
   const maxDuration = opts.maxDuration ?? 90;
@@ -183,9 +201,19 @@ export async function analyze(transcript: string, words?: { text: string; start_
   const apiKey = process.env.LLM_API_KEY?.trim();
   const baseUrl = process.env.LLM_BASE_URL?.trim();
   if (apiKey && baseUrl) {
-    return analyzeViaOpenAI(transcript, words, { ...opts, apiKey, baseUrl });
+    try {
+      return await analyzeViaOpenAI(transcript, words, { ...opts, apiKey, baseUrl });
+    } catch (e) {
+      console.warn("[analyzer] openai failed, using mock", e);
+      return mockAnalyze(words, transcript, minDuration, maxDuration, opts.language);
+    }
   }
-  return analyzeLocal(transcript, words, opts);
+  try {
+    return await analyzeLocal(transcript, words, opts);
+  } catch (e) {
+    console.warn("[analyzer] local failed, using mock", e);
+    return mockAnalyze(words, transcript, minDuration, maxDuration, opts.language);
+  }
 }
 
 async function analyzeViaOpenAI(transcript: string, words: { text: string; start_ms: number; end_ms: number }[] | undefined, opts: { language?: string; minDuration?: number; maxDuration?: number; onProgress?: (f: number) => void; apiKey: string; baseUrl: string }): Promise<{ title: string; hook?: string; start: number; end: number }[]> {

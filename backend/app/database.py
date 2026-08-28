@@ -28,7 +28,17 @@ def _normalize_dsn(dsn: str) -> str:
         return "postgresql+psycopg://" + dsn[len("postgresql://") :]
     if dsn.startswith("postgres://"):
         return "postgresql+psycopg://" + dsn[len("postgres://") :]
+    if dsn.startswith("sqlite:///"):
+        return dsn
+    if dsn.startswith("sqlite://"):
+        return dsn
     return dsn
+
+
+def _engine_kwargs(dsn: str) -> dict:
+    if dsn.startswith("sqlite"):
+        return {"connect_args": {"check_same_thread": False}}
+    return {"pool_pre_ping": True, "future": True}
 
 
 def get_dsn() -> str:
@@ -42,7 +52,8 @@ def get_dsn() -> str:
 def get_engine():
     global _engine
     if _engine is None:
-        _engine = create_engine(get_dsn(), pool_pre_ping=True, future=True)
+        dsn = get_dsn()
+        _engine = create_engine(dsn, **_engine_kwargs(dsn))
     return _engine
 
 

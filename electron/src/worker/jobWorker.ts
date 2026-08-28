@@ -7,35 +7,38 @@ const { jobId, userDataPath, resourcesPath } = workerData as { jobId: string; us
 
 process.env.USER_DATA_PATH = userDataPath;
 process.env.RESOURCES_PATH = resourcesPath;
-(process as unknown as { resourcesPath: string }).resourcesPath = resourcesPath;
 
 async function run() {
+  console.log(`[worker] start jobId=${jobId} userData=${userDataPath} resources=${resourcesPath}`);
   try {
-    // Set resourcesPath for bin resolution
-    (process as unknown as { resourcesPath: string }).resourcesPath = resourcesPath;
-    // @ts-ignore
-    (global as unknown as { process: { resourcesPath: string } }).process = { resourcesPath } as unknown as NodeJS.Process;
 
+    console.log("[worker] importing pipeline");
     const { runAnalyze, runRender } = await import("../services/pipeline.js");
     const { getRaw } = await import("../services/db.js");
+    console.log("[worker] imports ok");
 
-    // Need to ensure db uses correct path - it will use app.getPath mocked
     const job = getRaw().prepare("SELECT * FROM jobs WHERE id=?").get(jobId) as Record<string, unknown> | undefined;
+    console.log(`[worker] job found`, job ? `${job.id} type=${job.type} status=${job.status}` : "null");
     if (!job) {
       parentPort?.postMessage({ type: "error", error: "Job not found" });
       return;
     }
     const type = (job.type as string) || "analyze";
     const onProgress = (stage: string, progress: number) => {
+      console.log(`[worker] progress ${stage} ${progress}`);
       parentPort?.postMessage({ type: "progress", stage, progress });
     };
     if (type === "render") {
+      console.log("[worker] runRender");
       await runRender(jobId, onProgress);
     } else {
+      console.log("[worker] runAnalyze");
       await runAnalyze(jobId, onProgress);
     }
+    console.log("[worker] done");
     parentPort?.postMessage({ type: "done" });
   } catch (e) {
+    console.error("[worker] error", e);
     const msg = String((e as Error).message ?? e);
     parentPort?.postMessage({ type: "error", error: msg });
     try {
@@ -48,4 +51,4 @@ async function run() {
   }
 }
 
-run();
+run().catch((e) => console.error("[worker] run failed", e));

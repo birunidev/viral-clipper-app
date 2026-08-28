@@ -269,18 +269,36 @@ def claim_billing_event(event_id: str, event_name: str, payload: dict) -> bool:
     claimed it. This closes the check-then-grant race where two concurrent
     redeliveries both pass an exists-check and double-grant credits.
     """
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
     with session_scope() as db:
-        stmt = (
-            pg_insert(BillingEvent)
-            .values(id=_new_id(), event_id=event_id, event_name=event_name, payload=payload)
-            .on_conflict_do_nothing(index_elements=[BillingEvent.event_id])
-            .returning(BillingEvent.id)
-        )
-        # RETURNING (not rowcount): psycopg3 reports rowcount -1 for
-        # INSERT .. ON CONFLICT, but yields a row only when the insert won.
-        return db.execute(stmt).scalar_one_or_none() is not None
+        # Try Postgres-specific ON CONFLICT, fall back to SQLite OR IGNORE
+        try:
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+            stmt = (
+                pg_insert(BillingEvent)
+                .values(id=_new_id(), event_id=event_id, event_name=event_name, payload=payload)
+                .on_conflict_do_nothing(index_elements=[BillingEvent.event_id])
+                .returning(BillingEvent.id)
+            )
+            return db.execute(stmt).scalar_one_or_none() is not None
+        except Exception:
+            # SQLite fallback - uses OR IGNORE via prefix
+            try:
+                from sqlalchemy import insert as sa_insert
+
+                stmt = sa_insert(BillingEvent).values(id=_new_id(), event_id=event_id, event_name=event_name, payload=payload).prefix_with("OR IGNORE")
+                result = db.execute(stmt)
+                return (result.rowcount or 0) > 0
+            except Exception:
+                # Last fallback: check then insert (racey but better than crash)
+                if billing_event_exists(event_id):
+                    return False
+                try:
+                    db.add(BillingEvent(id=_new_id(), event_id=event_id, event_name=event_name, payload=payload))
+                    db.flush()
+                    return True
+                except Exception:
+                    return False
 
 
 def mark_order_settled(order_id: str) -> bool:

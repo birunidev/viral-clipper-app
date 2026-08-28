@@ -22,12 +22,45 @@ function isDesktop(): boolean {
   return typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
 }
 
-function desktop(): Window["clipforge"] {
-  return (window as unknown as { clipforge: Window["clipforge"] }).clipforge;
+function desktop(): Window["clipforge"] & { getFastApiUrl?: () => Promise<string | null>; fastapiUrl?: string | null } {
+  return (window as unknown as { clipforge: Window["clipforge"] & { getFastApiUrl?: () => Promise<string | null>; fastapiUrl?: string | null } }).clipforge;
+}
+
+let cachedFastApiUrl: string | null | undefined = undefined;
+async function getFastApiUrl(): Promise<string | null> {
+  if (typeof cachedFastApiUrl === "string" && cachedFastApiUrl) return cachedFastApiUrl;
+  try {
+    const d = desktop() as unknown as { getFastApiUrl?: () => Promise<string | null> };
+    if (d?.getFastApiUrl) {
+      const url = await d.getFastApiUrl();
+      if (url) {
+        cachedFastApiUrl = url;
+        return url;
+      }
+    }
+  } catch {}
+  return null;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (isDesktop()) {
+    const fastUrl = await getFastApiUrl().catch(() => null);
+    if (fastUrl) {
+      // FastAPI local mode - use HTTP to Python backend (outside Electron main)
+      const url = `${fastUrl}${path}`;
+      const res = await fetch(url, {
+        credentials: "include",
+        headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+        ...init,
+      });
+      if (!res.ok) {
+        let msg = res.statusText;
+        try { const b = await res.json(); msg = b.detail ?? b.error ?? msg; } catch {}
+        throw new ApiError(res.status, msg);
+      }
+      if (res.status === 204) return undefined as T;
+      return res.json() as Promise<T>;
+    }
     return desktopRequest<T>(path, init);
   }
   try {
