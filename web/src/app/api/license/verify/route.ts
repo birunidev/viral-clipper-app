@@ -14,26 +14,37 @@ export async function POST(req: NextRequest) {
   if (!key) return NextResponse.json({ valid: false, message: "missing key" }, { status: 400 });
 
   // Proxy to FastAPI — single source of truth (backend owns licenses table).
-  // Web no longer needs DATABASE_URL or pg.
-  const backendUrl = process.env.BACKEND_URL ?? process.env.NEXT_PUBLIC_API_URL?.replace(/\/api\/v1.*/, "") ?? "http://localhost:8000";
-  try {
-    const res = await fetch(`${backendUrl}/api/v1/license/verify`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ licenseKey: key, email, deviceHash: "" }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.valid) return NextResponse.json(data);
-    } else {
-      // Backend said invalid — passthrough its message instead of masking with env fallback
-      const text = await res.text().catch(() => "");
-      try {
-        const j = JSON.parse(text) as { valid?: boolean; message?: string };
-        if (j.valid === false) return NextResponse.json(j, { status: res.status });
-      } catch {}
+  // Try internal docker DNS first (backend:8000), then public Caddy URL.
+  const candidates = [
+    process.env.BACKEND_URL,
+    "http://backend:8000",
+    process.env.NEXT_PUBLIC_API_URL?.replace(/\/api\/v1.*/, ""),
+    "http://localhost:8000",
+  ].filter(Boolean) as string[];
+  for (const base of candidates) {
+    try {
+      const res = await fetch(`${base.replace(/\/$/, "")}/api/v1/license/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ licenseKey: key, email, deviceHash: "" }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.valid) return NextResponse.json(data);
+        // valid false but 200 — still return it (backend uses 200 for valid check)
+        if (data.valid === false) return NextResponse.json(data, { status: 403 });
+      } else if (res.status === 403 || res.status === 400) {
+        const text = await res.text().catch(() => "");
+        try {
+          const j = JSON.parse(text) as { valid?: boolean; message?: string };
+          if (j.valid === false) return NextResponse.json(j, { status: res.status });
+        } catch {}
+        // non-JSON 403 -> try next candidate
+      }
+    } catch {
+      // try next candidate
     }
-  } catch {}
+  }
 
   // Fallback: env LICENSE_KEYS (offline / dev without backend)
   const raw = process.env.LICENSE_KEYS ?? "";
