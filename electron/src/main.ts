@@ -1,23 +1,28 @@
-import { app, BrowserWindow, ipcMain, protocol, net } from "electron";
+import { app, BrowserWindow, ipcMain, protocol, net, dialog, shell } from "electron";
 import path from "node:path";
 import fs from "node:fs";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { getDb, getRaw, nowIso } from "./services/db.js";
 import { verifyLicense, isLicensed, getLicense } from "./services/license.js";
 import { ramTier, whisperModelForTier, llmModelForTier } from "./services/system.js";
-import { runAnalyze, runRender } from "./services/pipeline.js";
 import { randomUUID } from "node:crypto";
+import { Worker } from "node:worker_threads";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let win: BrowserWindow | null = null;
 
 function createWindow() {
+  const preloadPath = path.join(__dirname, "preload.cjs");
+  const fallbackPreload = path.join(__dirname, "preload.js");
+  const resolvedPreload = fs.existsSync(preloadPath) ? preloadPath : fallbackPreload;
+  console.log("[main] preload path", resolvedPreload, "exists", fs.existsSync(resolvedPreload));
   win = new BrowserWindow({
     width: 1280,
     height: 800,
     webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
+      preload: resolvedPreload,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
@@ -27,26 +32,47 @@ function createWindow() {
 
   const devUrl = process.env.ELECTRON_DEV_URL;
   if (devUrl) {
+    console.log("[main] loading devUrl", devUrl);
     win.loadURL(devUrl);
     win.webContents.openDevTools({ mode: "detach" });
+    win.webContents.on("did-fail-load", (_e, code, desc, url) => console.error("[main] did-fail-load", code, desc, url));
+    win.webContents.on("console-message", (_e, level, msg, line, src) => console.log(`[renderer:${level}] ${msg} @${src}:${line}`));
   } else {
     const rendererDist = path.join(__dirname, "../renderer/dist/index.html");
     const resourceRenderer = path.join(process.resourcesPath, "app.asar", "renderer/dist/index.html");
     const fallbackWeb = path.join(path.resolve("..", "web", "out", "index.html"));
     const p = [rendererDist, resourceRenderer, fallbackWeb].find((x) => fs.existsSync(x));
-    if (p) win.loadFile(p);
-    else win.loadURL("data:text/html,<h1>ClipForge - renderer not built. Run: npm --prefix electron/renderer run build</h1>");
+    console.log("[main] loading file", p);
+    if (p) {
+      win.loadFile(p);
+      win.webContents.openDevTools({ mode: "detach" });
+      win.webContents.on("console-message", (_e, level, msg, line, src) => console.log(`[renderer:${level}] ${msg} @${src}:${line}`));
+    } else win.loadURL("data:text/html,<h1>ClipForge - renderer not built. Run: npm --prefix electron/renderer run build</h1>");
   }
+}
+
+function isSafeMediaPath(p: string): string | null {
+  const normalized = path.normalize(p);
+  const roots = [path.normalize(path.join(app.getPath("userData"), "projects")), path.normalize(app.getPath("temp")), path.normalize(os.tmpdir())];
+  if (roots.some((r) => normalized.startsWith(r))) return normalized;
+  if (process.platform === "win32" && /^[a-zA-Z]:\\/.test(normalized) && roots.some((r) => normalized.toLowerCase().startsWith(r.toLowerCase()))) return normalized;
+  return null;
 }
 
 app.whenReady().then(() => {
   protocol.handle("media", async (req) => {
-    const url = new URL(req.url);
-    const filePath = decodeURIComponent(url.pathname);
     try {
-      const stat = fs.statSync(filePath);
+      const url = new URL(req.url);
+      let rawPath = decodeURIComponent(url.pathname);
+      if (process.platform === "win32") {
+        if (rawPath.startsWith("/")) rawPath = rawPath.slice(1);
+        rawPath = rawPath.replace(/\//g, path.sep);
+      }
+      const safe = isSafeMediaPath(rawPath);
+      if (!safe) return new Response("forbidden", { status: 403 });
+      const stat = fs.statSync(safe);
       if (!stat.isFile()) return new Response("not found", { status: 404 });
-      const ext = path.extname(filePath).toLowerCase();
+      const ext = path.extname(safe).toLowerCase();
       const mime: Record<string, string> = { ".mp4": "video/mp4", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".ass": "text/plain" };
       const headers: Record<string, string> = { "Content-Type": mime[ext] ?? "application/octet-stream", "Content-Length": String(stat.size) };
       const range = req.headers.get("range");
@@ -55,23 +81,47 @@ app.whenReady().then(() => {
         if (m) {
           const start = m[1] ? parseInt(m[1], 10) : 0;
           const end = m[2] ? parseInt(m[2], 10) : stat.size - 1;
-          const chunk = fs.createReadStream(filePath, { start, end });
+          if (start >= stat.size || end >= stat.size || start > end) return new Response("range not satisfiable", { status: 416 });
+          const chunk = fs.createReadStream(safe, { start, end });
           const chunks: Buffer[] = [];
           for await (const c of chunk) chunks.push(c as Buffer);
           const buf = Buffer.concat(chunks);
-          return new Response(buf, { status: 206, headers: { ...headers, "Content-Range": `bytes ${start}-${end}/${stat.size}`, "Accept-Ranges": "bytes" } });
+          return new Response(buf, { status: 206, headers: { ...headers, "Content-Range": `bytes ${start}-${end}/${stat.size}`, "Accept-Ranges": "bytes", "Cache-Control": "no-store" } });
         }
       }
-      return net.fetch(`file://${filePath}`);
+      return net.fetch(`file://${safe}`);
     } catch {
       return new Response("not found", { status: 404 });
     }
   });
 
   getDb();
+  seedCaptionStyles();
   createWindow();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
+
+function seedCaptionStyles() {
+  try {
+    const count = (getRaw().prepare("SELECT count(*) as c FROM caption_styles").get() as { c: number }).c;
+    if (count > 0) return;
+    const presets = [
+      { key: "classic", label: "Classic", config: { font: "Anton", font_size: 72, x: "center", y: 0.8, bold: true, italic: false, primary_color: "#FFFFFF", highlight_color: "#FFD60A", outline_color: "#000000", outline: 4, shadow: 0, words_per_line: 4, max_chars_per_line: 32, boxed: false, box_opacity: 0.0 } },
+      { key: "clean", label: "Clean", config: { font: "Space Grotesk", font_size: 64, x: "center", y: 0.8, bold: false, italic: false, primary_color: "#FFFFFF", highlight_color: "#FFFFFF", outline_color: "#000000", outline: 3, shadow: 0, words_per_line: 5, max_chars_per_line: 36, boxed: false, box_opacity: 0.0 } },
+      { key: "pop", label: "Pop", config: { font: "Anton", font_size: 88, x: "center", y: 0.75, bold: true, italic: false, primary_color: "#FFFFFF", highlight_color: "#FF5A52", outline_color: "#000000", outline: 5, shadow: 2, words_per_line: 3, max_chars_per_line: 28, boxed: false, box_opacity: 0.0 } },
+      { key: "boxed", label: "Boxed", config: { font: "Space Grotesk", font_size: 60, x: "center", y: 0.82, bold: true, italic: false, primary_color: "#FFFFFF", highlight_color: "#FFD60A", outline_color: "#000000", outline: 2, shadow: 0, words_per_line: 4, max_chars_per_line: 30, boxed: true, box_opacity: 0.7 } },
+    ];
+    for (const p of presets) {
+      getRaw().prepare("INSERT OR IGNORE INTO caption_styles (id, key, label, config, is_builtin) VALUES (?,?,?,?,?)").run(p.key, p.key, p.label, JSON.stringify(p.config), 1);
+    }
+  } catch {}
+}
+
+function toMediaUrl(p: string | null): string | null {
+  if (!p) return null;
+  if (p.startsWith("http://") || p.startsWith("https://") || p.startsWith("media://")) return p;
+  return `media://${p}`;
+}
 
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
 
@@ -89,17 +139,28 @@ ipcMain.handle("system:info", async () => {
 });
 
 ipcMain.handle("projects:list", async () => {
-  const rows = getRaw().prepare("SELECT * FROM projects WHERE deleted_at IS NULL ORDER BY updated_at DESC").all();
-  return rows;
+  const rows = getRaw().prepare("SELECT * FROM projects WHERE deleted_at IS NULL ORDER BY updated_at DESC").all() as Record<string, unknown>[];
+  return rows.map((r) => {
+    const clips = getRaw().prepare("SELECT count(*) as c FROM clips WHERE project_id=?").get(r.id as string) as { c: number };
+    return { ...r, clip_count: clips?.c ?? 0 };
+  });
 });
 
 ipcMain.handle("projects:get", async (_e, id: string) => {
-  const project = getRaw().prepare("SELECT * FROM projects WHERE id=?").get(id);
+  const project = getRaw().prepare("SELECT * FROM projects WHERE id=?").get(id) as Record<string, unknown> | null;
   if (!project) return null;
   const jobs = getRaw().prepare("SELECT * FROM jobs WHERE project_id=? ORDER BY created_at DESC").all(id);
-  const clips = getRaw().prepare("SELECT * FROM clips WHERE project_id=? ORDER BY start_time").all(id);
+  const rawClips = getRaw().prepare("SELECT * FROM clips WHERE project_id=? ORDER BY start_time").all(id) as Record<string, unknown>[];
+  const clips = rawClips.map((c) => ({
+    ...c,
+    video_url: toMediaUrl(c.video_url as string | null),
+    thumbnail_url: toMediaUrl(c.thumbnail_url as string | null),
+    signed_video_url: toMediaUrl(c.video_url as string | null),
+    signed_thumbnail_url: toMediaUrl(c.thumbnail_url as string | null),
+  }));
   const words = getRaw().prepare("SELECT * FROM timeline_words WHERE project_id=? ORDER BY idx").all(id);
-  return { project, jobs, clips, words };
+  const sourceUrl = toMediaUrl(project.source_key as string | null) ?? toMediaUrl(project.source as string | null);
+  return { project: { ...project, source_url: sourceUrl, signed_source_url: sourceUrl }, jobs, clips, words, source_url: sourceUrl };
 });
 
 ipcMain.handle("projects:create", async (_e, data: { title: string; source: string; sourceType?: string }) => {
@@ -117,6 +178,68 @@ ipcMain.handle("projects:delete", async (_e, id: string) => {
   getRaw().prepare("UPDATE projects SET deleted_at=? WHERE id=?").run(nowIso(), id);
   return { ok: true };
 });
+ipcMain.handle("projects:trash", async () => {
+  return getRaw().prepare("SELECT * FROM projects WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC").all() as Record<string, unknown>[];
+});
+ipcMain.handle("projects:restore", async (_e, id: string) => {
+  getRaw().prepare("UPDATE projects SET deleted_at=NULL, updated_at=? WHERE id=?").run(nowIso(), id);
+  return { ok: true };
+});
+ipcMain.handle("projects:purge", async (_e, id: string) => {
+  const p = getRaw().prepare("SELECT * FROM projects WHERE id=?").get(id) as Record<string, unknown> | null;
+  if (p) {
+    const clipFiles = getRaw().prepare("SELECT * FROM clips WHERE project_id=?").all(id) as Record<string, unknown>[];
+    for (const c of clipFiles) {
+      try { if (c.video_url) fs.unlinkSync(c.video_url as string); } catch {}
+      try { if (c.thumbnail_url) fs.unlinkSync(c.thumbnail_url as string); } catch {}
+    }
+    try { if (p.source_key) fs.unlinkSync(p.source_key as string); } catch {}
+    try { const dir = path.join(app.getPath("userData"), "projects", id); fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+  getRaw().prepare("DELETE FROM projects WHERE id=?").run(id);
+  return { ok: true };
+});
+ipcMain.handle("caption-styles:list", async () => {
+  return getRaw().prepare("SELECT * FROM caption_styles ORDER BY label").all() as Record<string, unknown>[];
+});
+ipcMain.handle("caption-styles:create", async (_e, data: { label: string; config: Record<string, unknown> }) => {
+  const id = randomUUID();
+  const key = `custom_${id.slice(0, 8)}`;
+  getRaw().prepare("INSERT INTO caption_styles (id, key, label, config, is_builtin) VALUES (?,?,?,?,?)").run(id, key, data.label, JSON.stringify(data.config), 0);
+  return getRaw().prepare("SELECT * FROM caption_styles WHERE id=?").get(id);
+});
+
+function runJobInWorker(jobId: string, projectId: string, clipId?: string) {
+  const userDataPath = app.getPath("userData");
+  const resourcesPath = process.resourcesPath ?? process.cwd();
+  const workerPath = path.join(__dirname, "worker", "jobWorker.js");
+  const fallbackPath = path.join(__dirname, "worker/jobWorker.js");
+  const resolved = fs.existsSync(workerPath) ? workerPath : fallbackPath;
+  if (!fs.existsSync(resolved)) {
+    // fallback to in-process if worker not built
+    const { runAnalyze: ra, runRender: rr } = require("./services/pipeline.js") as { runAnalyze: typeof import("./services/pipeline.js").runAnalyze; runRender: typeof import("./services/pipeline.js").runRender };
+    const fn = clipId ? rr : ra;
+    setImmediate(() => {
+      (fn as (id: string, cb: (s: string, p: number) => void) => Promise<void>)(jobId, (stage, progress) => win?.webContents.send("job:progress", { jobId, projectId, clipId, stage, progress }))
+        .then(() => win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "completed", progress: 100 }))
+        .catch((err: unknown) => win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "failed", error: String(err) }));
+    });
+    return;
+  }
+  const worker = new Worker(resolved, { workerData: { jobId, userDataPath, resourcesPath } });
+  worker.on("message", (msg: { type: string; stage?: string; progress?: number; error?: string }) => {
+    if (msg.type === "progress" && msg.stage) win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: msg.stage, progress: msg.progress ?? 0 });
+    else if (msg.type === "done") win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "completed", progress: 100 });
+    else if (msg.type === "error") win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "failed", error: msg.error ?? "unknown" });
+  });
+  worker.on("error", (err) => {
+    console.error("[worker] error", err);
+    win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "failed", error: String(err) });
+  });
+  worker.on("exit", (code) => {
+    if (code !== 0) console.warn("[worker] exit code", code);
+  });
+}
 
 ipcMain.handle("jobs:start", async (_e, { projectId, opts }: { projectId: string; opts?: Record<string, unknown> }) => {
   if (!isLicensed()) throw new Error("License required");
@@ -125,12 +248,9 @@ ipcMain.handle("jobs:start", async (_e, { projectId, opts }: { projectId: string
   getRaw().prepare("INSERT INTO jobs (id, project_id, type, status, stage, progress, options, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)")
     .run(id, projectId, "analyze", "queued", "queued", 0, JSON.stringify(opts ?? {}), now, now);
   getRaw().prepare("UPDATE projects SET status='queued', updated_at=? WHERE id=?").run(now, projectId);
-  setImmediate(() => {
-    runAnalyze(id, (stage, progress) => win?.webContents.send("job:progress", { jobId: id, projectId, stage, progress }))
-      .then(() => win?.webContents.send("job:progress", { jobId: id, projectId, stage: "completed", progress: 100 }))
-      .catch((err) => win?.webContents.send("job:progress", { jobId: id, projectId, stage: "failed", error: String(err) }));
-  });
-  return { id };
+  runJobInWorker(id, projectId);
+  const job = getRaw().prepare("SELECT * FROM jobs WHERE id=?").get(id) as Record<string, unknown>;
+  return job ?? { id, project_id: projectId, type: "analyze", status: "queued", stage: "queued", progress: 0, options: JSON.stringify(opts ?? {}), created_at: now, updated_at: now };
 });
 
 ipcMain.handle("jobs:render", async (_e, { projectId, clipId, opts }: { projectId: string; clipId: string; opts?: Record<string, unknown> }) => {
@@ -141,13 +261,17 @@ ipcMain.handle("jobs:render", async (_e, { projectId, clipId, opts }: { projectI
   const now = nowIso();
   getRaw().prepare("INSERT INTO jobs (id, project_id, type, clip_id, status, stage, progress, options, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
     .run(id, projectId, "render", clipId, "queued", "queued", 0, JSON.stringify(opts ?? {}), now, now);
-  setImmediate(() => {
-    runRender(id, (stage, progress) => win?.webContents.send("job:progress", { jobId: id, projectId, clipId, stage, progress }))
-      .then(() => win?.webContents.send("job:progress", { jobId: id, projectId, clipId, stage: "completed", progress: 100 }))
-      .catch((err) => win?.webContents.send("job:progress", { jobId: id, projectId, clipId, stage: "failed", error: String(err) }));
-  });
-  return { id };
+  runJobInWorker(id, projectId, clipId);
+  const job = getRaw().prepare("SELECT * FROM jobs WHERE id=?").get(id) as Record<string, unknown>;
+  return job ?? { id, project_id: projectId, type: "render", clip_id: clipId, status: "queued", stage: "queued", progress: 0, options: JSON.stringify(opts ?? {}), created_at: now, updated_at: now };
 });
 
 ipcMain.handle("jobs:get", async (_e, id: string) => getRaw().prepare("SELECT * FROM jobs WHERE id=?").get(id));
 ipcMain.handle("clips:list", async (_e, projectId: string) => getRaw().prepare("SELECT * FROM clips WHERE project_id=? ORDER BY start_time").all(projectId));
+ipcMain.handle("dialog:openVideo", async () => {
+  const res = await dialog.showOpenDialog(win!, { properties: ["openFile"], filters: [{ name: "Video", extensions: ["mp4", "mov", "mkv", "webm", "avi", "m4v"] }] });
+  if (res.canceled || !res.filePaths[0]) return null;
+  return res.filePaths[0];
+});
+ipcMain.handle("shell:openExternal", async (_e, url: string) => { await shell.openExternal(url); });
+ipcMain.handle("app:getPath", async (_e, name: string) => app.getPath(name as Parameters<typeof app.getPath>[0]));

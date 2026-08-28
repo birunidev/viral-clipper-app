@@ -1,9 +1,16 @@
 import path from "node:path";
 import fs from "node:fs";
-import { app } from "electron";
+
+function userDataRoot(): string {
+  if (process.env.USER_DATA_PATH) return process.env.USER_DATA_PATH;
+  try {
+    const { app } = require("electron") as { app: { getPath: (n: string) => string } };
+    return app.getPath("userData");
+  } catch { return path.join(process.cwd(), ".data"); }
+}
 
 export function projectsRoot(): string {
-  const r = path.join(app.getPath("userData"), "projects");
+  const r = path.join(userDataRoot(), "projects");
   fs.mkdirSync(r, { recursive: true });
   return r;
 }

@@ -11,7 +11,7 @@ load_dotenv()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import auth, billing, caption_styles, jobs, projects, reels, settings, uploads, youtube_proxy, ytdlp_stats, yt_wasm_proxy
+from .api import auth, billing, caption_styles, jobs, licenses, projects, reels, settings, uploads, youtube_proxy, ytdlp_stats, yt_wasm_proxy
 from .worker import pool
 
 FRONTEND_URLS = [
@@ -70,6 +70,7 @@ if ENABLE_WEB_CLIPPER:
     app.include_router(settings.router, prefix="/api/v1")
 app.include_router(billing.router, prefix="/api/v1")
 app.include_router(billing.hooks_router, prefix="/api/v1")
+app.include_router(licenses.router, prefix="/api/v1")
 app.include_router(youtube_proxy.router, prefix="/api/v1")
 app.include_router(ytdlp_stats.router, prefix="/api/v1")
 app.include_router(yt_wasm_proxy.router, prefix="/api/v1")

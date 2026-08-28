@@ -3,9 +3,18 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import { createRequire } from "node:module";
-import { app } from "electron";
 
 const require = createRequire(import.meta.url);
+
+function getUserDataPath(): string {
+  if (process.env.USER_DATA_PATH) return process.env.USER_DATA_PATH;
+  try {
+    const { app } = require("electron") as { app: { getPath: (n: string) => string } };
+    return app.getPath("userData");
+  } catch {
+    return path.join(os.homedir(), ".clipforge");
+  }
+}
 
 const BLOCK_SECONDS = 30;
 const DEFAULT_CHUNK_CHARS = 9000;
@@ -132,13 +141,13 @@ function llmModelPath(): string {
   const { file } = llmModelForTier(tier);
   const override = process.env.LLM_MODEL_FILE;
   const f = override ?? file;
-  return path.join(app?.getPath("userData") ?? path.join(os.homedir(), ".clipforge"), "models", "llm", f);
+  return path.join(getUserDataPath(), "models", "llm", f);
 }
 
 async function ensureLlmModel(onProgress?: (f: number) => void): Promise<string> {
   const tier = ramTier();
   const { file, url } = llmModelForTier(tier);
-  const dest = path.join(app?.getPath("userData") ?? path.join(os.homedir(), ".clipforge"), "models", "llm", file);
+  const dest = path.join(getUserDataPath(), "models", "llm", file);
   if (fs.existsSync(dest) && fs.statSync(dest).size > 1024 * 1024) return dest;
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   const envUrl = process.env.LLM_MODEL_URL ?? url;

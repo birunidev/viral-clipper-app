@@ -102,20 +102,50 @@ export default function ProjectPage() {
   const [error, setError] = useState("");
   const [paywallMessage, setPaywallMessage] = useState("");
 
+  const [optimisticJob, setOptimisticJob] = useState<import("@/hooks/types").Job | null>(null);
   const activeJobFromProject = project?.jobs.find(
     (j) => j.type === "analyze" && (j.status === "queued" || j.status === "running")
   );
-  const jobQuery = useJob(activeJobFromProject?.id ?? "");
-  const job = jobQuery.data ?? activeJobFromProject;
+  const activeId = optimisticJob?.id ?? activeJobFromProject?.id ?? "";
+  const jobQuery = useJob(activeId);
+  const job = (jobQuery.data as import("@/hooks/types").Job | undefined) ?? optimisticJob ?? activeJobFromProject;
   const isActive = job?.status === "queued" || job?.status === "running";
 
-  useRefreshProjectOnJobDone(id, jobQuery.data);
+  useRefreshProjectOnJobDone(id, jobQuery.data as import("@/hooks/types").Job | undefined);
 
   const startJob = useStartJob(id);
 
+  // keep optimistic job in sync when real job arrives
+  useEffect(() => {
+    if (jobQuery.data && optimisticJob && (jobQuery.data as { id: string }).id === optimisticJob.id) {
+      setOptimisticJob(null);
+    }
+  }, [jobQuery.data, optimisticJob]);
+
+  // also listen for direct progress events for instant UI
+  useEffect(() => {
+    const off = (window as unknown as { clipforge?: { onJobProgress?: (cb: (d: unknown) => void) => () => void } }).clipforge?.onJobProgress?.((data) => {
+      const d = data as { jobId?: string; stage?: string; progress?: number; projectId?: string };
+      if (d.projectId === id && d.jobId) {
+        // force refetch
+        jobQuery.refetch?.();
+      }
+    });
+    return () => { off?.(); };
+  }, [id]);
+
   function onStart() {
+    console.log("[ProjectDetail] onStart clicked, id=", id, "project", project);
     setError("");
     setPaywallMessage("");
+    if (!id) {
+      setError("Project not loaded yet");
+      return;
+    }
+    if (isActive) {
+      setError("Pipeline already running");
+      return;
+    }
     if (
       !Number.isFinite(minClipSeconds) ||
       !Number.isFinite(maxClipSeconds) ||
@@ -126,6 +156,7 @@ export default function ProjectPage() {
       setError("Clip length must be between 5 and 300 seconds, with min ≤ max.");
       return;
     }
+    console.log("[ProjectDetail] calling startJob", { orientation, max_clips: maxClips, min_clip_seconds: minClipSeconds, max_clip_seconds: maxClipSeconds });
     startJob.mutate(
       {
         orientation,
@@ -134,9 +165,14 @@ export default function ProjectPage() {
         max_clip_seconds: maxClipSeconds,
       },
       {
+        onSuccess: (job) => {
+          console.log("[ProjectDetail] job started", job);
+          setOptimisticJob(job as import("@/hooks/types").Job);
+        },
         onError: (err) => {
-          if (isPaywall(err)) setPaywallMessage(err.message);
-          else setError(err.message);
+          console.error("[ProjectDetail] startJob error", err);
+          if (isPaywall(err)) setPaywallMessage((err as Error).message);
+          else setError((err as Error).message);
         },
       }
     );

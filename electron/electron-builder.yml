@@ -16,13 +16,29 @@ extraResources:
 win:
   target: nsis
   icon: resources/icon.ico
+  verifyUpdateCodeSignature: false
+  signingHashAlgorithms: ["sha256"]
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
+  perMachine: false
+mac:
+  target:
+    - dmg
+    - zip
+  icon: resources/icon.png
+  category: public.app-category.video
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  entitlements: null
+  entitlementsInherit: null
+dmg:
+  sign: false
 linux:
   target:
     - AppImage
+    - deb
   icon: resources/icon.png
   category: Video
   maintainer: ClipForge <hello@clipforge.com>

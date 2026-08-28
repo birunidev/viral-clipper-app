@@ -1,13 +1,28 @@
 import path from "node:path";
 import fs from "node:fs";
-import { app } from "electron";
+
+function getAppUserData(): string | null {
+  if (process.env.USER_DATA_PATH) return process.env.USER_DATA_PATH;
+  try {
+    const { app } = require("electron") as { app: { getPath: (n: string) => string } };
+    return app.getPath("userData");
+  } catch {
+    return null;
+  }
+}
 
 let _db: { prepare: (sql: string) => { get: (...a: unknown[]) => unknown; all: (...a: unknown[]) => unknown[]; run: (...a: unknown[]) => unknown }; exec: (s: string) => void; transaction: <T extends () => void>(fn: T) => T } | null = null;
 
 type Stmt = { get: (...a: unknown[]) => unknown; all: (...a: unknown[]) => unknown[]; run: (...a: unknown[]) => unknown };
 
 function getDbPath(): string {
-  const base = app ? app.getPath("userData") : path.join(process.cwd(), ".data");
+  const envPath = process.env.USER_DATA_PATH;
+  if (envPath) {
+    fs.mkdirSync(envPath, { recursive: true });
+    return path.join(envPath, "clipforge.db");
+  }
+  const appPath = getAppUserData();
+  const base = appPath ?? path.join(process.cwd(), ".data");
   fs.mkdirSync(base, { recursive: true });
   return path.join(base, "clipforge.db");
 }
@@ -57,6 +72,16 @@ let _syncFallback: ReturnType<typeof createJsonFallback> | null = null;
 function createJsonFallback(p: string) {
   const jsonPath = p.replace(/\.db$/, ".json");
   let data: Record<string, unknown[]> = {};
+  const reload = () => {
+    try {
+      if (fs.existsSync(jsonPath)) {
+        const fresh = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
+        for (const t of ["projects", "jobs", "clips", "timeline_words", "caption_styles", "license_cache"] as const) {
+          if (fresh[t]) data[t] = fresh[t] as unknown[];
+        }
+      }
+    } catch {}
+  };
   try {
     if (fs.existsSync(jsonPath)) data = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
   } catch { data = {}; }
@@ -65,17 +90,20 @@ function createJsonFallback(p: string) {
   const persist = () => { try { fs.writeFileSync(jsonPath, JSON.stringify(data, null, 2)); } catch {} };
 
   const matchWhere = (rows: Record<string, unknown>[], sql: string, params: unknown[]) => {
-    // very limited parser for our known queries
-    if (sql.includes("WHERE id=?") || sql.includes("WHERE id =?")) {
-      return rows.filter((r) => String(r.id) === String(params[0]));
+    const lower = sql.toLowerCase();
+    if (lower.includes("where deleted_at is not null")) {
+      return rows.filter((r) => !!(r as Record<string, unknown>).deleted_at);
     }
-    if (sql.includes("WHERE project_id=?") || sql.includes("WHERE project_id =?")) {
-      return rows.filter((r) => String((r as Record<string, unknown>).project_id) === String(params[0]));
-    }
-    if (sql.includes("WHERE deleted_at IS NULL")) {
+    if (lower.includes("where deleted_at is null")) {
       return rows.filter((r) => !(r as Record<string, unknown>).deleted_at);
     }
-    if (sql.includes("WHERE project_id=? AND clip_id=?")) {
+    if (lower.includes("where id=?") || lower.includes("where id =?")) {
+      return rows.filter((r) => String(r.id) === String(params[0]));
+    }
+    if (lower.includes("where project_id=?") || lower.includes("where project_id =?")) {
+      return rows.filter((r) => String((r as Record<string, unknown>).project_id) === String(params[0]));
+    }
+    if (lower.includes("where project_id=? and clip_id=?")) {
       return rows.filter((r) => String((r as Record<string, unknown>).project_id) === String(params[0]) && String((r as Record<string, unknown>).clip_id) === String(params[1]));
     }
     return rows;
@@ -87,6 +115,7 @@ function createJsonFallback(p: string) {
       return {
         get: (...params: unknown[]) => {
           if (lower.startsWith("select")) {
+            reload();
             const m = sql.match(/from\s+(\w+)/i);
             const table = m?.[1];
             if (!table || !data[table]) return undefined;
@@ -103,6 +132,7 @@ function createJsonFallback(p: string) {
         },
         all: (...params: unknown[]) => {
           if (lower.startsWith("select")) {
+            reload();
             const m = sql.match(/from\s+(\w+)/i);
             const table = m?.[1];
             if (!table || !data[table]) return [];
@@ -119,6 +149,7 @@ function createJsonFallback(p: string) {
           return [];
         },
         run: (...params: unknown[]) => {
+          reload();
           if (lower.startsWith("insert")) {
             const m = sql.match(/into\s+(\w+)\s*\(([^)]+)\)/i);
             const table = m?.[1];
@@ -142,28 +173,66 @@ function createJsonFallback(p: string) {
             const m = sql.match(/update\s+(\w+)/i);
             const table = m?.[1];
             if (table && data[table]) {
-              // parse SET col=? and WHERE id=?
+              const lowerSql = sql.toLowerCase();
+              // Handle known patterns explicitly
+              if (lowerSql.includes("set deleted_at=null") && lowerSql.includes("where id=?")) {
+                const updatedAt = params[0];
+                const idVal = params[1];
+                for (const r of data[table] as Record<string, unknown>[]) {
+                  if (String(r.id) === String(idVal)) {
+                    r.deleted_at = null;
+                    (r as Record<string, unknown>).updated_at = updatedAt;
+                  }
+                }
+                persist();
+                return {};
+              }
+              if (lowerSql.includes("set deleted_at=?") && lowerSql.includes("where id=?")) {
+                const deletedAt = params[0];
+                const idVal = params[1];
+                for (const r of data[table] as Record<string, unknown>[]) {
+                  if (String(r.id) === String(idVal)) r.deleted_at = deletedAt;
+                }
+                // also handle updated_at if present in some queries
+                if (lowerSql.includes("updated_at")) {
+                  // not in this pattern
+                }
+                persist();
+                return {};
+              }
+              // generic fallback
               const setMatch = sql.match(/set\s+(.+?)\s+where/i);
               const whereMatch = sql.match(/where\s+(.+)/i);
               if (setMatch && whereMatch) {
-                const setCols = setMatch[1].split(",").map((s) => s.trim().split("=")[0].trim());
-                const wherePart = whereMatch[1].trim();
-                let targetRows: Record<string, unknown>[] = data[table] as Record<string, unknown>[];
+                const setParts = setMatch[1].split(",").map((s) => s.trim());
+                const setCols: string[] = [];
+                const placeholders: number[] = [];
+                setParts.forEach((part) => {
+                  const [col, val] = part.split("=").map((s) => s.trim());
+                  setCols.push(col);
+                  placeholders.push(val === "?" ? 1 : 0);
+                });
+                const wherePart = whereMatch[1].trim().toLowerCase();
                 if (wherePart.includes("id=?")) {
-                  const idVal = params[setCols.length];
-                  targetRows = targetRows.filter((r) => String(r.id) === String(idVal));
+                  // count placeholders before where
+                  const numSetPlaceholders = placeholders.reduce((a, b) => a + b, 0);
+                  const idVal = params[numSetPlaceholders];
                   const valMap: Record<string, unknown> = {};
-                  setCols.forEach((c, i) => (valMap[c] = params[i]));
+                  let pIdx = 0;
+                  setCols.forEach((c, i) => {
+                    if (placeholders[i] === 1) {
+                      valMap[c] = params[pIdx++];
+                    } else {
+                      // literal NULL
+                      valMap[c] = null;
+                    }
+                  });
                   for (const r of data[table] as Record<string, unknown>[]) {
                     if (String(r.id) === String(idVal)) Object.assign(r, valMap);
                   }
-                } else if (wherePart.includes("project_id=?") && wherePart.includes("clip_id=?")) {
-                  // not used for update
                 } else if (wherePart.includes("project_id=?")) {
-                  const pid = params[setCols.length];
-                  for (const r of data[table] as Record<string, unknown>[]) {
-                    if (String(r.project_id) === String(pid)) Object.assign(r, Object.fromEntries(setCols.map((c, i) => [c, params[i]])));
-                  }
+                  const pid = params[setCols.filter((_, i) => placeholders[i] === 1).length];
+                  // not used currently
                 }
                 persist();
               }
@@ -173,9 +242,23 @@ function createJsonFallback(p: string) {
           if (lower.startsWith("delete")) {
             const m = sql.match(/from\s+(\w+)/i);
             const table = m?.[1];
-            if (table && data[table] && lower.includes("where project_id=?")) {
-              data[table] = (data[table] as Record<string, unknown>[]).filter((r) => String(r.project_id) !== String(params[0]));
-              persist();
+            if (table && data[table]) {
+              if (lower.includes("where id=?")) {
+                const idVal = params[0];
+                const before = (data[table] as unknown[]).length;
+                data[table] = (data[table] as Record<string, unknown>[]).filter((r) => String(r.id) !== String(idVal));
+                // cascade delete for projects
+                if (table === "projects" && (data[table] as unknown[]).length < before) {
+                  const pid = String(idVal);
+                  for (const t of ["clips", "jobs", "timeline_words"] as const) {
+                    if (data[t]) data[t] = (data[t] as Record<string, unknown>[]).filter((r) => String(r.project_id) !== pid);
+                  }
+                }
+                persist();
+              } else if (lower.includes("where project_id=?")) {
+                data[table] = (data[table] as Record<string, unknown>[]).filter((r) => String(r.project_id) !== String(params[0]));
+                persist();
+              }
             }
             return {};
           }

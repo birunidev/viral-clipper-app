@@ -7,10 +7,7 @@ YouTube sometimes rejects the default player client with HTTP 403
 (bot detection). When that happens we retry once with alternate player
 clients (android/tv/ios), which are generally allowed.
 
-Safe prod mode: set YOUTUBE_API_KEY and ENABLE_YTDLP=0 (default). Then
-get_info() uses the official YouTube Data API v3 (no cookies, ToS-
-compliant) and download() requires user upload (source_type="upload").
-This avoids shared Google session hijack on the server.
+Metadata and downloads are always via yt-dlp (no YouTube Data API).
 """
 
 from __future__ import annotations
@@ -45,11 +42,10 @@ _BOT_GUARD_HINT = (
     "See https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies)"
 )
 
-# Safe-mode hint when yt-dlp is disabled – direct users to upload.
+# Hint when yt-dlp is disabled – direct users to upload.
 _UPLOAD_HINT = (
-    " (YouTube downloads disabled in safe prod mode: please use Upload instead, "
-    "or set YOUTUBE_API_KEY for metadata and ENABLE_YTDLP=1 for legacy yt-dlp "
-    "with your own cookies. See backend/.env.example)"
+    " (YouTube downloads disabled: please use Upload instead, "
+    "or set ENABLE_YTDLP=1 to enable yt-dlp. See backend/.env.example)"
 )
 
 
@@ -149,46 +145,28 @@ def _apply_cookie_and_po_opts(opts: dict, *, player_clients=None, client_cookies
 
 
 def _is_ytdlp_enabled() -> bool:
-    """Gate for legacy yt-dlp. Safe prod default is OFF (0)."""
-    return os.environ.get("ENABLE_YTDLP", "0").strip().lower() in ("1", "true", "yes", "on")
+    """Gate for yt-dlp. Defaults to ON; set ENABLE_YTDLP=0 to disable."""
+    return os.environ.get("ENABLE_YTDLP", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
 def get_info(url: str) -> dict:
-    """Fetch remote metadata (no download) for ``url``.
+    """Fetch remote metadata (no download) for ``url`` via yt-dlp.
 
     Returns the yt-dlp extractor info dict, which includes useful fields such
     as ``id``, ``title``, ``uploader``, and ``language`` (the source video's
     spoken language as an ISO 639-1 code where available). Raises
     DownloadError if yt-dlp is missing or metadata cannot be fetched.
-
-    Prefers official YouTube Data API v3 when YOUTUBE_API_KEY is set (safe,
-    no cookies). Falls back to the resilient downloader's fallback chain
-    (android -> ios -> tv -> tv_embedded -> web_embedded -> web) via
-    ``core.downloader.get_info_resilient``.
     """
     _validate_source(url)
 
-    # 1) Official API (safe, no cookies) – preferred
-    try:
-        from core.youtube_api import get_info_official
-
-        official = get_info_official(url)
-        if official is not None:
-            logger.info("get_info via official YouTube Data API for %s", url[:80])
-            return official
-    except Exception as exc:  # pragma: no cover – never block on official API failure
-        logger.warning("Official API get_info failed, falling back to yt-dlp: %s", exc)
-
-    # 2) Resilient yt-dlp – gated
     if not _is_ytdlp_enabled():
         raise DownloadError(
-            f"Could not fetch video metadata: YouTube downloads disabled in safe prod mode (ENABLE_YTDLP=0) and no YOUTUBE_API_KEY or API returned no result for {url[:60]}. "
+            f"Could not fetch video metadata: yt-dlp is disabled (ENABLE_YTDLP=0) for {url[:60]}. "
             + _UPLOAD_HINT
         )
     if yt_dlp is None:
         raise DownloadError("yt-dlp is not installed. Run: poetry install")
 
-    # Delegate to resilient downloader (handles fallback chain, timeout, PO token, pacing, logging)
     try:
         from core.downloader import get_info_resilient
 
@@ -285,14 +263,13 @@ def download(
 
     For the richer abstraction use ``from core.downloader import download_video``.
 
-    In safe prod mode (ENABLE_YTDLP=0, default) this raises with
+    If yt-dlp is disabled (ENABLE_YTDLP=0) this raises with
     _UPLOAD_HINT – callers should prompt user to Upload instead.
     """
     if not _is_ytdlp_enabled():
         raise DownloadError(
-            f"Download failed: YouTube downloads disabled in safe prod mode (ENABLE_YTDLP=0) for {url[:60]}. "
-            "Please download the video yourself and use Upload instead, "
-            "or set YOUTUBE_API_KEY for metadata and ENABLE_YTDLP=1 with your own cookies for legacy mode."
+            f"Download failed: yt-dlp is disabled (ENABLE_YTDLP=0) for {url[:60]}. "
+            "Please use Upload instead, or set ENABLE_YTDLP=1 to enable yt-dlp."
             + _UPLOAD_HINT
         )
     if yt_dlp is None:

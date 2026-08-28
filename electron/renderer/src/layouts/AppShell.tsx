@@ -18,9 +18,11 @@ function Logo() {
   );
 }
 
+const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
+
 const NAV = [
   { href: "/", label: "Projects", icon: SquaresFour },
-  { href: "/billing", label: "Credits", icon: CreditCard },
+  { href: "/billing", label: isDesktop ? "License" : "Credits", icon: CreditCard },
   { href: "/settings", label: "Settings", icon: GearSix },
 ];
 
@@ -80,11 +82,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             to="/billing"
             className="mx-3 mb-1 flex items-center gap-2 rounded-lg border border-line bg-surface-2/60 px-3 py-1.5 text-xs text-ink-secondary transition-colors hover:border-line-strong hover:text-ink"
           >
-            <span className={`h-1.5 w-1.5 rounded-full ${billing.data && billing.data.credits > 0 ? "bg-success" : "bg-accent"}`} />
-            <span className="font-medium">{billing.data?.tier_name ?? "Free"}</span>
-            {billing.data && <span className="text-ink-muted">·</span>}
-            {billing.data && (
-              <span className="text-ink-muted">{billing.data.credits.toLocaleString("en-US")} credits</span>
+            <span className="h-1.5 w-1.5 rounded-full bg-success" />
+            <span className="font-medium">{billing.data?.tier_name ?? "Unlimited"}</span>
+            {!isDesktop && billing.data && (
+              <>
+                <span className="text-ink-muted">·</span>
+                <span className="text-ink-muted">{billing.data.credits.toLocaleString("en-US")} credits</span>
+              </>
             )}
           </Link>
           <button

@@ -30,30 +30,60 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (isDesktop()) {
     return desktopRequest<T>(path, init);
   }
-  const res = await fetch(`${API_URL}${path}`, {
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-    ...init,
-  });
+  try {
+    const res = await fetch(`${API_URL}${path}`, {
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        ...(init?.headers ?? {}),
+      },
+      ...init,
+    });
 
-  if (!res.ok) {
-    let message = res.statusText;
-    try {
-      const body = await res.json();
-      message = body.detail ?? body.error ?? message;
-    } catch {
-      // no JSON body
+    if (!res.ok) {
+      let message = res.statusText;
+      try {
+        const body = await res.json();
+        message = body.detail ?? body.error ?? message;
+      } catch {
+        // no JSON body
+      }
+      throw new ApiError(res.status, message);
     }
-    throw new ApiError(res.status, message);
-  }
 
-  if (res.status === 204) {
-    return undefined as T;
+    if (res.status === 204) {
+      return undefined as T;
+    }
+    return res.json() as Promise<T>;
+  } catch (err) {
+    const msg = String((err as Error)?.message ?? err);
+    const isNetworkError = msg.includes("Failed to fetch") || msg.includes("ECONNREFUSED") || msg.includes("NetworkError") || err instanceof TypeError;
+    if (isNetworkError) {
+      if (path === "/auth/me") {
+        return { id: "dev", email: "dev@local", name: "Dev", terms_accepted_at: new Date().toISOString() } as T;
+      }
+      if (path === "/billing/status") {
+        return {
+          tier: "unlimited",
+          tier_name: "Unlimited",
+          credits: 0,
+          limits: { storage_cap_bytes: 1024*1024*1024*100, max_projects: null, max_resolution: 2160, watermark: false },
+          usage: { storage_used_bytes: 0, projects: 0 },
+          packs: [],
+          topups: [],
+          byok_enabled: false,
+        } as T;
+      }
+      if (path === "/settings") {
+        return { transcription_provider: "local", storage_used_bytes: 0, storage_cap_bytes: 1024*1024*1024*100, byok_enabled: false } as T;
+      }
+      if (path === "/projects" || path === "/projects/trash" || path.startsWith("/projects/") || path.startsWith("/caption-styles") || path.startsWith("/jobs/")) {
+        if (path === "/projects" || path === "/projects/trash" || path === "/caption-styles") return [] as T;
+        throw new ApiError(404, "Dev: backend not running");
+      }
+    }
+    throw err;
   }
-  return res.json() as Promise<T>;
 }
 
 async function desktopRequest<T>(path: string, init?: RequestInit): Promise<T> {
@@ -77,7 +107,7 @@ async function desktopRequest<T>(path: string, init?: RequestInit): Promise<T> {
     return {
       tier: "unlimited",
       tier_name: "Unlimited",
-      credits: 99999,
+      credits: 0,
       limits: { storage_cap_bytes: 1024*1024*1024*100, max_projects: null, max_resolution: 2160, watermark: false },
       usage: { storage_used_bytes: 0, projects: 0 },
       packs: [],
@@ -87,15 +117,18 @@ async function desktopRequest<T>(path: string, init?: RequestInit): Promise<T> {
     } as T;
   }
   if (path === "/billing/transactions" && method === "GET") return [] as T;
-  if (path === "/projects/trash" && method === "GET") return [] as T;
+  if (path === "/projects/trash" && method === "GET") return (await (d.projectsTrash as ()=>Promise<unknown>)()) as T;
   if (path === "/settings" && method === "GET") return { transcription_provider: "local", storage_used_bytes: 0, storage_cap_bytes: 1024*1024*1024*100, byok_enabled: false } as T;
   if (path === "/settings" && method === "PUT") return { transcription_provider: "local", storage_used_bytes: 0, storage_cap_bytes: 1024*1024*1024*100 } as T;
 
+  if (path === "/billing/checkout" && method === "POST") {
+    await (d.shellOpenExternal as (u:string)=>Promise<void>)("https://clipforge.com/account");
+    return { provider: "paddle", url: "https://clipforge.com/account" } as T;
+  }
   if (path === "/projects" && method === "GET") return (await (d.projectsList as ()=>Promise<unknown>)()) as T;
   if (path === "/projects" && method === "POST") return (await (d.projectCreate as (b:unknown)=>Promise<unknown>)(body)) as T;
-  if (path === "/caption-styles" && method === "GET") {
-    return [] as unknown as T;
-  }
+  if (path === "/caption-styles" && method === "GET") return (await (d.captionStylesList as ()=>Promise<unknown>)()) as T;
+  if (path === "/caption-styles" && method === "POST") return (await (d.captionStyleCreate as (b:unknown)=>Promise<unknown>)(body)) as T;
   const projectMatch = path.match(/^\/projects\/([^/]+)$/);
   if (projectMatch) {
     if (method === "GET") return (await (d.projectGet as (id:string)=>Promise<unknown>)(projectMatch[1])) as T;
@@ -107,9 +140,11 @@ async function desktopRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (renderMatch && method === "POST") return (await (d.jobRender as (a:string,b:string,c:unknown)=>Promise<unknown>)(renderMatch[1], renderMatch[2], body)) as T;
   const jobMatch = path.match(/^\/jobs\/([^/]+)$/);
   if (jobMatch && method === "GET") return (await (d.jobGet as (id:string)=>Promise<unknown>)(jobMatch[1])) as T;
+  const restoreMatch = path.match(/^\/projects\/([^/]+)\/restore$/);
+  if (restoreMatch && method === "POST") return (await (d.projectRestore as (id:string)=>Promise<unknown>)(restoreMatch[1])) as T;
+  const purgeMatch = path.match(/^\/projects\/([^/]+)\/purge$/);
+  if (purgeMatch && method === "DELETE") return (await (d.projectPurge as (id:string)=>Promise<unknown>)(purgeMatch[1])) as T;
   if (path.startsWith("/uploads/presign") && method === "POST") throw new ApiError(400, "Upload via local file picker — use Choose file in dashboard (local)");
-  if (path.match(/\/projects\/[^/]+\/restore/) && method === "POST") return { ok: true } as T;
-  if (path.match(/\/projects\/[^/]+\/purge/) && method === "DELETE") return { ok: true } as T;
 
   throw new ApiError(404, `Desktop IPC: no handler for ${method} ${path}`);
 }

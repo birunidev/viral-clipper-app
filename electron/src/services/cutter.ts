@@ -1,9 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
-import { createRequire } from "node:module";
-
-const require = createRequire(import.meta.url);
+import { ffmpegPath } from "./bin.js";
 
 export const PORTRAIT = "portrait";
 export const LANDSCAPE = "landscape";
@@ -21,13 +19,7 @@ export function cropFilterFor(o: string): string | null {
   throw new CutterError(`Unknown orientation: ${o}`);
 }
 
-function ffmpegPath(): string {
-  try {
-    const p = require("ffmpeg-static");
-    if (p) return p;
-  } catch {}
-  return process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
-}
+
 
 function escapeFilterPath(p: string): string {
   return p.replace(/\\/g, "\\\\").replace(/:/g, "\\:").replace(/'/g, "\\'");

@@ -29,6 +29,21 @@ type SnapWindow = Window & {
 };
 
 export default function BillingPage() {
+  const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
+  if (isDesktop) {
+    return (
+      <div className="mx-auto flex max-w-4xl flex-col gap-6">
+        <div>
+          <h1 className="text-[22px] font-semibold tracking-tight text-ink">License</h1>
+          <p className="mt-1 text-sm text-ink-tertiary">One-time purchase — unlimited forever. No packs, no credits. Runs fully offline after activation.</p>
+        </div>
+        <Card className="p-6">
+          <p className="text-sm font-medium text-ink">Unlimited</p>
+          <p className="mt-1 text-xs text-ink-tertiary">All projects, storage, clips and 4K exports unlocked. RAM-adaptive whisper + Qwen picks the best model for your machine.</p>
+        </Card>
+      </div>
+    );
+  }
   const billing = useBilling();
   const checkout = useCheckout();
   const invalidateBilling = useInvalidateBilling();

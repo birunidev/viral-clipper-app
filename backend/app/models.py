@@ -212,6 +212,29 @@ class PaymentOrder(Base):
     )
 
 
+class License(Base):
+    """One-time desktop license (single purchase, unlimited).
+
+    Generated after a successful Paddle/Midtrans payment or seeded for dev.
+    Desktop verifies via POST /api/v1/license/verify (FastAPI) or
+    /api/license/verify (web, which proxies to the same table).
+    """
+
+    __tablename__ = "licenses"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    license_key: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    email: Mapped[str | None] = mapped_column(String, index=True)
+    user_id: Mapped[str | None] = mapped_column(String, ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    is_valid: Mapped[bool] = mapped_column(Boolean, server_default="true", nullable=False)
+    tier: Mapped[str] = mapped_column(String, server_default="unlimited", nullable=False)
+    expires_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    meta: Mapped[dict | None] = mapped_column("metadata", JSON)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user: Mapped[User | None] = relationship()
+
+
 # ------------------------------------------------------------------- app
 
 

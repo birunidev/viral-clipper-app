@@ -3,30 +3,31 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import { createRequire } from "node:module";
-import { app } from "electron";
 import { ramTier, whisperModelForTier, threadCount } from "./system.js";
+import { ffmpegPath, whisperPath } from "./bin.js";
 
 const require = createRequire(import.meta.url);
+
+function getUserDataPath(): string {
+  if (process.env.USER_DATA_PATH) return process.env.USER_DATA_PATH;
+  try {
+    const { app } = require("electron") as { app: { getPath: (n: string) => string } };
+    return app.getPath("userData");
+  } catch {
+    return path.join(os.homedir(), ".clipforge");
+  }
+}
 
 export type Word = { text: string; start_ms: number; end_ms: number };
 export type TranscriptResult = { text: string; words: Word[]; language?: string };
 
 export class TranscriptionError extends Error {}
 
-function ffmpegBin(): string {
-  try { const p = require("ffmpeg-static"); if (p) return p; } catch {}
-  return process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
-}
-
-function whisperBin(): string {
-  const base = path.join(process.resourcesPath ?? process.cwd(), "bin");
-  const name = process.platform === "win32" ? "whisper-cli.exe" : "whisper-cli";
-  const p = path.join(base, name);
-  return fs.existsSync(p) ? p : "whisper-cli";
-}
+function ffmpegBin(): string { return ffmpegPath(); }
+function whisperBin(): string { return whisperPath(); }
 
 function modelsDir(): string {
-  const d = path.join((app?.getPath("userData") ?? path.join(os.homedir(), ".clipforge")), "models", "whisper");
+  const d = path.join(getUserDataPath(), "models", "whisper");
   fs.mkdirSync(d, { recursive: true });
   return d;
 }

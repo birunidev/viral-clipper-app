@@ -21,6 +21,7 @@ import { StatusPill } from "@/components/ui/status-pill";
 import { SourceTypeIcon } from "@/components/project/source-icon";
 import { UpgradeRequired, isPaywall } from "@/components/upgrade-required";
 import { useCreateProject, useDeleteProject, usePurgeProject, usePresignUpload, useProjects, useRestoreProject, useTrashProjects } from "@/hooks/use-projects";
+import { api } from "@/lib/api";
 
 const TRASH_RETENTION_DAYS = 30;
 
@@ -69,7 +70,14 @@ export default function DashboardPage() {
       createProject.mutate(
         { title, source: url.trim(), source_type: "youtube" },
         {
-          onSuccess: (project) => navigate(`/projects/${project.id}`),
+          onSuccess: (project) => {
+            const pid = (project as { id: string }).id;
+            api.post(`/projects/${pid}/start`, { orientation: "portrait", max_clips: 10, min_clip_seconds: 15, max_clip_seconds: 90 }).catch((e) => {
+              console.error("auto-start failed", e);
+              setError(String((e as Error).message ?? e));
+            });
+            navigate(`/projects/${pid}`);
+          },
           onError: fail,
         }
       );
@@ -81,13 +89,44 @@ export default function DashboardPage() {
       return;
     }
 
-    // 100MB per-user cap (matches backend core/storage.py). The backend
-    // enforces this authoritatively too, but failing fast client-side is a
-    // better UX than a rejected upload.
-    const CAP_BYTES = 100 * 1024 * 1024;
-    if (file.size > CAP_BYTES) {
-      setError("This file is larger than the 100MB storage limit.");
-      return;
+    const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipforge?: unknown }).clipforge;
+    if (isDesktop) {
+      const filePath = (file as unknown as { path?: string }).path;
+      if (filePath) {
+        createProject.mutate(
+          { title, source: filePath, source_type: "upload", source_size_bytes: file.size },
+          {
+            onSuccess: (project) => {
+              const pid = (project as { id: string }).id;
+              api.post(`/projects/${pid}/start`, { orientation: "portrait", max_clips: 10, min_clip_seconds: 15, max_clip_seconds: 90 }).catch((e) => {
+                console.error("auto-start failed", e);
+                setError(String((e as Error).message ?? e));
+              });
+              navigate(`/projects/${pid}`);
+            },
+            onError: fail,
+          }
+        );
+        return;
+      }
+      const picked = await (window as unknown as { clipforge: { dialogOpenVideo?: () => Promise<string | null> } }).clipforge?.dialogOpenVideo?.();
+      if (picked) {
+        createProject.mutate(
+          { title, source: picked, source_type: "upload", source_size_bytes: file.size },
+          {
+            onSuccess: (project) => {
+              const pid = (project as { id: string }).id;
+              api.post(`/projects/${pid}/start`, { orientation: "portrait", max_clips: 10, min_clip_seconds: 15, max_clip_seconds: 90 }).catch((e) => {
+                console.error("auto-start failed", e);
+                setError(String((e as Error).message ?? e));
+              });
+              navigate(`/projects/${pid}`);
+            },
+            onError: fail,
+          }
+        );
+        return;
+      }
     }
 
     try {
@@ -106,7 +145,14 @@ export default function DashboardPage() {
       createProject.mutate(
         { title, source: key, source_type: "upload", source_size_bytes: file.size },
         {
-          onSuccess: (project) => navigate(`/projects/${project.id}`),
+          onSuccess: (project) => {
+            const pid = (project as { id: string }).id;
+            api.post(`/projects/${pid}/start`, { orientation: "portrait", max_clips: 10, min_clip_seconds: 15, max_clip_seconds: 90 }).catch((e) => {
+              console.error("auto-start failed", e);
+              setError(String((e as Error).message ?? e));
+            });
+            navigate(`/projects/${pid}`);
+          },
           onError: fail,
         }
       );
