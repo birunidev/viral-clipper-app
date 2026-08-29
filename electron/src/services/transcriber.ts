@@ -316,22 +316,34 @@ export async function transcribeWithWords(videoPath: string, onProgress?: (f: nu
             const tokens = (seg as Record<string, unknown>).tokens as unknown[] | undefined;
             const segTokens = tokens ?? ((seg as Record<string, unknown>).words as unknown[]);
             if (Array.isArray(segTokens) && segTokens.length) {
+              // Merge subword tokens into proper words (fixes "tekn olog i" -> "teknologi")
+              let pending: Word | null = null;
+              const flush = () => { if (pending) { words.push(pending); textParts.push(pending.text); pending = null; } };
               for (const tok of segTokens as Record<string, unknown>[]) {
-                const text = String(tok.text ?? tok.word ?? "").trim();
+                const raw = String(tok.text ?? tok.word ?? "");
+                const text = raw.trim();
                 if (!text) continue;
-                // offsets in whisper.cpp json are in ms? Actually from/to are ms strings.
+                // Skip special tokens like [_BEG_], [_TT_123], <|...|>
+                if (/^\[.*\]$/.test(text) || /^<\|.*\|>$/.test(text) || /^\[_.*_\]$/.test(text)) continue;
                 const off = tok.offsets as Record<string, unknown> | undefined;
                 const ts = tok.timestamps as Record<string, unknown> | undefined;
                 const sRaw = off?.from ?? ts?.from ?? tok.start ?? tok.t0 ?? 0;
                 const eRaw = off?.to ?? ts?.to ?? tok.end ?? tok.t1 ?? 0;
                 const s = Math.round(Number(sRaw));
                 const e = Math.round(Number(eRaw ?? s + 200));
-                // whisper.cpp offsets are in ms (verified for Qwen/whisper.cpp). Keep as ms.
                 const sMs = s;
                 const eMs = e;
-                textParts.push(text);
-                words.push({ text, start_ms: sMs, end_ms: Math.max(eMs, sMs + 80) });
+                // Heuristic: new word if raw starts with space/▁ or pending is null
+                const isNewWord = !pending || raw.startsWith(" ") || raw.startsWith("▁") || raw.startsWith("Ġ");
+                if (isNewWord) {
+                  flush();
+                  pending = { text, start_ms: sMs, end_ms: Math.max(eMs, sMs + 80) };
+                } else {
+                  pending!.text += text;
+                  pending!.end_ms = Math.max(eMs, pending!.end_ms);
+                }
               }
+              flush();
             } else {
               // Fallback: split seg text into words distributed over segment interval
               const ts = (seg as Record<string, unknown>).timestamps as Record<string, unknown> | undefined;
