@@ -561,14 +561,46 @@ async function runJobInUtility(jobId: string, projectId: string, clipId?: string
         const words = m.words as { text: string; start_ms: number; end_ms: number }[];
         const langRaw = (m.language as string | null) ?? null;
         const lang = langRaw ? langRaw.toLowerCase().split(/[-_]/)[0] : null;
+        const transcriptCached = Boolean((m as Record<string, unknown>).transcriptCached);
         if (lang) await dbExecute("UPDATE projects SET language=? WHERE id=?", [lang, projectId]);
         await dbExecute("DELETE FROM timeline_words WHERE project_id=?", [projectId]);
         for (let i = 0; i < words.length; i++) {
           await dbExecute("INSERT INTO timeline_words (id, project_id, idx, text, start_ms, end_ms) VALUES (?,?,?,?,?,?)", [`${projectId}_${i}`, projectId, i, words[i].text, words[i].start_ms, words[i].end_ms]);
         }
+        // Persist to transcript_cache (DB) for youtubeId reuse
+        try {
+          const projRow = await dbFetchOne<Record<string, unknown>>("SELECT source FROM projects WHERE id=?", [projectId]);
+          const src = String(projRow?.source ?? "");
+          const { extractVideoId } = await import("./services/youtube.js");
+          const vid = extractVideoId(src);
+          if (vid && words.length > 10) {
+            const text = words.map((w) => w.text).join(" ");
+            const whisperModel = "large-v3"; // matches system.ts high tier; version bump if changed
+            await dbExecute("INSERT OR REPLACE INTO transcript_cache (video_id, language, text, words_json, whisper_model, version, bytes, created_at, last_used_at) VALUES (?,?,?,?,?,?,?,?,?)", [vid, lang, text, JSON.stringify(words), whisperModel, 1, Buffer.byteLength(JSON.stringify(words), "utf8"), nowIso(), nowIso()]);
+            if (transcriptCached) void emitLog(`Transcript cache hit ${vid} (${words.length} words)`, "info");
+            else void emitLog(`Transcript cached ${vid} (${words.length} words)`, "info");
+          }
+        } catch {}
       } catch (e) { console.warn("[main] words persist failed", e); }
+    } else if (m.type === "transcriptCacheHit" && typeof m.videoId === "string") {
+      void emitLog(`Transcript cache hit ${m.videoId} — skipping transcribe`, "info");
+      try { await dbExecute("UPDATE transcript_cache SET last_used_at=? WHERE video_id=?", [nowIso(), String(m.videoId)]); } catch {}
+    } else if (m.type === "transcriptCacheSaved" && typeof m.videoId === "string") {
+      void emitLog(`Transcript cached ${m.videoId}`, "info");
     } else if (m.type === "done") {
-      void emitLog("Job completed successfully", "info");
+      const timing = (m as Record<string, unknown>).payload ? ((m.payload as Record<string, unknown>).timing as Record<string, unknown> | undefined) : undefined;
+      // timing is inside payload.timing from jobRunner, but jobRunner sends timing in done payload root
+      const t = (m.payload as Record<string, unknown> | undefined)?.timing as Record<string, unknown> | undefined ?? (m as Record<string, unknown>).timing as Record<string, unknown> | undefined;
+      if (t && typeof t.totalMs === "number") {
+        const total = Number(t.totalMs), dl = Number(t.downloadMs ?? 0), tr = Number(t.transcribeMs ?? 0), an = Number(t.analyzeMs ?? 0);
+        const cached = (t as Record<string, unknown>).transcriptCached ? " (transcript cached)" : "";
+        void emitLog(`Clipping done in ${(total/1000).toFixed(1)}s — download ${(dl/1000).toFixed(1)}s, transcribe ${(tr/1000).toFixed(1)}s, analyze ${(an/1000).toFixed(1)}s${cached}`, "info");
+        try {
+          await dbExecute("UPDATE jobs SET total_execution_time_ms=?, download_ms=?, transcribe_ms=?, analyze_ms=?, updated_at=? WHERE id=?", [total, dl, tr, an, nowIso(), jobId]);
+        } catch {}
+      } else {
+        void emitLog("Job completed successfully", "info");
+      }
       const payload = m.payload as Record<string, unknown> | undefined;
       try {
         if (jobType === "render" || clipId) {

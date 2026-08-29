@@ -29,7 +29,9 @@ const SCHEMA = `
       type TEXT NOT NULL DEFAULT 'analyze', clip_id TEXT,
       status TEXT NOT NULL DEFAULT 'queued', stage TEXT,
       progress INTEGER NOT NULL DEFAULT 0, error TEXT, options TEXT,
-      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      total_execution_time_ms INTEGER,
+      download_ms INTEGER, transcribe_ms INTEGER, analyze_ms INTEGER
     );
     CREATE TABLE IF NOT EXISTS clips (
       id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
@@ -58,6 +60,11 @@ const SCHEMA = `
     CREATE TABLE IF NOT EXISTS youtube_cache (
       video_id TEXT PRIMARY KEY, file_path TEXT NOT NULL, ext TEXT NOT NULL,
       bytes INTEGER NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS transcript_cache (
+      video_id TEXT PRIMARY KEY, language TEXT, text TEXT NOT NULL, words_json TEXT NOT NULL,
+      whisper_model TEXT, version INTEGER NOT NULL DEFAULT 1,
+      bytes INTEGER, created_at TEXT NOT NULL, last_used_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_jobs_project ON jobs(project_id);
     CREATE INDEX IF NOT EXISTS idx_clips_project ON clips(project_id);
@@ -109,6 +116,13 @@ async function ensureElectronDb(): Promise<void> {
         ]);
       await withTimeout(sqliteElectron.setdbPath(p), 8000, "sqlite-electron setdbPath");
       await withTimeout(sqliteElectron.executeScript(SCHEMA), 8000, "sqlite-electron executeScript");
+      // Migrations for existing DBs (additive, ignore if already exists)
+      for (const sql of [
+        "ALTER TABLE jobs ADD COLUMN total_execution_time_ms INTEGER",
+        "ALTER TABLE jobs ADD COLUMN download_ms INTEGER",
+        "ALTER TABLE jobs ADD COLUMN transcribe_ms INTEGER",
+        "ALTER TABLE jobs ADD COLUMN analyze_ms INTEGER",
+      ]) { try { await sqliteElectron.executeQuery(sql); } catch {} }
       electronReady = true;
       console.log("[db] sqlite-electron ready at", p);
       // Migrate JSON fallback if DB empty but JSON has data
@@ -254,6 +268,12 @@ function getDbInnerSync() {
     const db = new DatabaseSync(p);
     (db as any).exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
     (db as any).exec(SCHEMA);
+    for (const sql of [
+      "ALTER TABLE jobs ADD COLUMN total_execution_time_ms INTEGER",
+      "ALTER TABLE jobs ADD COLUMN download_ms INTEGER",
+      "ALTER TABLE jobs ADD COLUMN transcribe_ms INTEGER",
+      "ALTER TABLE jobs ADD COLUMN analyze_ms INTEGER",
+    ]) { try { (db as any).exec(sql); } catch {} }
     const wrap = {
       prepare(sql:string): Stmt {
         const stmt=(db as any).prepare(sql);

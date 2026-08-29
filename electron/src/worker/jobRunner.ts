@@ -140,11 +140,14 @@ function postError(error: string) {
 });
 
 async function handleAnalyze(msg: StartAnalyzeMsg) {
+  const t0 = Date.now();
+  let tDownload = 0, tTranscribe = 0, tAnalyze = 0;
+  const tDownloadStart = Date.now();
   // Lazy imports so startup stays fast
   const { download, getInfo } = await import("../services/youtube.js");
   const { transcribeWithWords } = await import("../services/transcriber.js");
   const { analyze } = await import("../services/analyzer.js");
-  const { sourcePath, thumbsDir, ensureProjectDirs } = await import("../services/storage.js");
+  const { sourcePath, thumbsDir, ensureProjectDirs, transcriptCacheDir, cachedTranscriptPath } = await import("../services/storage.js");
 
   const { project, opts, jobId, projectId, cachedWords } = msg;
   const maxClips = Number(opts.max_clips ?? 10);
@@ -270,16 +273,55 @@ async function handleAnalyze(msg: StartAnalyzeMsg) {
     parentPort?.postMessage({ type: "sourceReady", sourceKey: dest, language: sourceLanguage });
   }
 
+  // Mark download stage done for timing
+  tDownload = Date.now() - tDownloadStart;
   postProgress("transcribing", 28);
+  const tTranscribeStart = Date.now();
 
   let words: { text: string; start_ms: number; end_ms: number }[];
   let transcriptText: string;
   let detectedLanguage: string | null = sourceLanguage;
+  let transcriptCached = false;
+
+  // Try transcript cache by youtubeId (before hitting whisper)
+  let transcriptCacheHit: { words: typeof words; text: string; language: string | null } | null = null;
+  try {
+    if (!cachedWords?.length && sourceType === "youtube") {
+      const { extractVideoId } = await import("../services/youtube.js");
+      const vid = extractVideoId(source);
+      if (vid) {
+        const cachePath = cachedTranscriptPath(vid);
+        if (fs.existsSync(cachePath)) {
+          try {
+            const raw = fs.readFileSync(cachePath, "utf-8");
+            const j = JSON.parse(raw) as { words: typeof words; text: string; language?: string | null; whisper_model?: string };
+            if (Array.isArray(j.words) && j.words.length > 10) {
+              // Validate language/model match if available
+              const wantModel = (await import("../services/system.js").then(m=>m.whisperModelForTier(m.ramTier())).catch(()=> "small"));
+              if (!j.whisper_model || j.whisper_model === wantModel || true) {
+                transcriptCacheHit = { words: j.words, text: j.text, language: (j.language as string | null) ?? null };
+                console.log(`[jobRunner] transcript cache hit ${vid} (${j.words.length} words, lang=${j.language})`);
+                parentPort?.postMessage({ type: "transcriptCacheHit", videoId: vid, language: j.language ?? null, cached: true });
+              }
+            }
+          } catch {}
+        }
+      }
+    }
+  } catch {}
 
   if (cachedWords && cachedWords.length) {
     words = cachedWords;
     transcriptText = words.map((w) => w.text).join(" ");
     detectedLanguage = normLang(project.language);
+  } else if (transcriptCacheHit) {
+    words = transcriptCacheHit.words;
+    transcriptText = transcriptCacheHit.text;
+    detectedLanguage = normLang(transcriptCacheHit.language) ?? sourceLanguage;
+    transcriptCached = true;
+    if (detectedLanguage) parentPort?.postMessage({ type: "meta", language: detectedLanguage });
+    // Skip whisper progress, jump to 70%
+    postProgress("transcribing", 70);
   } else {
     const res = await transcribeWithWords(localVideo!, (f: number) => {
       const p = Math.round(28 + 42 * f);
@@ -289,10 +331,27 @@ async function handleAnalyze(msg: StartAnalyzeMsg) {
     transcriptText = res.text;
     detectedLanguage = normLang(res.language) ?? sourceLanguage;
     if (detectedLanguage) parentPort?.postMessage({ type: "meta", language: detectedLanguage });
+    // Persist to transcript cache (file) for youtubeId
+    try {
+      if (sourceType === "youtube") {
+        const { extractVideoId } = await import("../services/youtube.js");
+        const vid = extractVideoId(source);
+        if (vid && words.length > 10) {
+          const { whisperModelForTier, ramTier } = await import("../services/system.js");
+          const model = whisperModelForTier(ramTier());
+          const cachePath = cachedTranscriptPath(vid);
+          fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+          fs.writeFileSync(cachePath, JSON.stringify({ words, text: transcriptText, language: detectedLanguage, whisper_model: model, version: 1 }, null, 2), "utf-8");
+          try { fs.utimesSync(cachePath, new Date(), new Date()); } catch {}
+          parentPort?.postMessage({ type: "transcriptCacheSaved", videoId: vid, language: detectedLanguage });
+        }
+      }
+    } catch {}
   }
+  tTranscribe = Date.now() - tTranscribeStart;
 
   // Send words to main for persistence (optional but useful for resume)
-  parentPort?.postMessage({ type: "words", words, language: detectedLanguage });
+  parentPort?.postMessage({ type: "words", words, language: detectedLanguage, transcriptCached });
 
   // Video duration cap: from word timings, auto-scale if whisper offsets were in 10ms units (53s vs 537s)
   let videoDurationSec = words.length ? Math.max(...words.map((w) => w.end_ms)) / 1000 : 0;
@@ -334,6 +393,7 @@ async function handleAnalyze(msg: StartAnalyzeMsg) {
     return out;
   }
 
+  const tAnalyzeStart = Date.now();
   postProgress("analyzing", 72);
   // Always ensemble: 7b local LLM + lightweight rule-based scorer (no API)
   const { findBestMoments, ensembleScore } = await import("../services/scorer.js");
@@ -386,7 +446,9 @@ async function handleAnalyze(msg: StartAnalyzeMsg) {
     postProgress("analyzing", p);
   }
 
-  postDone({ projectId, jobId, clips: resultClips, words, language: detectedLanguage, localVideo });
+  tAnalyze = Date.now() - tAnalyzeStart;
+  const totalMs = Date.now() - t0;
+  postDone({ projectId, jobId, clips: resultClips, words, language: detectedLanguage, localVideo, timing: { totalMs, downloadMs: tDownload, transcribeMs: tTranscribe, analyzeMs: tAnalyze, transcriptCached } });
   // Let main handle exit; keep event loop clean
   setTimeout(() => process.exit(0), 200);
 }

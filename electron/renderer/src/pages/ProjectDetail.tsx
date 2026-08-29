@@ -327,6 +327,14 @@ export default function ProjectPage() {
             Stopped — next run will start from scratch.
           </p>
         )}
+        {lastJob?.total_execution_time_ms != null && (
+          <p className="mt-3 flex items-center gap-2 rounded-lg border border-line bg-surface-2 px-3 py-2 text-xs text-ink-secondary tabular-nums">
+            <span className="font-medium">Total:</span> {(lastJob.total_execution_time_ms / 1000).toFixed(1)}s
+            {lastJob.download_ms != null && <span>· download {(lastJob.download_ms / 1000).toFixed(1)}s</span>}
+            {lastJob.transcribe_ms != null && <span>· transcribe {(lastJob.transcribe_ms / 1000).toFixed(1)}s</span>}
+            {lastJob.analyze_ms != null && <span>· analyze {(lastJob.analyze_ms / 1000).toFixed(1)}s</span>}
+          </p>
+        )}
 
         {(isActive || lastJob) && logJobId && (
           <div className="mt-4 border-t border-line pt-4">

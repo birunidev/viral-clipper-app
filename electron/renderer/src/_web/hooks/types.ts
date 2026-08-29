@@ -73,6 +73,10 @@ export type Job = {
   } | null;
   created_at: string;
   updated_at: string;
+  total_execution_time_ms?: number | null;
+  download_ms?: number | null;
+  transcribe_ms?: number | null;
+  analyze_ms?: number | null;
   project?: { id: string; title: string; status: string } | null;
 };
 

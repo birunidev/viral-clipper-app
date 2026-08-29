@@ -77,3 +77,23 @@ export function ensureProjectDirs(projectId: string) {
   clipsDir(projectId);
   thumbsDir(projectId);
 }
+
+export function transcriptCacheDir(): string {
+  const d = path.join(userDataRoot(), "transcript-cache");
+  fs.mkdirSync(d, { recursive: true });
+  return d;
+}
+
+export function cachedTranscriptPath(videoId: string): string {
+  return path.join(transcriptCacheDir(), `${videoId}.json`);
+}
+
+// File-based transcript cache helpers (complements DB transcript_cache table for quick touch/LRU)
+export function cachedTranscriptMetaFile(videoId: string): { path: string; size: number } | null {
+  const p = cachedTranscriptPath(videoId);
+  try {
+    const st = fs.statSync(p);
+    if (st.isFile() && st.size > 100) return { path: p, size: st.size };
+  } catch {}
+  return null;
+}
