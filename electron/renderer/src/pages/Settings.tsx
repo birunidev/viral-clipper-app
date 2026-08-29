@@ -35,9 +35,12 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-[22px] font-semibold tracking-tight text-ink">Settings</h1>
         <p className="mt-1 text-sm text-ink-tertiary">
-          Manage your storage, local AI models and workspace.
+          Manage your storage, local AI models and workspace. If onboarding failed, finish setup here.
         </p>
       </div>
+
+      {/* Dependency Setup — same as onboarding, with logs */}
+      <DependencySetupCard />
 
       {/* Local AI Models */}
       <LocalModelsCard />
@@ -346,6 +349,85 @@ type VariantInfo = {
   bytesOnDisk: number;
   description: string;
 };
+
+function DependencySetupCard() {
+  const [deps, setDeps] = useState<{ deps: { key: string; label: string; installed: boolean; path: string | null; description: string }[]; allReady: boolean; missing: string[] } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [logs, setLogs] = useState<string[]>([]);
+  const [progress, setProgress] = useState<Record<string, number>>({});
+
+  const refresh = async () => {
+    const cf = (window as unknown as { clipzard?: { depsStatus: () => Promise<unknown> } }).clipzard;
+    if (!cf?.depsStatus) return;
+    try { setDeps((await cf.depsStatus()) as typeof deps); } catch {}
+  };
+
+  useEffect(() => {
+    refresh();
+    const cf = (window as unknown as { clipzard?: { onDepsProgress: (cb: (d: unknown) => void) => () => void } }).clipzard;
+    if (!cf?.onDepsProgress) return;
+    const off = cf.onDepsProgress((d) => {
+      const { key, progress: p, stage, done, error } = d as { key: string; progress: number; stage?: string; done?: boolean; error?: string };
+      if (typeof p === "number") setProgress((prev) => ({ ...prev, [key]: p }));
+      const line = `[${key}] ${stage ?? (done ? "done" : error ? `error: ${error}` : `${Math.round(p * 100)}%`)}`;
+      setLogs((prev) => [...prev.slice(-200), line]);
+      if (done) refresh();
+    });
+    return off;
+  }, []);
+
+  const handleEnsureAll = async () => {
+    const cf = (window as unknown as { clipzard?: { depsEnsureAll: () => Promise<unknown> } }).clipzard;
+    if (!cf?.depsEnsureAll) return;
+    setBusy(true);
+    setLogs((prev) => [...prev, "Starting dependency setup..."]);
+    try { await cf.depsEnsureAll(); await refresh(); setLogs((prev) => [...prev, "All dependencies ready"]); } catch (e) { setLogs((prev) => [...prev, `Failed: ${String((e as Error).message)}`]); }
+    finally { setBusy(false); }
+  };
+
+  if (!deps) return <Card className="p-5"><p className="text-xs text-ink-tertiary">Checking dependencies…</p></Card>;
+
+  return (
+    <Card className="p-5">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm font-medium text-ink">
+          <DownloadSimple size={16} className="text-accent" />
+          Dependency Setup
+          {deps.allReady ? <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-600">Ready</span> : <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] text-amber-600">Incomplete</span>}
+        </div>
+        <Button size="sm" variant={deps.allReady ? "secondary" : "primary"} disabled={busy} onClick={handleEnsureAll} loading={busy}>
+          {deps.allReady ? "Re-check" : "Download All"}
+        </Button>
+      </div>
+      <p className="mt-1 text-xs text-ink-tertiary">
+        {deps.allReady ? "All required models and binaries are ready. You can create clips." : `Missing: ${deps.missing.join(", ") || "unknown"} — finish setup before creating clips (same as onboarding).`}
+      </p>
+      <div className="mt-3 flex flex-col gap-1.5">
+        {deps.deps.map((d) => (
+          <div key={d.key} className={`flex items-center justify-between rounded-lg border px-3 py-2 text-xs ${d.installed ? "border-emerald-500/20 bg-emerald-500/5" : "border-amber-500/20 bg-amber-500/5"}`}>
+            <div className="min-w-0">
+              <p className="font-medium text-ink truncate">{d.label} {d.installed ? <Check size={12} className="inline text-emerald-600" weight="bold" /> : <Warning size={12} className="inline text-amber-600" weight="fill" />}</p>
+              <p className="text-[11px] text-ink-tertiary truncate">{d.description}</p>
+              {progress[d.key] != null && progress[d.key] < 1 && <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-surface-2"><div className="h-full bg-accent" style={{ width: `${progress[d.key] * 100}%` }} /></div>}
+            </div>
+            <span className="ml-2 shrink-0 font-mono text-[10px] text-ink-muted truncate max-w-[180px]">{d.path ?? ""}</span>
+          </div>
+        ))}
+      </div>
+      {logs.length > 0 && (
+        <div className="mt-3">
+          <p className="text-xs font-medium text-ink-secondary">Logs</p>
+          <div className="mt-1 max-h-40 overflow-auto rounded-lg border border-line bg-surface-2 p-2 font-mono text-[11px] leading-relaxed text-ink-secondary">
+            {logs.map((l, i) => <div key={i}>{l}</div>)}
+          </div>
+        </div>
+      )}
+      <p className="mt-2 text-[11px] text-ink-muted">
+        Onboarding can be skipped if stuck — then finish here. Once all required deps are installed, YouTube clipping will work without “Please go to Settings…” error.
+      </p>
+    </Card>
+  );
+}
 
 function LocalModelsCard() {
   const [data, setData] = useState<{ variants: VariantInfo[]; selected: string; whisper: { model: string; installed: boolean; bytesOnDisk: number } | null } | null>(null);

@@ -12,6 +12,7 @@ import DashboardPage from "./pages/Dashboard";
 import ProjectDetailPage from "./pages/ProjectDetail";
 import BillingPage from "./pages/Billing";
 import SettingsPage from "./pages/Settings";
+import OnboardingPage from "./pages/Onboarding";
 
 const qc = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 5_000, refetchOnWindowFocus: false } },
@@ -70,6 +71,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
       <QueryClientProvider client={qc}>
         <HashRouter>
           <Routes>
+            <Route path="/onboarding" element={<OnboardingPage />} />
             <Route path="/login" element={<AuthLayout><LoginPage /></AuthLayout>} />
             <Route path="/" element={<LicenseGate><AppShell><DashboardPage /></AppShell></LicenseGate>} />
             <Route path="/projects/:id" element={<LicenseGate><AppShell><ProjectDetailPage /></AppShell></LicenseGate>} />

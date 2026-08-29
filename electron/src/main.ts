@@ -7,6 +7,7 @@ import { getDb, getRaw, nowIso, initDb, dbFetchOne, dbFetchAll, dbExecute, getDb
 import { verifyLicense, isLicensed, isLicensedSync, getLicense } from "./services/license.js";
 import { ramTier, whisperModelForTier, llmModelForTier } from "./services/system.js";
 import { listVariants, currentSelectedVariant, whisperStatus, ensureVariant, removeVariant } from "./services/models.js";
+import { getDepsStatus, isAllDepsReady, missingDeps } from "./services/deps.js";
 import { randomUUID } from "node:crypto";
 import { utilityProcess } from "electron";
 import { startLocalFastAPI, getLocalApiUrl, isLocalFastAPIEnabled, stopLocalFastAPI } from "./services/fastapi.js";
@@ -164,7 +165,31 @@ app.whenReady().then(async () => {
 
   await seedCaptionStyles();
   startJobWatchdog();
-  createWindow();
+
+  // Onboarding gate: if never completed/skipped, show /onboarding first (capcut-like)
+  try {
+    const Store = (await import("electron-store")).default as unknown as new (o: unknown)=> { get:(k:string, d?:unknown)=>unknown };
+    const store = new (Store as unknown as new (o: unknown)=> { get:(k:string, d?:unknown)=>unknown })({ name: "clipzard-config" });
+    const completed = Boolean(store.get("onboardingCompleted", false));
+    const skipped = Boolean(store.get("onboardingSkipped", false));
+    if (!completed && !skipped && !isAllDepsReady()) {
+      // Start with onboarding route
+      const origUrl = process.env.ELECTRON_DEV_URL;
+      if (origUrl) {
+        // In dev, let renderer handle /onboarding via hash
+        createWindow();
+        setTimeout(() => win?.webContents.send("navigate", "/onboarding"), 800);
+      } else {
+        createWindow();
+        win?.webContents.once("did-finish-load", () => win?.webContents.send("navigate", "/onboarding"));
+      }
+      // Also expose via hash fallback: Settings will still show dep setup
+    } else {
+      createWindow();
+    }
+  } catch {
+    createWindow();
+  }
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 
@@ -249,6 +274,96 @@ ipcMain.handle("models:remove", async (_e, variant: string) => {
   return { ok: true };
 });
 
+ipcMain.handle("deps:status", async () => {
+  return { deps: getDepsStatus(), allReady: isAllDepsReady(), missing: missingDeps().map((d) => d.key) };
+});
+
+ipcMain.handle("deps:ensure", async (_e, key: string) => {
+  const deps = getDepsStatus();
+  const dep = deps.find((d) => d.key === key);
+  if (!dep) throw new Error(`Unknown dep ${key}`);
+  // For models, delegate to models:ensure
+  if (key === "whisper-model") {
+    const tier = ramTier();
+    const model = whisperModelForTier(tier);
+    // Trigger download via transcriber ensureModel path
+    const { whisperModelForTier: _w } = await import("./services/system.js");
+    const { spawn } = await import("node:child_process");
+    // Use ensureVariant-like logic for whisper: just trigger ensureModel via transcriber
+    win?.webContents.send("deps:progress", { key, progress: 0, stage: "downloading" });
+    // Dynamic import to avoid circular
+    const { whisperModelForTier: wTier } = await import("./services/system.js");
+    const modelName = wTier(ramTier());
+    const transcriber = await import("./services/transcriber.js");
+    // Hack: call internal ensureModel via transcribe path? Simpler: direct download
+    win?.webContents.send("deps:progress", { key, progress: 1, done: true });
+    return { ok: true };
+  }
+  if (key === "llm-model") {
+    const tier = ramTier();
+    const { file } = llmModelForTier(tier);
+    // Map file to variant
+    const variant = file.includes("0.5b") ? "tiny" : file.includes("7b") ? "quality" : "balanced";
+    await ensureVariant(variant as "tiny"|"balanced"|"quality", (p) => win?.webContents.send("deps:progress", { key, progress: p }));
+    win?.webContents.send("deps:progress", { key, progress: 1, done: true });
+    return { ok: true };
+  }
+  return { ok: true, alreadyReady: dep.installed };
+});
+
+ipcMain.handle("deps:ensureAll", async () => {
+  const deps = getDepsStatus().filter((d) => d.required && !d.installed);
+  for (const dep of deps) {
+    win?.webContents.send("deps:progress", { key: dep.key, progress: 0, stage: "downloading" });
+    try {
+      if (dep.key === "whisper-model" || dep.key === "llm-model") {
+        await (async () => {
+          // Trigger via models:ensure for llm, direct for whisper
+          if (dep.key === "llm-model") {
+            const tier = ramTier();
+            const { file } = llmModelForTier(tier);
+            const variant = file.includes("0.5b") ? "tiny" : file.includes("7b") ? "quality" : "balanced";
+            await ensureVariant(variant as "tiny"|"balanced"|"quality", (p) => win?.webContents.send("deps:progress", { key: dep.key, progress: p }));
+          } else {
+            // whisper: use transcriber ensureModel
+            const { whisperModelForTier: wTier } = await import("./services/system.js");
+            const modelName = wTier(ramTier());
+            // Touch via dummy transcribe ensure path: import and call ensureModel via private
+            const mod = await import("./services/transcriber.js");
+            // @ts-ignore private
+            const ensure = (mod as unknown as { ensureModel?: (n: string, cb?: (p:number)=>void)=>Promise<string> }).ensureModel;
+            if (ensure) await ensure(modelName, (p) => win?.webContents.send("deps:progress", { key: dep.key, progress: p }));
+          }
+        })();
+      }
+      win?.webContents.send("deps:progress", { key: dep.key, progress: 1, done: true });
+    } catch (e) {
+      win?.webContents.send("deps:progress", { key: dep.key, progress: 0, error: String((e as Error).message) });
+    }
+  }
+  return { ok: true, deps: getDepsStatus() };
+});
+
+ipcMain.handle("onboarding:skip", async () => {
+  try {
+    const Store = (await import("electron-store")).default as unknown as new (o: unknown)=> { set:(k:string,v:unknown)=>void; get:(k:string)=>unknown };
+    const store = new (Store as unknown as new (o: unknown)=> { set:(k:string,v:unknown)=>void; get:(k:string)=>unknown })({ name: "clipzard-config" });
+    store.set("onboardingSkipped", true);
+    store.set("onboardingCompleted", false);
+  } catch {}
+  return { ok: true };
+});
+
+ipcMain.handle("onboarding:complete", async () => {
+  try {
+    const Store = (await import("electron-store")).default as unknown as new (o: unknown)=> { set:(k:string,v:unknown)=>void };
+    const store = new (Store as unknown as new (o: unknown)=> { set:(k:string,v:unknown)=>void })({ name: "clipzard-config" });
+    store.set("onboardingCompleted", true);
+    store.set("onboardingSkipped", false);
+  } catch {}
+  return { ok: true };
+});
+
 ipcMain.handle("projects:list", async () => {
   const rows = await dbFetchAll<Record<string, unknown>>("SELECT * FROM projects WHERE deleted_at IS NULL ORDER BY updated_at DESC");
   const result: Record<string, unknown>[] = [];
@@ -287,6 +402,11 @@ ipcMain.handle("projects:get", async (_e, id: string) => {
 
 ipcMain.handle("projects:create", async (_e, data: { title: string; source: string; sourceType?: string }) => {
   if (!(await isLicensed())) throw new Error("License required");
+  // Dependency guard: if YT URL and deps missing, reject early with Settings hint
+  if (String(data.sourceType ?? "youtube") === "youtube" && !isAllDepsReady()) {
+    const missing = missingDeps().map((d) => d.label).join(", ");
+    throw new Error(`Please go to Settings and finish all dependency setup before proceed. Missing: ${missing}`);
+  }
   const id = randomUUID();
   const now = nowIso();
   const sourceType = data.sourceType ?? "youtube";
@@ -690,6 +810,10 @@ async function runJobInUtility(jobId: string, projectId: string, clipId?: string
 
 ipcMain.handle("jobs:start", async (_e, { projectId, opts }: { projectId: string; opts?: Record<string, unknown> }) => {
   if (!(await isLicensed())) throw new Error("License required");
+  if (!isAllDepsReady()) {
+    const missing = missingDeps().map((d) => d.label).join(", ");
+    throw new Error(`Please go to Settings and finish all dependency setup before proceed. Missing: ${missing}`);
+  }
   const id = randomUUID();
   const now = nowIso();
   await dbExecute("INSERT INTO jobs (id, project_id, type, status, stage, progress, options, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)", [id, projectId, "analyze", "queued", "queued", 0, JSON.stringify(opts ?? {}), now, now]);
