@@ -1,0 +1,13 @@
+# torch comes from base image (2.8.0 cu12.8) — Blackwell sm_120 ready, don't pin cu121
+transformers>=4.44
+transformers>=4.44
+datasets>=3.0
+peft>=0.12
+trl>=0.9
+accelerate>=0.34
+bitsandbytes>=0.43
+sentencepiece>=0.2
+protobuf>=4.0
+huggingface-hub>=0.25
+tqdm
+scikit-learn

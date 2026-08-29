@@ -28,6 +28,7 @@
     "setup:local-ai": "node scripts/setup-local-ai.mjs",
     "setup:whisper": "node scripts/setup-local-ai.mjs --build-whisper-only",
     "setup:models": "node scripts/setup-local-ai.mjs --models-only",
+    "finetune:dataset": "node scripts/build-finetune-dataset.mjs",
     "test:e2e:headless": "xvfb-run -a npx playwright test --config=playwright.config.headless.ts",
     "test:e2e:headed": "npx playwright test --config=playwright.config.headless.ts --headed",
     "test:e2e:debug": "npx playwright test --config=playwright.config.headless.ts --headed --debug",

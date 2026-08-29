@@ -64,14 +64,15 @@ export async function runAnalyze(jobId: string, onProgress?: (stage: string, pro
 
   ensureProjectDirs(projectId);
   let localVideo: string | null = null;
-  let sourceLanguage: string | null = null;
+  function norm(c?: string | null): string | null { if (!c) return null; return c.toLowerCase().split(/[-_]/)[0] ?? null; }
+  let sourceLanguage: string | null = norm(String((project as Record<string, unknown>).language as string | null ?? null));
 
   try {
     onProgress?.("downloading", 2);
     if (sourceType === "youtube") {
       try {
         const info = await getInfo(source);
-        sourceLanguage = String((info as Record<string, unknown>).language ?? (info as Record<string, unknown>).original_language ?? "") || null;
+        sourceLanguage = norm(String((info as Record<string, unknown>).language ?? (info as Record<string, unknown>).original_language ?? "") || null) ?? sourceLanguage;
         if (sourceLanguage) db.prepare("UPDATE projects SET language=? WHERE id=?").run(sourceLanguage, projectId);
       } catch {}
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clipzard_dl_"));
@@ -106,7 +107,7 @@ export async function runAnalyze(jobId: string, onProgress?: (stage: string, pro
     if (cached.length) {
       words = cached.map((r) => ({ text: String(r.text), start_ms: Number(r.start_ms), end_ms: Number(r.end_ms) }));
       transcriptText = words.map((w) => w.text).join(" ");
-      detectedLanguage = String(project.language ?? "") || null;
+      detectedLanguage = norm(String(project.language ?? "") || null) ?? sourceLanguage;
     } else {
       const res = await transcribeWithWords(localVideo!, (f) => {
         const p = Math.round(28 + 42 * f);
@@ -115,7 +116,7 @@ export async function runAnalyze(jobId: string, onProgress?: (stage: string, pro
       }, sourceLanguage ?? undefined);
       words = res.words;
       transcriptText = res.text;
-      detectedLanguage = res.language ?? sourceLanguage;
+      detectedLanguage = norm(res.language) ?? sourceLanguage;
       if (detectedLanguage) db.prepare("UPDATE projects SET language=? WHERE id=?").run(detectedLanguage, projectId);
       const insert = db.prepare("INSERT INTO timeline_words (id, project_id, idx, text, start_ms, end_ms) VALUES (?,?,?,?,?,?)");
       const tx = db.transaction(() => {

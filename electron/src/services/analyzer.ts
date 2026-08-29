@@ -19,17 +19,37 @@ function getUserDataPath(): string {
 const BLOCK_SECONDS = 30;
 const DEFAULT_CHUNK_CHARS = 9000;
 
+// LOCKED for hook FINDING (scoring/ranking via scorer.ts + LLM ensemble) — do not change ranking logic
+// TWEAKED for hook/title GENERATION only (below) — user requested natural title/hook tune
 const SYSTEM_PROMPT = `You are a short-form video analyst. Read this portion of a video transcript and identify the most viral-worthy moments that would perform well as short vertical clips (TikTok, Reels, Shorts). For each clip provide a catchy title, a short one-line viral hook caption, and the start/end timestamps in seconds measured from the beginning of the source video. Return ONLY a JSON object matching this exact schema and nothing else:
 
 {"clips": [{"title": "string", "hook": "string", "start": 12.5, "end": 38.0}]}
 
 Rules:
 - Transcript lines are prefixed with their [startS-endS] second offsets into the FULL video. Use those markers: clip start/end must fall inside the offsets of the lines you picked from.
-- IMPORTANT: write the title and hook in the SAME language as the transcript.
-- hook is a punchy attention-grabbing line (max ~15 words).
+- CRITICAL: write the title and hook in the SAME language as the transcript. Detect the transcript language if no hint is given — never default to English.
+- HOOK generation (tweaked for natural virality, max 12 words, no hashtags):
+  - Must be a curiosity gap or strong payoff, not a summary. Use hook patterns: question ("Why…?", "Kenapa…?"), "you won't believe", "kamu tidak akan percaya", "the truth about", "rahasia", "what happens when", "watch this", "wait for it".
+  - Start with strong verb, number, or "you"/"kamu" when possible. Conversational, TikTok-native — never generic like "Don't miss this" or "Jangan lewatkan".
+  - Use words actually in the transcript portion, but rephrase for punch. For ID, keep casual Bahasa, not formal.
+- TITLE generation (tweaked for natural, 3-7 words, curiosity-driven):
+  - Specific, not clickbait vague. Use 1-2 keywords from transcript + transformation/secret/money/hack angle when relevant.
+  - For EN: Title Case, for ID: natural Bahasa (no Title Case needed). Keep it tight, no hashtags, no emojis.
+  - Examples of good vs bad:
+    - Bad: "Viral Moment 1" / "Momen Viral 1" / "Don't miss this moment"
+    - Good: "Fed Just Crashed Bitcoin" / "The Fed Bikin Bitcoin Anjlok" (specific + curiosity)
 - start and end must be numbers in seconds, end > start.
 - Clip length should be between {min_duration} and {max_duration} seconds.
+- NEVER produce clips beyond the last timestamp in the transcript. The last [startS-endS] marker is the video end — cap all start/end within 0 to that max end. If no marker exceeds your clip, discard it.
 - Return between 1 and 8 clips from THIS portion. If nothing compelling, return {"clips": []}.
+
+Examples (follow this style for any language):
+- EN transcript: "bitcoin crashed because The Fed is hawkish..." -> {"title": "Fed Just Crashed Bitcoin", "hook": "Why your portfolio is down today", "start": 12, "end": 38}
+- EN transcript: "I quit my 9-to-5 to sell cookies on TikTok..." -> {"title": "I Quit My Job for Cookies", "hook": "This cookie paid my rent", "start": 5, "end": 28}
+- EN transcript: "the secret to saving $10k is not budgeting, it's..." -> {"title": "The $10K Secret No One Tells You", "hook": "You won't believe what actually saves money", "start": 45, "end": 70}
+- ID transcript: "kita bahas kenapa bitcoin turun karena The Fed hawkish..." -> {"title": "The Fed Bikin Bitcoin Anjlok", "hook": "Kenapa portofolio kamu merah hari ini?", "start": 8, "end": 32}
+- ID transcript: "aku resign kerja kantoran jualan kue di TikTok..." -> {"title": "Resign Demi Jualan Kue", "hook": "Kue ini yang bayar kosanku", "start": 6, "end": 30}
+- ID transcript: "rahasia nabung 10 juta bukan budgeting, tapi..." -> {"title": "Rahasia Nabung 10 Juta", "hook": "Kamu tidak akan percaya yang bikin hemat", "start": 40, "end": 65}
 `;
 
 export class AnalysisError extends Error {}
@@ -38,12 +58,35 @@ const JSON_OBJECT_RE = /\{.*\}/s;
 const JSON_ARRAY_RE = /\[.*\]/s;
 const FENCE_RE = /```(?:json)?\s*/gi;
 
-const LANGUAGE_NAMES: Record<string, string> = {
-  en: "English", id: "Indonesian (Bahasa Indonesia)", es: "Spanish", pt: "Portuguese",
-  fr: "French", de: "German", ja: "Japanese", ko: "Korean", zh: "Chinese",
-  hi: "Hindi", ar: "Arabic", vi: "Vietnamese", th: "Thai", tr: "Turkish",
-  ru: "Russian", it: "Italian", nl: "Dutch", ms: "Malay", tl: "Filipino (Tagalog)",
+// whisper.cpp (ggml-small) supports 99 languages — keep full map so LLM hint is natural even for low-resource langs
+export const LANGUAGE_NAMES: Record<string, string> = {
+  en: "English", id: "Indonesian (Bahasa Indonesia)", ms: "Malay", jv: "Javanese", su: "Sundanese",
+  zh: "Chinese", yue: "Cantonese", ja: "Japanese", ko: "Korean", vi: "Vietnamese", th: "Thai",
+  lo: "Lao", km: "Khmer", my: "Burmese", tl: "Filipino (Tagalog)", ceb: "Cebuano",
+  hi: "Hindi", bn: "Bengali", ta: "Tamil", te: "Telugu", kn: "Kannada", ml: "Malayalam",
+  gu: "Gujarati", mr: "Marathi", pa: "Punjabi", ur: "Urdu", ne: "Nepali", si: "Sinhala",
+  ar: "Arabic", fa: "Persian", he: "Hebrew", tr: "Turkish", az: "Azerbaijani",
+  es: "Spanish", pt: "Portuguese", fr: "French", de: "German", it: "Italian", nl: "Dutch",
+  pl: "Polish", cs: "Czech", sk: "Slovak", hu: "Hungarian", ro: "Romanian", bg: "Bulgarian",
+  hr: "Croatian", sr: "Serbian", sl: "Slovenian", uk: "Ukrainian", ru: "Russian", be: "Belarusian",
+  el: "Greek", lt: "Lithuanian", lv: "Latvian", et: "Estonian", fi: "Finnish", sv: "Swedish",
+  da: "Danish", no: "Norwegian", nn: "Norwegian Nynorsk", is: "Icelandic", ga: "Irish", mt: "Maltese",
+  ca: "Catalan", gl: "Galician", eu: "Basque", cy: "Welsh", af: "Afrikaans", sw: "Swahili",
+  am: "Amharic", yo: "Yoruba", ha: "Hausa", so: "Somali",
+  ka: "Georgian", hy: "Armenian", kk: "Kazakh", uz: "Uzbek", mn: "Mongolian", ky: "Kyrgyz",
+  tg: "Tajik", tk: "Turkmen", tt: "Tatar", ba: "Bashkir",
+  ps: "Pashto", sd: "Sindhi", ku: "Kurdish", bo: "Tibetan", mi: "Maori", haw: "Hawaiian",
+  sa: "Sanskrit", as: "Assamese", or: "Odia", br: "Breton", fo: "Faroese", lb: "Luxembourgish",
+  oc: "Occitan", an: "Aragonese", mg: "Malagasy", co: "Corsican", fy: "Frisian", gd: "Scottish Gaelic",
+  ht: "Haitian Creole", ln: "Lingala", sn: "Shona", wo: "Wolof",
 };
+
+export function normalizeLang(code?: string | null): string | null {
+  if (!code) return null;
+  const s = String(code).trim().toLowerCase();
+  if (!s || s === "null" || s === "undefined" || s === "auto") return null;
+  return s.split(/[-_]/)[0] ?? null;
+}
 
 export function formatTimestampedWords(words: { text: string; start_ms: number; end_ms: number }[], blockSeconds = BLOCK_SECONDS): string[] {
   const lines: string[] = [];
@@ -208,20 +251,28 @@ function downloadFile(url: string, dest: string, onProgress?: (f: number) => voi
   });
 }
 
+const MOCK_TEMPLATES: Record<string, { titles: string[]; hooks: string[] }> = {
+  en: { titles: ["Fed Just Crashed Bitcoin", "This Cookie Paid My Rent", "Market Panic Explained"], hooks: ["Why your portfolio is red today", "This cookie paid my rent", "The signal everyone missed"] },
+  id: { titles: ["The Fed Bikin Bitcoin Anjlok", "Resign Demi Jualan Kue", "Market Panik Dijelaskan"], hooks: ["Kenapa portofolio kamu merah hari ini?", "Kue ini yang bayar kosanku", "Sinyal yang semua orang lewatkan"] },
+};
+
 function mockAnalyze(words: { text: string; start_ms: number; end_ms: number }[] | undefined, transcript: string, minDuration: number, maxDuration: number, language?: string): { title: string; hook?: string; start: number; end: number }[] {
-  const isId = (language ?? "en").toLowerCase().startsWith("id");
+  const lang = normalizeLang(language) ?? "en";
+  const tmpl = MOCK_TEMPLATES[lang];
   const totalSec = words && words.length ? Math.max(...words.map((w) => w.end_ms)) / 1000 : Math.max(30, Math.ceil(transcript.length / 15));
   const clipCount = Math.min(3, Math.max(1, Math.floor(totalSec / 15)));
   const clips: { title: string; hook?: string; start: number; end: number }[] = [];
+  // Use real transcript words for natural titles when possible
+  const kw = transcript.split(/\s+/).filter((w) => w.length > 3).slice(0, 8).join(" ").slice(0, 40);
   for (let i = 0; i < clipCount; i++) {
     const start = Math.round((i * totalSec) / clipCount / 5) * 5;
     const end = Math.min(totalSec, start + minDuration + 5);
-    clips.push({
-      title: isId ? `Momen Viral ${i + 1}` : `Viral Moment ${i + 1}`,
-      hook: isId ? "Jangan lewatkan momen ini" : "Don't miss this moment",
-      start,
-      end,
-    });
+    if (tmpl) {
+      clips.push({ title: tmpl.titles[i % tmpl.titles.length], hook: tmpl.hooks[i % tmpl.hooks.length], start, end });
+    } else {
+      const name = LANGUAGE_NAMES[lang] ?? lang;
+      clips.push({ title: kw ? `${kw.slice(0, 28)}...` : `Viral ${name} Moment ${i + 1}`, hook: kw ? kw.slice(0, 48) : `Hook in ${name}`, start, end });
+    }
   }
   return clips;
 }

@@ -11,17 +11,22 @@ export function ramTier(): Tier {
   return "low";
 }
 
-export function whisperModelForTier(_t: Tier): string {
+export function whisperModelForTier(t: Tier): string {
+  // Tier-aware whisper for better Indonesian word-by-word accuracy
+  // low (8GB) -> small 488MB, mid (12GB) -> medium 1.5GB, high (20GB+) -> large-v3 3GB
+  // User has 31GB (high) -> large-v3 gives best ID transcription
+  if (t === "high") return "large-v3";
+  if (t === "mid") return "medium";
   return "small";
 }
 
 // Size/quality trade-off for this task (JSON clip extraction from timestamped transcript):
 // - 0.5B (~380 MB) : ultra-light, weak JSON, generic hooks — use only for tiny installer.
-// - 1.5B (~950 MB) : BEST MB/quality — recommended default for <2 GB constraint. Beats old 3B per-MB.
-// - 3B  (~2.0 GB)  : previous low, better but 2× download.
-// - 7B  (~4.7 GB)  : mid, good quality.
+// - 1.5B (~950 MB) : balanced default — ok JSON but hooks can feel generic (see few-shot prompt fix).
+// - 3B  (~2.0 GB)  : better hook naturalness, recommended for EN/ID if <2GB extra is ok.
+// - 7B  (~4.7 GB)  : mid, noticeably more natural titles/hooks multilingual — best local quality/cost.
 // - 14B (~8.5 GB)  : high, only for 20GB+ machines.
-// Default low is now 1.5B (was 3B) to meet <2GB installer budget.
+// For natural hooks: use LLM_TIER=7b or cloud OPENAI_API_KEY (gpt-4o-mini) — both significantly outperform 1.5B word processing.
 function getStoredVariant(): string | null {
   try {
     const Store = require("electron-store") as unknown as { default: new (o: unknown)=> { get:(k:string, d?:unknown)=>unknown } };
@@ -48,17 +53,17 @@ export function llmModelForTier(t: Tier): { file: string; url: string } {
   if (raw === "14b" || raw === "high") {
     return { file: "qwen2.5-14b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf" };
   }
-  // Default for ALL tiers (low/mid/high, balanced, unset): 1.5B — 950 MB,
-  // fastest download + fastest inference with usable JSON quality.
-  // Opt back up with LLM_TIER=7b / 14b or Settings → Local AI Models.
-  return { file: "qwen2.5-1.5b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf" };
+  // User requested 7b as default local while Qwen3-4B trains — 7b best quality/cost for EN/ID hooks, fits 5060 8GB via Q4_K_M
+  // Set LLM_TIER=balanced to force 1.5b if installer budget needed
+  return { file: "qwen2.5-7b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf" };
 }
 
 // Explicit helpers for UI selector (no RAM check)
 export function llmModelForVariant(v: "tiny" | "balanced" | "quality"): { file: string; url: string; sizeMb: number } {
   if (v === "tiny") return { file: "qwen2.5-0.5b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf", sizeMb: 380 };
   if (v === "balanced") return { file: "qwen2.5-1.5b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf", sizeMb: 950 };
-  return { file: "qwen2.5-3b-q4_k_m.gguf", url: "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf", sizeMb: 2000 };
+  // quality now points to 7B — significantly more natural hooks (EN/ID) vs old 3B, worth the 4.7GB for users who opt in
+  return { file: "qwen2.5-7b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf", sizeMb: 4700 };
 }
 
 export function threadCount(): number {

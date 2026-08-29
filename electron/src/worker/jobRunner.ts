@@ -12,7 +12,7 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import { spawn, spawnSync } from "node:child_process";
-import { ffprobePath } from "../services/bin.js";
+import { ffmpegPath, ffprobePath } from "../services/bin.js";
 
 // Suppress Node 22 ExperimentalWarning for JSON imports (node-llama-cpp) in utility process
 try {
@@ -58,9 +58,17 @@ type StartRenderMsg = {
 };
 
 function ffmpegBin(): string {
+  const fromBin = ffmpegPath();
+  if (fromBin) return fromBin;
   try {
-    const p = require("ffmpeg-static");
-    if (p) return p;
+    // Fallback for ESM: use createRequire if global require not available
+    const { createRequire } = require("node:module") as unknown as { createRequire: (u: string) => (id: string) => unknown };
+    // This branch rarely runs; keep for compat
+    const req = (globalThis as unknown as { require?: (id: string) => unknown }).require ?? (createRequire ? createRequire(import.meta.url) : null);
+    if (req) {
+      const p = req("ffmpeg-static") as string | null;
+      if (p) return p as string;
+    }
   } catch {}
   return process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
 }
@@ -147,7 +155,8 @@ async function handleAnalyze(msg: StartAnalyzeMsg) {
 
   ensureProjectDirs(projectId);
   let localVideo: string | null = null;
-  let sourceLanguage: string | null = project.language ?? null;
+  function normLang(c?: string | null): string | null { if (!c) return null; return c.toLowerCase().split(/[-_]/)[0] ?? null; }
+  let sourceLanguage: string | null = normLang(project.language);
 
   const isUpload = sourceType === "upload";
   if (!isUpload) postProgress("downloading", 2);
@@ -207,7 +216,7 @@ async function handleAnalyze(msg: StartAnalyzeMsg) {
       console.log(`[jobRunner] getInfo ${source}`);
       try {
         const info = await getInfo(source);
-        sourceLanguage = String((info as Record<string, unknown>).language ?? (info as Record<string, unknown>).original_language ?? "") || null;
+        sourceLanguage = normLang(String((info as Record<string, unknown>).language ?? (info as Record<string, unknown>).original_language ?? "") || null);
         if (sourceLanguage) parentPort?.postMessage({ type: "meta", language: sourceLanguage });
         console.log(`[jobRunner] getInfo ok lang=${sourceLanguage} title=${String((info as any).title ?? "").slice(0,60)}`);
       } catch (e) {
@@ -270,7 +279,7 @@ async function handleAnalyze(msg: StartAnalyzeMsg) {
   if (cachedWords && cachedWords.length) {
     words = cachedWords;
     transcriptText = words.map((w) => w.text).join(" ");
-    detectedLanguage = project.language ?? null;
+    detectedLanguage = normLang(project.language);
   } else {
     const res = await transcribeWithWords(localVideo!, (f: number) => {
       const p = Math.round(28 + 42 * f);
@@ -278,23 +287,80 @@ async function handleAnalyze(msg: StartAnalyzeMsg) {
     }, sourceLanguage ?? undefined);
     words = res.words;
     transcriptText = res.text;
-    detectedLanguage = res.language ?? sourceLanguage;
+    detectedLanguage = normLang(res.language) ?? sourceLanguage;
     if (detectedLanguage) parentPort?.postMessage({ type: "meta", language: detectedLanguage });
   }
 
   // Send words to main for persistence (optional but useful for resume)
   parentPort?.postMessage({ type: "words", words, language: detectedLanguage });
 
+  // Video duration cap: from word timings, auto-scale if whisper offsets were in 10ms units (53s vs 537s)
+  let videoDurationSec = words.length ? Math.max(...words.map((w) => w.end_ms)) / 1000 : 0;
+  // Probe actual file duration as ground truth for scaling check
+  let probeSec = 0;
+  try {
+    const r = spawnSync(ffprobePath(), ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", localVideo!], { stdio: "pipe", timeout: 8000 });
+    const out = String(r.stdout ?? "").trim();
+    probeSec = Number(out) || 0;
+  } catch {}
+  if (probeSec > 60 && videoDurationSec > 10 && probeSec / videoDurationSec > 4 && probeSec / videoDurationSec < 20) {
+    // Likely 10x scale error (e.g., 53s vs 537s) — rescale words
+    console.log(`[jobRunner] rescaling words ${videoDurationSec.toFixed(1)}s -> ${probeSec.toFixed(1)}s (x${(probeSec / videoDurationSec).toFixed(1)})`);
+    const scale = probeSec / videoDurationSec;
+    words = words.map((w) => ({ text: w.text, start_ms: Math.round(w.start_ms * scale), end_ms: Math.round(w.end_ms * scale) }));
+    transcriptText = words.map((w) => w.text).join(" ");
+    videoDurationSec = probeSec;
+  } else if (probeSec > 0) {
+    videoDurationSec = Math.max(videoDurationSec, probeSec);
+  }
+  console.log(`[jobRunner] videoDuration ${videoDurationSec.toFixed(1)}s from ${words.length} words (probe ${probeSec.toFixed(1)}s)`);
+  function capToDuration(list: { title: string; hook?: string; start: number; end: number }[]): typeof list {
+    const out: typeof list = [];
+    for (const c of list) {
+      let s = Number(c.start), e = Number(c.end);
+      if (!Number.isFinite(s) || !Number.isFinite(e) || !(e > s)) continue;
+      if (videoDurationSec > 0) {
+        if (s >= videoDurationSec) continue; // beyond video
+        if (e > videoDurationSec) e = videoDurationSec;
+        if (s < 0) s = 0;
+        const dur = e - s;
+        if (dur < minClipSeconds - 0.5) continue; // too short after cap
+        if (dur > maxClipSeconds + 0.5) e = s + maxClipSeconds;
+        if (e > videoDurationSec) e = videoDurationSec;
+        if (e - s < 1) continue;
+      }
+      out.push({ title: String(c.title).slice(0, 80), hook: c.hook ? String(c.hook).slice(0, 120) : undefined, start: Math.round(s * 100) / 100, end: Math.round(e * 100) / 100 });
+    }
+    return out;
+  }
+
   postProgress("analyzing", 72);
-  const clips = await analyze(transcriptText, words, {
-    language: detectedLanguage ?? undefined,
-    minDuration: minClipSeconds,
-    maxDuration: maxClipSeconds,
-    onProgress: (f: number) => {
-      const p = Math.round(72 + 18 * f);
-      postProgress("analyzing", p);
-    },
-  });
+  // Always ensemble: 7b local LLM + lightweight rule-based scorer (no API)
+  const { findBestMoments, ensembleScore } = await import("../services/scorer.js");
+  const ruleClips = findBestMoments(words, detectedLanguage ?? null, undefined, { targetDuration: (minClipSeconds + maxClipSeconds) / 2, maxClips: maxClips + 2 });
+  let clips: { title: string; hook?: string; start: number; end: number }[] = [];
+  try {
+    const llmClips = await analyze(transcriptText, words, {
+      language: detectedLanguage ?? undefined,
+      minDuration: minClipSeconds,
+      maxDuration: maxClipSeconds,
+      onProgress: (f: number) => {
+        const p = Math.round(72 + 18 * f);
+        postProgress("analyzing", p);
+      },
+    });
+    // cap each separately before ensemble
+    const cappedLlm = capToDuration(llmClips);
+    // ruleClips are ScoredClip, but ensembleScore accepts them; cap rule via its own start/end
+    const cappedRule = ruleClips.filter((r) => r.start < videoDurationSec && r.end <= videoDurationSec + 0.5).map((r) => ({ ...r, end: Math.min(r.end, videoDurationSec) })) as typeof ruleClips;
+    clips = ensembleScore(cappedLlm as any, cappedRule as any);
+    clips = capToDuration(clips);
+  } catch (e) {
+    console.warn("[jobRunner] LLM failed, falling back to rule-based", e);
+    const cappedRule = ruleClips.filter((r) => r.start < videoDurationSec && r.end <= videoDurationSec + 0.5).map((r) => ({ ...r, end: Math.min(r.end, videoDurationSec) })) as typeof ruleClips;
+    const fallback = ensembleScore([], cappedRule as any);
+    clips = capToDuration(fallback);
+  }
 
   const sliced = clips.slice(0, maxClips);
   if (!sliced.length) throw new Error("model returned no clips");
@@ -309,7 +375,10 @@ async function handleAnalyze(msg: StartAnalyzeMsg) {
     if (await thumbnailOffsets(localVideo!, c.start, c.end, thumbDest)) thumbUrl = thumbDest;
 
     const startMs = Math.round(c.start * 1000), endMs = Math.round(c.end * 1000);
-    const clipWords = words.filter((w) => w.start_ms >= startMs && w.end_ms <= endMs).map((w) => ({ text: w.text, start_ms: w.start_ms - startMs, end_ms: w.end_ms - startMs }));
+    // Use overlap instead of strict containment, so edge words are kept
+    const clipWords = words
+      .filter((w) => w.start_ms < endMs && w.end_ms > startMs)
+      .map((w) => ({ text: w.text, start_ms: Math.max(0, w.start_ms - startMs), end_ms: Math.min(endMs - startMs, w.end_ms - startMs) }));
     const captionJson = clipWords.length ? JSON.stringify(clipWords) : null;
 
     resultClips.push({ title: c.title, hook: c.hook ?? undefined, start: c.start, end: c.end, thumbPath: thumbUrl, captionJson });

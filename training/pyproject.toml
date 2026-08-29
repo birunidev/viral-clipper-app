@@ -1,0 +1,36 @@
+[tool.poetry]
+name = "clipzard-training"
+version = "0.1.0"
+description = "Qwen3-4B clip-viral LoRA training (local GPU, no Docker)"
+authors = ["clipzard"]
+packages = [{include = "scripts"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+torch = {version = "*", source = "pytorch-cu128"}
+transformers = ">=4.44"
+datasets = ">=3.0"
+peft = ">=0.12"
+trl = ">=0.9"
+accelerate = ">=0.34"
+sentencepiece = ">=0.2"
+protobuf = ">=4.0"
+huggingface-hub = ">=0.25"
+tqdm = "*"
+scikit-learn = "*"
+pyyaml = "*"
+python-dotenv = "*"
+# bitsandbytes does not support Windows Blackwell well — use 8bit paged via triton or fallback to adamw_torch
+# bitsandbytes = {version = ">=0.43", markers = "sys_platform != 'win32'"}
+
+[[tool.poetry.source]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+priority = "supplemental"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "*"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

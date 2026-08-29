@@ -1,9 +1,25 @@
 .venv/
+.venv-win/
 venv/
 __pycache__/
 *.pyc
 .pytest_cache/
 outputs/
+training/outputs/
+training/.venv*/
+.hf-cache/
+.huggingface/
+.datasets/
+datasets/
+docs/
+electron/finetune.jsonl
+training/*.log
+training/*.zip
+training/.hf-cache/
+# GPU binaries - download via electron/scripts/setup-whisper-cuda.mjs, don't bloat git
+electron/resources/bin/win-x64/*cuda*
+electron/resources/bin/win-x64/cudart*.dll
+electron/resources/bin/win-x64/cublas*.dll
 
 # environment / secrets
 .env

@@ -1,0 +1,32 @@
+base_model: Qwen/Qwen3-4B
+datasets:
+  train: datasets/qwen3_clip_viral_train_9198_combined.jsonl
+  val: datasets/qwen3_clip_viral_validation_1000.jsonl
+output_dir: ./outputs/qwen3-4b-clip-viral-lora-id
+
+lora:
+  r: 32
+  alpha: 64
+  dropout: 0.05
+  target_modules: ["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"]
+  bias: none
+  task_type: CAUSAL_LM
+
+training:
+  epochs: 2
+  lr: 2.0e-4
+  warmup_ratio: 0.03
+  lr_scheduler: cosine
+  per_device_batch: 1
+  grad_accum: 8
+  weight_decay: 0.01
+  max_seq_len: 2048
+  bf16: true
+  tf32: true
+  gradient_checkpointing: true
+  packing: true
+  logging_steps: 25
+  eval_steps: 250
+  save_steps: 500
+  optim: paged_adamw_8bit
+  seed: 42

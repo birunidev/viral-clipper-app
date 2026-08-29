@@ -7,6 +7,7 @@ import type { CaptionConfig } from "@/lib/caption-style-defaults";
 import { cropDimensions, groupWords, lineCharBudget } from "@/lib/caption-grouping";
 
 /**
+ * LOCKED: Subtitle preview — word-by-word caption overlay. Do not change without user approval.
  * Renders a live word-by-word caption overlay on top of a <video>,
  * highlighting the active word as playback advances — the same timing
  * data (`caption_json`) that gets burned into a render, but shown here for

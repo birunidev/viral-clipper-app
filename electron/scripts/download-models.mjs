@@ -35,7 +35,7 @@ function ramTier() {
   if (gb >= 12) return "mid";
   return "low";
 }
-function whisperFor(_t) { return "small"; }
+function whisperFor(t) { if (t === "high") return "large-v3"; if (t === "mid") return "medium"; return "small"; }
 // Expected sizes (MB) — skip only if file is >= 85% of expected, else re-download
 const EXPECTED_MB = {
   "ggml-tiny.bin": 76, "ggml-base.bin": 148, "ggml-small.bin": 488, "ggml-medium.bin": 1534,
@@ -49,8 +49,9 @@ function llmFor(t) {
   if (tiny === "7b" || tiny === "mid") return { file: "qwen2.5-7b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf" };
   if (tiny === "14b" || tiny === "high") return { file: "qwen2.5-14b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf" };
   if (tiny === "quality" || tiny === "3b") return { file: "qwen2.5-3b-q4_k_m.gguf", url: "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf" };
-  // Default for ALL tiers: 1.5B (950 MB) — fastest download + inference. Opt up via LLM_TIER.
-  return { file: "qwen2.5-1.5b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf" };
+  // Default now 7B (4.7GB) — user requested 7b as default local while Qwen3-4B trains; keep 1.5B via LLM_TIER=balanced
+  if (tiny === "balanced" || tiny === "1.5b") return { file: "qwen2.5-1.5b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf" };
+  return { file: "qwen2.5-7b-q4_k_m.gguf", url: "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf" };
 }
 
 function resolveOutDir() {

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
@@ -117,9 +117,23 @@ function extractAudio(videoPath: string): Promise<string> {
   });
 }
 
+function normalizeLang(code?: string | null): string | null {
+  if (!code) return null;
+  const s = String(code).trim().toLowerCase();
+  if (!s || s === "null" || s === "undefined" || s === "auto") return null;
+  return s.split(/[-_]/)[0] ?? null;
+}
+
+const MOCK_TEXTS: Record<string, string> = {
+  id: "Halo teman teman hari ini kita akan membahas tentang bitcoin dan market yang sedang turun karena The Fed memberikan sinyal hawkish dan investor mulai khawatir akan inflasi dan suku bunga yang naik ",
+  en: "Hey everyone today we talk about bitcoin and the market crash because The Fed gave a hawkish signal and investors are worried about inflation and rising interest rates ",
+};
+
 function mockTranscript(_videoPath: string, lang?: string): TranscriptResult {
+  const norm = normalizeLang(lang) ?? "id";
+  const sampleBase = MOCK_TEXTS[norm] ?? MOCK_TEXTS[norm.startsWith("id") ? "id" : "en"] ?? MOCK_TEXTS.en;
+  const sampleText = sampleBase.repeat(4);
   const durationMs = 30000;
-  const sampleText = "Halo teman teman hari ini kita akan membahas tentang bitcoin dan market yang sedang turun karena The Fed memberikan sinyal hawkish dan investor mulai khawatir akan inflasi dan suku bunga yang naik ".repeat(4);
   const wordsRaw = sampleText.trim().split(/\s+/);
   const words: Word[] = wordsRaw.map((text, i) => ({
     text,
@@ -127,7 +141,7 @@ function mockTranscript(_videoPath: string, lang?: string): TranscriptResult {
     end_ms: Math.round(((i + 1) * durationMs) / wordsRaw.length),
   }));
   const text = words.map((w) => w.text).join(" ");
-  return { text, words, language: lang ?? "id" };
+  return { text, words, language: norm };
 }
 
 function mockAllowed(): boolean {
@@ -220,19 +234,39 @@ export async function transcribeWithWords(videoPath: string, onProgress?: (f: nu
     // Clean any previous json
     try { fs.unlinkSync(jsonPath); } catch {}
     const args = ["-m", model, "-f", wav, "-ojf", "-of", base, "-t", String(threadCount()), "-pp"];
-    // -pp (--print-progress) streams "progress = NN%" to stderr so the pipeline
-    // can report live progress instead of stalling at the post-extract value
-    // during long CPU transcriptions.
-    if (language) args.push("-l", language);
-    else args.push("-l", "auto");
-    console.log(`[transcriber] spawn ${bin} ${args.join(" ")} (attempt ${attempt+1})`);
-    const result = await new Promise<{ text: string; words: Word[] }>((resolve, reject) => {
+    // Auto-use GPU when available: if cuda/vulkan DLL present or nvidia-smi succeeds, whisper.cpp CUDA build will offload
+    // Keep CPU fallback: if GPU binary missing, still runs on CPU (no flag needed)
+    const useGpu = (() => {
+      if (process.env.WHISPER_GPU === "0" || process.env.CUDA_VISIBLE_DEVICES === "-1") return false;
+      try {
+        const dir = path.dirname(bin);
+        if (fs.existsSync(path.join(dir, "ggml-cuda.dll")) || fs.existsSync(path.join(dir, "ggml-vulkan.dll")) || fs.existsSync(path.join(dir, "ggml-cuda.so")) ) return true;
+      } catch {}
+      try {
+        const r = spawnSync("nvidia-smi", ["--query-gpu=name", "--format=csv,noheader"], { stdio: "pipe", timeout: 3000 });
+        if (r.status === 0 && String(r.stdout ?? "").trim().length > 0) return true;
+      } catch {}
+      return false;
+    })();
+    if (useGpu) console.log("[transcriber] GPU detected — using CUDA/Vulkan acceleration");
+    else console.log("[transcriber] GPU not detected — using CPU");
+    const normLang = normalizeLang(language);
+    if (normLang) {
+      args.push("-l", normLang);
+      if (normLang === "id") args.push("--prompt", "Ini adalah transkrip video berbahasa Indonesia yang akurat kata per kata.");
+    } else args.push("-l", "auto");
+    console.log(`[transcriber] spawn ${bin} ${args.join(" ")} (attempt ${attempt+1}) ${useGpu ? "[GPU]" : "[CPU]"}`);
+    let detectedFromStderr: string | null = null;
+    const result = await new Promise<{ text: string; words: Word[]; detected?: string | null }>((resolve, reject) => {
       const p = spawn(bin, args, { stdio: "pipe" });
       let out = "", err = "";
       p.stdout.on("data", (d) => (out += d.toString()));
       p.stderr.on("data", (d) => {
         const s = d.toString();
         err += s;
+        // Try to capture auto-detected language from whisper stderr: "detected language: en" / "auto-detected language: id"
+        const langM = s.match(/(?:detected|auto[-\s]*detected)\s+language\s*[:=]\s*([a-z]{2,3})/i) ?? s.match(/\blanguage\s*[:=]\s*([a-z]{2,3})\b/i);
+        if (langM) detectedFromStderr = normalizeLang(langM[1]);
         // "whisper_print_progress_callback: progress =  45%"  -> fraction 0..1
         const m = s.match(/progress\s*=\s*\+?(\d+)%/);
         if (m && onProgress) {
@@ -267,6 +301,10 @@ export async function transcribeWithWords(videoPath: string, onProgress?: (f: nu
             throw new Error(`no JSON output (stdout ${out.length} chars, err ${err.slice(0,200)}, json file missing)`);
           }
           const jo = j as Record<string, unknown>;
+          // whisper.cpp json may contain detected language at top-level: { language, params: { language } }
+          const jsonLangRaw = String((jo.language as string | undefined) ?? ((jo.params as Record<string, unknown> | undefined)?.language as string | undefined) ?? (jo as Record<string, unknown>).detected_language as string | undefined ?? "");
+          const jsonLang = normalizeLang(jsonLangRaw);
+          if (jsonLang && !detectedFromStderr) detectedFromStderr = jsonLang;
           const words: Word[] = [];
           const textParts: string[] = [];
           // whisper.cpp json shape: { transcription: [{ timestamps: { from, to }, offsets: { from,to }, text, tokens: [{ text, offsets, ...}] }] }
@@ -286,13 +324,11 @@ export async function transcribeWithWords(videoPath: string, onProgress?: (f: nu
                 const ts = tok.timestamps as Record<string, unknown> | undefined;
                 const sRaw = off?.from ?? ts?.from ?? tok.start ?? tok.t0 ?? 0;
                 const eRaw = off?.to ?? ts?.to ?? tok.end ?? tok.t1 ?? 0;
-                // handle centiseconds? whisper.cpp uses ms*? Let's coerce: if value > 100000, assume 10ms units?
                 const s = Math.round(Number(sRaw));
                 const e = Math.round(Number(eRaw ?? s + 200));
-                // whisper.cpp token offsets are in ms already? Validate: 0-30000 for 30s.
-                // If s > 60000 for 2s clip, it's likely centiseconds (x10). Normalize.
-                const sMs = s > 60000 && s < 600000 ? Math.round(s / 10) : s;
-                const eMs = e > 60000 && e < 600000 ? Math.round(e / 10) : e;
+                // whisper.cpp offsets are in ms (verified for Qwen/whisper.cpp). Keep as ms.
+                const sMs = s;
+                const eMs = e;
                 textParts.push(text);
                 words.push({ text, start_ms: sMs, end_ms: Math.max(eMs, sMs + 80) });
               }
@@ -317,13 +353,14 @@ export async function transcribeWithWords(videoPath: string, onProgress?: (f: nu
           const uniqText = [...new Set(textParts)].join(" ");
           const fallbackText = (jo.text as string | undefined) ?? uniqText ?? words.map(w=>w.text).join(" ");
           if (!words.length) throw new Error(`no words parsed from ${JSON.stringify(jo).slice(0,500)}`);
-          resolve({ text: fallbackText, words });
+          resolve({ text: fallbackText, words, detected: detectedFromStderr });
         } catch (e) { reject(new TranscriptionError(`parse whisper output: ${String(e)} | stdout=${out.slice(0,300)} err=${err.slice(0,300)}`)); }
       });
       p.on("error", (e) => reject(new TranscriptionError(String(e))));
     });
     onProgress?.(1);
-    return { text: result.text, words: result.words, language };
+    const finalLang = normalizeLang(result.detected) ?? normLang ?? normalizeLang(language) ?? null;
+    return { text: result.text, words: result.words, language: finalLang ?? undefined };
     } catch (e) {
       const msg = String((e as Error).message ?? e);
       if (msg.includes("CORRUPT_MODEL") && attempt === 0) {

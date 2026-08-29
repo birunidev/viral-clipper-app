@@ -117,7 +117,15 @@ app.whenReady().then(async () => {
   protocol.handle("media", async (req) => {
     try {
       const url = new URL(req.url);
+      // url.host may contain drive letter for media://C:/... (without triple slash) — handle both
       let rawPath = decodeURIComponent(url.pathname);
+      // Handle media://C:/path where C: ends up in host (e.g. media://C:/Users/...)
+      if (url.host && /^[a-zA-Z]:$/.test(url.host)) {
+        rawPath = `/${url.host}${rawPath}`;
+      } else if (url.host && url.host.length > 0 && !rawPath.startsWith("/")) {
+        rawPath = `/${url.host}/${rawPath}`;
+      }
+      rawPath = decodeURIComponent(rawPath);
       if (process.platform === "win32") {
         if (rawPath.startsWith("/")) rawPath = rawPath.slice(1);
         rawPath = rawPath.replace(/\//g, path.sep);
@@ -143,7 +151,12 @@ app.whenReady().then(async () => {
           return new Response(buf, { status: 206, headers: { ...headers, "Content-Range": `bytes ${start}-${end}/${stat.size}`, "Accept-Ranges": "bytes", "Cache-Control": "no-store" } });
         }
       }
-      return net.fetch(`file://${safe}`);
+      // Use forward slashes + file:/// for Windows (file://C:\ fails with backslashes/spaces)
+      // encodeURI handles spaces and Unicode, keep :/ intact
+      const fileForward = safe.replace(/\\/g, "/");
+      // Encode only the path part after drive letter to preserve :/
+      const fileUrl = `file:///${encodeURI(fileForward.replace(/^\//, "")).replace(/#/g, "%23").replace(/\?/g, "%3F")}`;
+      return net.fetch(fileUrl);
     } catch {
       return new Response("not found", { status: 404 });
     }
@@ -174,7 +187,12 @@ async function seedCaptionStyles() {
 function toMediaUrl(p: string | null): string | null {
   if (!p) return null;
   if (p.startsWith("http://") || p.startsWith("https://") || p.startsWith("media://")) return p;
-  return `media://${p}`;
+  // Windows paths contain backslashes and spaces — normalize to forward slashes and URI-encode
+  // Use media:///C:/path style so URL.pathname is /C:/path and protocol.handle can decode correctly
+  const normalized = p.replace(/\\/g, "/");
+  // Ensure leading slash for absolute Windows path, then encode
+  const withSlash = normalized.startsWith("/") ? normalized : `/${normalized}`;
+  return `media://${encodeURI(withSlash)}`;
 }
 
 app.on("window-all-closed", () => {
@@ -247,16 +265,24 @@ ipcMain.handle("projects:get", async (_e, id: string) => {
   if (!project) return null;
   const jobs = await dbFetchAll<Record<string, unknown>>("SELECT * FROM jobs WHERE project_id=? ORDER BY created_at DESC", [id]);
   const rawClips = await dbFetchAll<Record<string, unknown>>("SELECT * FROM clips WHERE project_id=? ORDER BY start_time", [id]);
-  const clips = rawClips.map((c) => ({
-    ...c,
-    video_url: toMediaUrl(c.video_url as string | null),
-    thumbnail_url: toMediaUrl(c.thumbnail_url as string | null),
-    signed_video_url: toMediaUrl(c.video_url as string | null),
-    signed_thumbnail_url: toMediaUrl(c.thumbnail_url as string | null),
-  }));
+  const clips = rawClips.map((c) => {
+    let parsedCaption: unknown = c.caption_json;
+    if (typeof parsedCaption === "string" && parsedCaption.trim()) {
+      try { parsedCaption = JSON.parse(parsedCaption as string); } catch { parsedCaption = null; }
+    }
+    return {
+      ...c,
+      caption_json: parsedCaption as unknown,
+      video_url: toMediaUrl(c.video_url as string | null),
+      thumbnail_url: toMediaUrl(c.thumbnail_url as string | null),
+      signed_video_url: toMediaUrl(c.video_url as string | null),
+      signed_thumbnail_url: toMediaUrl(c.thumbnail_url as string | null),
+    };
+  });
   const words = await dbFetchAll<Record<string, unknown>>("SELECT * FROM timeline_words WHERE project_id=? ORDER BY idx", [id]);
   const sourceUrl = toMediaUrl(project.source_key as string | null) ?? toMediaUrl(project.source as string | null);
-  return { project: { ...project, source_url: sourceUrl, signed_source_url: sourceUrl }, jobs, clips, words, source_url: sourceUrl };
+  // Provide both naming conventions for renderer compat (web expects source_video_url, desktop legacy expects source_url)
+  return { project: { ...project, source_url: sourceUrl, signed_source_url: sourceUrl, source_video_url: sourceUrl, signed_source_video_url: sourceUrl }, jobs, clips, words, source_url: sourceUrl, source_video_url: sourceUrl };
 });
 
 ipcMain.handle("projects:create", async (_e, data: { title: string; source: string; sourceType?: string }) => {
@@ -529,11 +555,12 @@ async function runJobInUtility(jobId: string, projectId: string, clipId?: string
       } catch {}
       void emitLog(`Source ready: ${String(m.sourceKey).split("/").pop()}${(m as Record<string, unknown>).cached ? " (cached)" : ""}`, "info");
     } else if (m.type === "meta" && typeof m.language === "string") {
-      try { await dbExecute("UPDATE projects SET language=? WHERE id=?", [String(m.language), projectId]); } catch {}
+      try { const l = String(m.language).toLowerCase().split(/[-_]/)[0]; await dbExecute("UPDATE projects SET language=? WHERE id=?", [l, projectId]); } catch {}
     } else if (m.type === "words" && Array.isArray(m.words)) {
       try {
         const words = m.words as { text: string; start_ms: number; end_ms: number }[];
-        const lang = (m.language as string | null) ?? null;
+        const langRaw = (m.language as string | null) ?? null;
+        const lang = langRaw ? langRaw.toLowerCase().split(/[-_]/)[0] : null;
         if (lang) await dbExecute("UPDATE projects SET language=? WHERE id=?", [lang, projectId]);
         await dbExecute("DELETE FROM timeline_words WHERE project_id=?", [projectId]);
         for (let i = 0; i < words.length; i++) {

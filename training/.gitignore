@@ -1,0 +1,4 @@
+.env
+outputs/
+*.gguf
+__pycache__/
