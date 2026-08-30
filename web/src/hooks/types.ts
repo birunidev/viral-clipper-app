@@ -6,6 +6,16 @@ export type User = {
   email: string;
   /** ISO timestamp when the user accepted the Terms/Privacy Policy, or null. */
   terms_accepted_at: string | null;
+  /** True if the user owns any active License + Entitlement row. */
+  has_license: boolean;
+  /** Tier label ("unlimited" | "pro" | "free") or null. */
+  license_tier: string | null;
+  /** Prepaid minute credits. */
+  credits: number;
+  /** Count of currently registered desktop devices (non-revoked, non-stale). */
+  current_device_count: number;
+  /** Max concurrent devices for the user's license (0 if unlicensed). */
+  max_devices: number;
 };
 
 /** Per-user BYOK settings (GET response; keys are masked/write-only). */
@@ -195,4 +205,29 @@ export type AppUpdateAdminStatus = {
   is_admin: boolean;
   email: string | null;
   admin_emails_configured: boolean;
+};
+
+// ------------------------------------------------------------------ licenses
+
+export type LicenseSummary = {
+  id: string;
+  tier: string;
+  is_active: boolean;
+  issued_at: string;
+  reissued_at: string | null;
+  reissued_from_id: string | null;
+  device_count: number;
+};
+
+export type DeviceSummary = {
+  id: string;
+  device_id: string;
+  device_name: string;
+  os: string;
+  last_seen_at: string;
+  is_revoked: boolean;
+};
+
+export type PasswordResetResponse = {
+  ok: true;
 };
