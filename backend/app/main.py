@@ -8,28 +8,120 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Request
+from fastapi.responses import Response
+from starlette.middleware.cors import CORSMiddleware
+from starlette.types import ASGIApp
 
 from .api import auth, billing, caption_styles, jobs, licenses, projects, reels, settings, updates, uploads, youtube_proxy, ytdlp_stats, yt_wasm_proxy
 from .worker import pool
 
+# ─── CORS configuration ────────────────────────────────────────────────────
+# Two kinds of clients hit this API:
+#
+# 1. Browser (https://clipzard.web.id) — same-origin from the user's POV
+#    (Caddy proxies /api/*), but the browser still sends an Origin header
+#    so we need to whitelist it explicitly. The session cookie is the
+#    credential, so `allow_credentials=True`.
+#
+# 2. Electron desktop app — runs from file:// or app:// origins. The
+#    Chromium network stack sends `Origin: null` for opaque origins; the
+#    spec disallows `file://` in `allow_origins`, so we must whitelist
+#    `null` (and the security trade-off is acceptable because Electron
+#    app binaries are signed and the user runs them deliberately).
+#
+# `FRONTEND_URLS` is a comma-separated allowlist of browser origins
+# (default: production site).  `ELECTRON_ALLOW_NULL_ORIGIN=1` (default in
+# production) enables the file:// path for the desktop app.
+
 FRONTEND_URLS = [
     origin.strip()
-    for origin in os.environ.get("FRONTEND_URLS", os.environ.get("FRONTEND_URL", "")).split(",")
+    for origin in os.environ.get("FRONTEND_URLS", "https://clipzard.web.id").split(",")
     if origin.strip()
 ]
+ELECTRON_ALLOW_NULL_ORIGIN = (
+    os.environ.get("ELECTRON_ALLOW_NULL_ORIGIN", "1").strip().lower()
+    in ("1", "true", "yes", "on")
+)
+# The `null` origin entry is only valid when we trust the desktop app.
+ALLOWED_ORIGINS = list(FRONTEND_URLS)
+if ELECTRON_ALLOW_NULL_ORIGIN:
+    ALLOWED_ORIGINS.append("null")
 
-app = FastAPI(title="SnapClip Backend")
+# In dev (`localhost:3000` etc.) keep the same allowlist but the host
+# can be overridden via env.
 
+app = FastAPI(title="ClipZard Backend")
+
+# Browser CORS: full middleware (preflight + credentials).
 if FRONTEND_URLS:
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=FRONTEND_URLS,
+        allow_origins=ALLOWED_ORIGINS,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        # Tighten from `["*"]` — only the methods the API actually uses
+        # (still need OPTIONS for preflight, PUT for presigned uploads).
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "X-Requested-With",
+            "X-CSRF-Token",
+            # Allow Electron to send the User-Agent header (so the backend
+            # can skip the CORS preflight for desktop requests when the
+            # origin is `null`).
+            "User-Agent",
+        ],
+        # Don't expose headers the browser doesn't need; this prevents
+        # leaking server-internal state via CORS.
+        expose_headers=["Content-Disposition", "Content-Length", "X-Update-Version"],
+        # Cache the preflight for an hour — short enough to propagate
+        # Caddy rule changes, long enough to avoid OPTIONS on every
+        # authenticated request.
+        max_age=3600,
     )
+
+
+@app.middleware("http")
+async def _electron_origin_passthrough(request: Request, call_next: ASGIApp):
+    """Allow Electron (and any CORS-skip client like curl, server-to-server)
+    to call the API even when the browser preflight is impossible.
+
+    Chromium sends ``Origin: null`` for opaque origins (file://, app://).
+    The CORS spec disallows those from a normal middleware, so this
+    middleware injects the ``null`` origin into the standard CORS headers
+    for the desktop app's User-Agent family.  Public read endpoints
+    (update feed, license verify) work either way; authenticated
+    endpoints require the session cookie, which Electron always sends.
+    """
+    if not ELECTRON_ALLOW_NULL_ORIGIN:
+        return await call_next(request)
+    origin = request.headers.get("origin")
+    user_agent = request.headers.get("user-agent", "")
+    is_electron = "electron" in user_agent.lower() or "clipzard-desktop" in user_agent.lower()
+    # Pre-flight shortcut: answer OPTIONS directly with permissive CORS
+    # for desktop-originated requests whose Origin is `null` (the
+    # CORSMiddleware would have rejected it).
+    if request.method == "OPTIONS" and is_electron and origin in (None, "null", "file://", "app://"):
+        return Response(
+            status_code=204,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+                "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Requested-With, User-Agent",
+                "Access-Control-Allow-Credentials": "true",
+                "Access-Control-Max-Age": "3600",
+            },
+        )
+    response = await call_next(request)
+    if is_electron and origin in (None, "null", "file://", "app://"):
+        # Inject the CORS headers for non-preflight requests so the
+        # browser's response is readable by the desktop renderer.
+        # (CORSMiddleware already set the Vary: Origin; we extend it.)
+        existing = response.headers.get("access-control-allow-origin")
+        if not existing:
+            response.headers["Access-Control-Allow-Origin"] = "*"
+    return response
 
 
 @app.on_event("startup")
@@ -99,5 +191,5 @@ def health_ytdlp() -> dict:
             "stats": get_method_stats(),
             "recommended_order": get_recommended_order(),
         }
-    except Exception as exc:
+    except Exception as exc:  # pragma: no cover
         return {"ytdlp_version": "unknown", "error": str(exc)}

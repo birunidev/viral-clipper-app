@@ -15,7 +15,7 @@ type Reel = {
   tag?: string;
 };
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://clipzard.web.id/api/v1";
 
 function YouTubeEmbed({ id }: { id: string }) {
   const src = `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&mute=1&controls=0&modestbranding=1&rel=0&showinfo=0&iv_load_policy=3&disablekb=1&fs=0&playsinline=1&loop=1&playlist=${id}&enablejsapi=0&origin=${typeof window !== "undefined" ? window.location.origin : ""}`;

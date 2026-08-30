@@ -79,7 +79,7 @@ export default function UpdatesAdminPage() {
       form.append("is_beta", isBeta ? "true" : "false");
       const res = await new Promise<{ ok: boolean; version: string; size_bytes: number; sha512: string }>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open("POST", `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1"}/update/upload`);
+        xhr.open("POST", `${process.env.NEXT_PUBLIC_API_URL ?? "https://clipzard.web.id/api/v1"}/update/upload`);
         xhr.withCredentials = true;
         xhr.upload.onprogress = (ev) => {
           if (ev.lengthComputable) setProgress(Math.round((ev.loaded / ev.total) * 100));
@@ -128,7 +128,7 @@ export default function UpdatesAdminPage() {
     }
   }
 
-  const apiBase = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1").replace(/\/$/, "");
+  const apiBase = (process.env.NEXT_PUBLIC_API_URL ?? "https://clipzard.web.id/api/v1").replace(/\/$/, "");
   const checkUrl = (row: AppUpdateRow, channel: "stable" | "beta") =>
     `${apiBase}/update/check?version=0.0.0&platform=${row.platform}&arch=${row.arch}&channel=${channel}`;
 

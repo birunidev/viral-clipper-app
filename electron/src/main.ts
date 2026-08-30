@@ -257,7 +257,7 @@ async function readStoredUpdateChannel(): Promise<"stable" | "beta"> {
 }
 
 async function initAutoUpdater() {
-  const feedBase = (process.env.CLIPZARD_UPDATE_URL ?? "").trim();
+  const feedBase = (process.env.CLIPZARD_UPDATE_URL ?? "https://clipzard.web.id").trim();
   if (!feedBase) {
     console.log("[updater] CLIPZARD_UPDATE_URL not set — auto-update disabled");
     return;
@@ -271,14 +271,18 @@ async function initAutoUpdater() {
   }
   const { autoUpdater } = mod;
 
-  // Tell autoUpdater to use our custom feed (electron-updater speaks the
-  // same JSON shape as GitHub Releases by default).
-  const feedUrl = `${feedBase.replace(/\/$/, "")}/api/v1/update/check`;
+  // Tell autoUpdater to use our custom YAML feed.  The generic provider
+  // fetches `${baseUrl}/<channel>.yml` (and `<channel>-<platform>.yml` on
+  // macOS/Linux).  We bake the platform/arch into the base URL so the
+  // same backend can serve every combination without per-OS gymnastics.
   const storedChannel = await readStoredUpdateChannel();
   const channel = (process.env.CLIPZARD_UPDATE_CHANNEL ?? storedChannel) as "stable" | "beta";
+  const platform = process.platform; // win32 | darwin | linux
+  const arch = process.arch; // x64 | ia32 | arm64 | arm
+  const feedBasePerPlatform = `${feedBase.replace(/\/$/, "")}/api/v1/update-feed/${platform}/${arch}`;
   autoUpdater.setFeedURL({
     provider: "generic",
-    url: feedUrl,
+    url: feedBasePerPlatform,
     channel,
   });
   autoUpdater.autoDownload = false; // user must opt-in via dialog

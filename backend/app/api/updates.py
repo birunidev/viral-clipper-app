@@ -16,7 +16,9 @@ response; ``electron-updater`` uses it to verify the download.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import os
+import time
 import uuid
 from typing import Optional
 
@@ -27,6 +29,7 @@ from sqlalchemy import select
 
 from ..database import session_scope
 from ..models import AppUpdate
+from ..ratelimit import RateLimitExceeded, limiter
 from ..security import SESSION_COOKIE, SessionUser, get_user_from_session
 
 router = APIRouter(tags=["updates"])
@@ -36,6 +39,11 @@ ALLOWED_ARCHES = {"ia32", "x64", "arm64"}
 ALLOWED_CHANNELS = {"stable", "beta"}
 ADMIN_EMAILS_ENV = "CLIPZARD_ADMIN_EMAILS"
 ADMIN_TOKEN_ENV = "CLIPZARD_ADMIN_TOKEN"
+# Secret used to sign the optional ?sig=…&exp=… query on /update/download.
+# If unset, signed URLs are disabled (the download URL is the static,
+# rate-limited /update/download endpoint, which is fine — Caddy already
+# rate-limits these per IP).
+DOWNLOAD_SIGN_SECRET_ENV = "CLIPZARD_DOWNLOAD_SIGN_SECRET"
 
 
 def _admin_emails() -> set[str]:
@@ -105,7 +113,8 @@ def _is_newer(candidate: str, current: str) -> bool:
 
 def _check_response(update: AppUpdate, request: Request) -> dict:
     base = str(request.base_url).rstrip("/")
-    download_url = f"{base}/api/v1/update/download?platform={update.platform}&arch={update.arch}&version={update.version}"
+    signed = _download_signed_url(update.platform, update.arch, update.version, base)
+    download_url = signed or f"{base}/api/v1/update/download?platform={update.platform}&arch={update.arch}&version={update.version}"
     binary_name = f"clipzard-{update.platform}-{update.arch}-{update.version}{'-beta' if update.is_beta else ''}.bin"
     return {
         "url": download_url,
@@ -136,7 +145,18 @@ def check_update(
 
     200 with body when an update is available; 204 when the installed
     version is current; 400 on invalid query params.
+
+    This is a JSON convenience endpoint mirroring the YAML feed below
+    (used by the web admin UI's check-URL preview, third-party tools, and
+    legacy Electron builds that pre-date the YAML feed).
     """
+    # Rate-limit check calls (60/IP/min) — Electron's 6h cadence is
+    # trivially under this, but a misbehaving client can't drain S3.
+    try:
+        limiter.check(f"check:{request.client.host}", limit=60, window_seconds=60)
+    except RateLimitExceeded as e:
+        raise HTTPException(status_code=429, detail=f"rate limited, retry in {e.retry_after}s")
+
     if platform not in ALLOWED_PLATFORMS:
         raise HTTPException(status_code=400, detail=f"invalid platform: {platform}")
     if arch not in ALLOWED_ARCHES:
@@ -158,19 +178,160 @@ def check_update(
         return _check_response(best, request)
 
 
+@router.get("/update-feed/{platform}/{arch}/{channel}.yml")
+def feed_yml(
+    request: Request,
+    platform: str,
+    arch: str,
+    channel: str,
+):
+    """Serve an ``electron-updater``-compatible YAML feed.
+
+    The generic provider of ``electron-updater`` fetches
+    ``${baseUrl}/<channel>.yml`` and parses the YAML the same way as the
+    GitHub releases feed.  We generate the YAML on-the-fly from the
+    ``app_updates`` table -- picking the newest published version for the
+    requested ``(platform, arch, channel)``.
+
+    404 when no version has been published for the combination yet.
+    """
+    try:
+        limiter.check(f"feed:{request.client.host}", limit=60, window_seconds=60)
+    except RateLimitExceeded as e:
+        raise HTTPException(status_code=429, detail=f"rate limited, retry in {e.retry_after}s")
+
+    if platform not in ALLOWED_PLATFORMS:
+        raise HTTPException(status_code=400, detail=f"invalid platform: {platform}")
+    if arch not in ALLOWED_ARCHES:
+        raise HTTPException(status_code=400, detail=f"invalid arch: {arch}")
+    if channel not in ALLOWED_CHANNELS:
+        raise HTTPException(status_code=400, detail=f"invalid channel: {channel}")
+
+    is_beta = channel == "beta"
+    with session_scope() as session:
+        rows = session.execute(
+            select(AppUpdate)
+            .where(
+                AppUpdate.platform == platform,
+                AppUpdate.arch == arch,
+                AppUpdate.is_beta == is_beta,
+            )
+        ).scalars().all()
+        if not rows:
+            raise HTTPException(status_code=404, detail="no published update for this platform/arch/channel")
+        best = max(rows, key=lambda r: _parse_version(r.version))
+
+        base = str(request.base_url).rstrip("/")
+        signed = _download_signed_url(platform, arch, best.version, base)
+        download_url = signed or f"{base}/api/v1/update/download?platform={platform}&arch={arch}&version={best.version}"
+        binary_name = f"clipzard-{platform}-{arch}-{best.version}.bin"
+
+        # Match the YAML schema emitted by `electron-builder publish`.
+        # `path` is the legacy single-file field; `files[]` is what the
+        # generic provider actually consumes.
+        yml = (
+            f"version: {best.version}\n"
+            f"files:\n"
+            f"  - url: {download_url}\n"
+            f"    sha512: {best.sha512 or ''}\n"
+            f"    size: {int(best.size_bytes or 0)}\n"
+            f"path: {download_url}\n"
+            f"sha512: {best.sha512 or ''}\n"
+            f"releaseDate: '{best.created_at.isoformat() if best.created_at else ''}'\n"
+        )
+        if best.release_notes:
+            # Embed notes in the YAML; electron-updater exposes them via info.releaseNotes
+            safe = (best.release_notes or "").replace("\r", "").replace("\n", "\\n")
+            yml += f"releaseNotes: '{safe}'\n"
+        if is_beta:
+            yml += "isBeta: true\n"
+
+    from fastapi import Response
+    return Response(
+        content=yml,
+        media_type="application/x-yaml; charset=utf-8",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+def _download_signed_url(
+    platform: str,
+    arch: str,
+    version: str,
+    base_url: str,
+    ttl_seconds: int = 3600,
+) -> str:
+    """Generate a HMAC-SHA256 signed download URL with expiry."""
+    secret = os.environ.get(DOWNLOAD_SIGN_SECRET_ENV, "").strip()
+    if not secret:
+        # Unsigned fallback: the static URL with Caddy rate-limit is sufficient.
+        return ""
+    exp = int(time.time()) + ttl_seconds
+    payload = f"{platform}:{arch}:{version}:{exp}"
+    sig = hmac.new(secret.encode(), payload.encode(), "sha256").hexdigest()
+    return (
+        f"{base_url}/api/v1/update/download"
+        f"?platform={platform}&arch={arch}&version={version}"
+        f"&exp={exp}&sig={sig}"
+    )
+
+
+def _verify_download_signature(
+    platform: str,
+    arch: str,
+    version: str,
+    exp: str | None,
+    sig: str | None,
+) -> bool:
+    """Verify HMAC-SHA256 signature on a download URL.  Returns True if
+    valid or if signing is disabled (no secret set).  Raises 403 if stale."""
+    secret = os.environ.get(DOWNLOAD_SIGN_SECRET_ENV, "").strip()
+    if not secret or not sig:
+        # Signing disabled — Caddy rate-limit is the guard.
+        return True
+    if not exp:
+        raise HTTPException(status_code=403, detail="missing exp")
+    try:
+        exp_int = int(exp)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="invalid exp")
+    if time.time() > exp_int:
+        raise HTTPException(status_code=403, detail="URL expired")
+    payload = f"{platform}:{arch}:{version}:{exp_int}"
+    expected = hmac.new(secret.encode(), payload.encode(), "sha256").hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        raise HTTPException(status_code=403, detail="invalid signature")
+    return True
+
+
 @router.get("/update/download")
 def download_update(
     request: Request,
     platform: str = Query(...),
     arch: str = Query(...),
     version: str = Query(...),
+    exp: str = Query(default=None),
+    sig: str = Query(default=None),
 ):
     """Stream the S3 binary for ``(platform, arch, version)``.
+
+    Supports optional HMAC-SHA256 signed URLs (set ``CLIPZARD_DOWNLOAD_SIGN_SECRET``):
+    the ``sig`` and ``exp`` query params are verified before streaming.
+    Without a secret the static URL is rate-limited by Caddy and is safe enough.
 
     Streams via FastAPI so the client never sees S3 credentials.
     """
     if platform not in ALLOWED_PLATFORMS or arch not in ALLOWED_ARCHES:
         raise HTTPException(status_code=400, detail="invalid platform/arch")
+
+    # Rate-limit: 60 downloads / IP / minute (Caddy is the primary guard;
+    # this is a second layer in case a request bypasses Caddy).
+    try:
+        limiter.check(f"dl:{request.client.host}", limit=60, window_seconds=60)
+    except RateLimitExceeded as e:
+        raise HTTPException(status_code=429, detail=f"rate limited, retry in {e.retry_after}s")
+
+    _verify_download_signature(platform, arch, version, exp, sig)
 
     with session_scope() as session:
         row = session.execute(
@@ -208,7 +369,8 @@ def download_update(
     headers = {
         "Content-Disposition": f'attachment; filename="{binary_name}"',
         "Content-Type": "application/octet-stream",
-        "Cache-Control": "public, max-age=3600",
+        "Cache-Control": "no-store",  # never cache binaries
+        "X-Update-Version": row.version,
     }
     if size:
         headers["Content-Length"] = str(size)
@@ -243,8 +405,12 @@ def admin_status(
 
 
 @router.get("/update/list", response_model=list[UpdateRow])
-def list_updates(_: SessionUser = Depends(_require_admin)):
+def list_updates(request: Request, _: SessionUser = Depends(_require_admin)):
     """Admin-only: list all published updates (most recent first)."""
+    try:
+        limiter.check(f"list:{request.client.host}", limit=120, window_seconds=60)
+    except RateLimitExceeded as e:
+        raise HTTPException(status_code=429, detail=f"rate limited, retry in {e.retry_after}s")
     with session_scope() as session:
         rows = session.execute(select(AppUpdate).order_by(AppUpdate.created_at.desc())).scalars().all()
         return [
@@ -286,6 +452,7 @@ def delete_update(update_id: str, _: SessionUser = Depends(_require_admin)):
 
 @router.post("/update/upload")
 async def upload_update(
+    request: Request,
     file: UploadFile = File(...),
     version: str = Form(...),
     platform: str = Form(...),
@@ -300,6 +467,13 @@ async def upload_update(
     it reaches the bucket.  Upserts on ``(platform, arch, version, is_beta)``;
     uploading the same combination again overwrites the previous binary.
     """
+    # Tight rate-limit: 1 upload / IP / 5 min (admins only; the binary
+    # is huge — never let a bug loop drain S3).
+    try:
+        limiter.check(f"upload:{request.client.host}", limit=1, window_seconds=300)
+    except RateLimitExceeded as e:
+        raise HTTPException(status_code=429, detail=f"rate limited, retry in {e.retry_after}s")
+
     if platform not in ALLOWED_PLATFORMS:
         raise HTTPException(status_code=400, detail=f"invalid platform: {platform}")
     if arch not in ALLOWED_ARCHES:

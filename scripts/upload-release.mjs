@@ -12,7 +12,7 @@
  *     --notes="## 0.2.0
        - Fixed X
        - Added Y" \
- *     --api=https://api.clipzard.web.id \
+ *     --api=https://clipzard.web.id \
  *     --token=$CLIPZARD_ADMIN_TOKEN
  *
  * Required env if not passed via flags:
@@ -42,7 +42,7 @@ async function main() {
   const arch = args.arch || process.env.CLIPZARD_ARCH;
   const channel = (args.channel || process.env.CLIPZARD_CHANNEL || "stable").toLowerCase();
   const notes = args.notes ?? process.env.CLIPZARD_NOTES ?? "";
-  const api = (args.api || process.env.CLIPZARD_API || "https://api.clipzard.web.id").replace(/\/$/, "");
+  const api = (args.api || process.env.CLIPZARD_API || "https://clipzard.web.id").replace(/\/$/, "");
   const token = args.token || process.env.CLIPZARD_ADMIN_TOKEN;
 
   if (!file) throw new Error("--file <path> is required (or CLIPZARD_FILE)");

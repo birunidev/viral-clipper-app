@@ -182,7 +182,7 @@ function Row({ items, reverse }: { items: Reel[]; reverse?: boolean }) {
   );
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://clipzard.web.id/api/v1";
 
 export function ReelsWall() {
   const [reels, setReels] = useState<Reel[] | null>(null);

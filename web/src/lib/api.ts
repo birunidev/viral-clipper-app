@@ -1,13 +1,13 @@
 /**
  * Thin fetch wrapper for the ClipZard FastAPI backend.
  *
- * All requests go to `NEXT_PUBLIC_API_URL` (e.g. https://app.example.com/api/v1
+ * All requests go to `NEXT_PUBLIC_API_URL` (e.g. https://clipzard.web.id/api/v1
  * in prod via Caddy, http://localhost:8000/api/v1 in dev) with credentials
  * included so the httpOnly session cookie is sent/received. There is no
  * server-side code in this app — every call happens from the browser.
  */
 
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
+export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "https://clipzard.web.id/api/v1";
 
 export class ApiError extends Error {
   status: number;

@@ -1,11 +1,12 @@
 "use client";
 
-import { CreditCard, GearSix, SignOut, SquaresFour } from "@phosphor-icons/react";
+import { CreditCard, GearSix, SignOut, Shield, SquaresFour } from "@phosphor-icons/react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { useLogout, useSession } from "@/hooks/use-auth";
 import { useBilling } from "@/hooks/use-billing";
+import { useAdminStatus } from "@/hooks/use-admin-updates";
 
 function Logo() {
   return (
@@ -20,6 +21,7 @@ const NAV = [
   { href: "/app/billing", label: "Credits", icon: CreditCard },
   { href: "/app/settings", label: "Settings", icon: GearSix },
 ];
+const ADMIN_NAV = { href: "/admin/updates", label: "Admin", icon: Shield };
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -27,6 +29,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const { data: user, isLoading, isError } = useSession();
   const logout = useLogout();
   const billing = useBilling();
+  const admin = useAdminStatus();
 
   useEffect(() => {
     // Only bounce to login on a definitive "not authenticated" (null data).
@@ -67,6 +70,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               </Link>
             );
           })}
+          {admin.data?.is_admin && (
+            <Link
+              href={ADMIN_NAV.href}
+              className="mt-2 flex items-center gap-2.5 rounded-lg border border-accent/30 bg-accent/10 px-3 py-2 text-sm font-medium text-accent transition-colors hover:bg-accent/20"
+            >
+              <ADMIN_NAV.icon size={16} weight="fill" />
+              {ADMIN_NAV.label}
+            </Link>
+          )}
         </nav>
 
         <div className="flex flex-col gap-1 border-t border-line px-3 py-4">
