@@ -1,6 +1,6 @@
 "use client";
 
-import { CreditCard, GearSix, SignOut, SquaresFour, VideoCamera } from "@phosphor-icons/react";
+import { CreditCard, GearSix, SignOut, SquaresFour } from "@phosphor-icons/react";
 import { Link } from "react-router-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useEffect } from "react";
@@ -10,10 +10,7 @@ import { useBilling } from "@/hooks/use-billing";
 function Logo() {
   return (
     <Link to="/" className="flex items-center gap-2.5">
-      <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent text-accent-ink">
-        <VideoCamera size={16} weight="fill" />
-      </span>
-      <span className="text-[15px] font-semibold tracking-tight text-ink">SnapClip</span>
+      <img src="logo-with-text.png" alt="ClipZard" className="h-8 w-auto object-contain" />
     </Link>
   );
 }

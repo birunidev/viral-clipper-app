@@ -70,10 +70,7 @@ export default function HomePage() {
       <header className="sticky top-0 z-20 border-b border-line/60 bg-canvas/80 backdrop-blur supports-[backdrop-filter]:bg-canvas/60">
         <div className="mx-auto flex max-w-[1400px] items-center justify-between px-6 py-4 md:px-10">
           <Link href="/" className="flex items-center gap-2.5">
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent text-accent-ink">
-              <Scissors size={15} weight="bold" />
-            </span>
-            <span className="text-[15px] font-semibold tracking-tight text-ink">ClipZard</span>
+            <img src="/logo-with-text.png" alt="ClipZard" className="h-8 w-auto object-contain" />
           </Link>
           <nav className="flex items-center gap-2">
             <Link href="/terms" className="hidden rounded-full px-3.5 py-2 text-sm text-ink-tertiary transition-colors hover:text-ink md:inline-flex">

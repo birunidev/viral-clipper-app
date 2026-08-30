@@ -24,9 +24,22 @@ function createWindow() {
   const fallbackPreload = path.join(__dirname, "preload.js");
   const resolvedPreload = fs.existsSync(preloadPath) ? preloadPath : fallbackPreload;
   console.log("[main] preload path", resolvedPreload, "exists", fs.existsSync(resolvedPreload));
+  const windowIcon = (() => {
+    const candidates = [
+      path.join(__dirname, "../resources/icon.png"),
+      path.join(__dirname, "resources/icon.png"),
+      path.join(process.resourcesPath ?? "", "icon.png"),
+      path.join(process.cwd(), "resources/icon.png"),
+      path.join(process.cwd(), "electron/resources/icon.png"),
+    ];
+    const found = candidates.find((p) => fs.existsSync(p));
+    console.log("[main] windowIcon candidates", candidates, "found", found);
+    return found ?? undefined;
+  })();
   win = new BrowserWindow({
     width: 1280,
     height: 800,
+    icon: windowIcon,
     webPreferences: {
       preload: resolvedPreload,
       contextIsolation: true,

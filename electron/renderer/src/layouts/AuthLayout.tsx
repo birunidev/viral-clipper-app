@@ -12,10 +12,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
     <div className="flex min-h-dvh flex-1">
       <div className="relative hidden flex-1 flex-col justify-between overflow-hidden border-r border-line bg-surface-1 p-10 lg:flex">
         <Link to="/" className="flex items-center gap-2.5">
-          <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent text-accent-ink">
-            <Scissors size={15} weight="bold" />
-          </span>
-          <span className="text-[15px] font-semibold tracking-tight text-ink">SnapClip</span>
+          <img src="logo-with-text.png" alt="ClipZard" className="h-8 w-auto object-contain" />
         </Link>
         <div className="max-w-sm">
           <p className="text-2xl font-semibold leading-tight tracking-tight text-ink balance">Long videos in. Viral clips out.</p>

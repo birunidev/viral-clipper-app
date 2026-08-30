@@ -13,10 +13,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
       {/* Product context panel — hidden on mobile */}
       <div className="relative hidden flex-1 flex-col justify-between overflow-hidden border-r border-line bg-surface-1 p-10 lg:flex">
         <Link href="/" className="flex items-center gap-2.5">
-          <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent text-accent-ink">
-            <Scissors size={15} weight="bold" />
-          </span>
-          <span className="text-[15px] font-semibold tracking-tight text-ink">ClipZard</span>
+          <img src="/logo-with-text.png" alt="ClipZard" className="h-8 w-auto object-contain" />
         </Link>
 
         <div className="max-w-sm">
