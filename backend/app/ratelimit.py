@@ -18,7 +18,15 @@ from collections import defaultdict, deque
 
 
 class RateLimitExceeded(Exception):
-    """Raised when too many attempts hit a bucket within its window."""
+    """Raised when too many attempts hit a bucket within its window.
+
+    ``retry_after`` is the number of whole seconds the caller should wait
+    before retrying (always >= 1).
+    """
+
+    def __init__(self, retry_after: int) -> None:
+        super().__init__(f"rate limit exceeded; retry in {retry_after}s")
+        self.retry_after = int(retry_after)
 
 
 class _Window:
