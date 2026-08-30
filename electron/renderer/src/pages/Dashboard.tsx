@@ -5,7 +5,9 @@ import {
   ArrowLeft,
   CloudArrowUp,
   Clock,
+  Cpu,
   FilmReel,
+  HardDrive,
   Plus,
   Terminal,
   Trash,
@@ -15,7 +17,7 @@ import {
 } from "@phosphor-icons/react";
 import { Link } from "react-router-dom";
 import { useNavigate } from "react-router-dom";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, EmptyState, Skeleton } from "@/components/ui/card";
 import { StatusPill } from "@/components/ui/status-pill";
@@ -51,6 +53,25 @@ export default function DashboardPage() {
   const [error, setError] = useState("");
   const [paywallMessage, setPaywallMessage] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [modelVariant, setModelVariant] = useState<"tiny" | "balanced" | "quality">("balanced");
+  const [modelInfo, setModelInfo] = useState<{ variants: { key: string; label: string; installed: boolean; sizeMb: number }[]; selected: string } | null>(null);
+
+  useEffect(() => {
+    if (!composerOpen) return;
+    const w = window as unknown as { clipzard?: { modelsList?: () => Promise<unknown> } };
+    if (!w.clipzard?.modelsList) return;
+    w.clipzard.modelsList().then((d) => setModelInfo(d as never)).catch(() => {});
+  }, [composerOpen]);
+
+  // Keep picker in sync with what's actually installed / selected
+  useEffect(() => {
+    if (modelInfo?.selected && ["tiny", "balanced", "quality"].includes(modelInfo.selected)) {
+      setModelVariant(modelInfo.selected as never);
+    } else if (modelInfo?.variants?.length) {
+      const installed = modelInfo.variants.find((v) => v.installed);
+      if (installed) setModelVariant(installed.key as never);
+    }
+  }, [modelInfo]);
 
   function fail(err: unknown) {
     if (isPaywall(err)) setPaywallMessage(err.message);
@@ -68,7 +89,7 @@ export default function DashboardPage() {
         return;
       }
       createProject.mutate(
-        { title, source: url.trim(), source_type: "youtube" },
+        { title, source: url.trim(), source_type: "youtube", llmVariant: modelVariant } as never,
         {
           onSuccess: (project) => navigate(`/projects/${(project as { id: string }).id}`),
           onError: fail,
@@ -88,7 +109,7 @@ export default function DashboardPage() {
     const filePath = (file as unknown as { path?: string })?.path ?? null;
     if (filePath && file) {
       createProject.mutate(
-        { title, source: filePath, source_type: "upload", source_size_bytes: file.size },
+        { title, source: filePath, source_type: "upload", source_size_bytes: file.size, llmVariant: modelVariant } as never,
         {
           onSuccess: (project) => navigate(`/projects/${(project as { id: string }).id}`),
           onError: fail,
@@ -101,7 +122,7 @@ export default function DashboardPage() {
     const picked = await pickedViaDialog();
     if (picked) {
       createProject.mutate(
-        { title, source: picked, source_type: "upload" },
+        { title, source: picked, source_type: "upload", llmVariant: modelVariant } as never,
         {
           onSuccess: (project) => navigate(`/projects/${(project as { id: string }).id}`),
           onError: fail,
@@ -118,7 +139,7 @@ export default function DashboardPage() {
     const fallbackPicked = await pickedViaDialog();
     if (fallbackPicked) {
       createProject.mutate(
-        { title, source: fallbackPicked, source_type: "upload" },
+        { title, source: fallbackPicked, source_type: "upload", llmVariant: modelVariant } as never,
         {
           onSuccess: (project) => navigate(`/projects/${(project as { id: string }).id}`),
           onError: fail,
@@ -260,6 +281,55 @@ export default function DashboardPage() {
                 />
               </label>
             )}
+
+            {/* AI Model preselect — per-project, stored as llm_variant */}
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-2 text-sm font-medium text-ink">
+                <Cpu size={14} className="text-accent" />
+                AI Model for this project
+                {modelInfo && <span className="ml-auto text-xs font-normal text-ink-tertiary">{modelInfo.variants.find((v) => v.key === modelVariant)?.label ?? modelVariant}</span>}
+              </div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                {(modelInfo?.variants ?? [
+                  { key: "tiny", label: "Tiny — 0.5B", installed: false, sizeMb: 380 },
+                  { key: "balanced", label: "Balanced — 1.5B", installed: false, sizeMb: 950 },
+                  { key: "quality", label: "Quality — 7B", installed: false, sizeMb: 4700 },
+                ]).map((v) => {
+                  const isSelected = modelVariant === v.key;
+                  const isInstalled = Boolean(v.installed);
+                  return (
+                    <button
+                      key={v.key}
+                      type="button"
+                      onClick={() => setModelVariant(v.key as never)}
+                      className={`flex flex-col gap-1 rounded-lg border px-3 py-2.5 text-left transition-colors ${
+                        isSelected ? "border-accent/40 bg-accent-soft" : "border-line bg-surface-2 hover:border-line-strong"
+                      }`}
+                    >
+                      <span className="flex items-center gap-1.5 text-xs font-medium text-ink">
+                        {isSelected && <span className="h-1.5 w-1.5 rounded-full bg-accent" />}
+                        {v.label}
+                        {isInstalled ? <span className="ml-auto text-[10px] text-emerald-600">installed</span> : <span className="ml-auto text-[10px] text-amber-600">{v.sizeMb} MB</span>}
+                      </span>
+                      <span className="text-[11px] text-ink-tertiary">{isInstalled ? "Ready" : `Download ${v.sizeMb} MB`}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {(() => {
+                const sel = modelInfo?.variants.find((v) => v.key === modelVariant);
+                if (sel && !sel.installed) {
+                  return (
+                    <p className="flex items-center gap-1.5 text-xs text-amber-600">
+                      <Warning size={12} weight="fill" />
+                      {sel.label} not installed — will be downloaded on first analyze ({sel.sizeMb} MB) or switch to an installed one.
+                    </p>
+                  );
+                }
+                return null;
+              })()}
+              <p className="text-[11px] text-ink-muted">Preselected model is saved per-project and used for clip analysis. Change anytime in Settings → Local AI Models.</p>
+            </div>
 
             {error && (
               <p className="flex items-center gap-1.5 text-sm text-danger">

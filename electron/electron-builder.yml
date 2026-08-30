@@ -31,22 +31,8 @@ extraResources:
   - from: resources/bin
     to: bin
     filter: ["**/*"]
-  - from: node_modules/ffmpeg-static
-    to: bin
-    filter: ["ffmpeg.exe", "ffmpeg"]
-  - from: node_modules/ffprobe-static/bin/win32/x64
-    to: bin
-    filter: ["ffprobe.exe"]
-  - from: node_modules/ffprobe-static/bin/linux
-    to: bin
-    filter: ["**/*"]
-  - from: node_modules/ffprobe-static/bin/darwin
-    to: bin
-    filter: ["**/*"]
-  - from: node_modules/yt-dlp-exec/bin
-    to: bin
-    filter: ["yt-dlp", "yt-dlp.exe"]
   # Offline models — bundled when present (makes installer ~8GB). Run `npm run models:download -- --out=resources/models` first to pre-seed.
+  # Already handled via prepare-build.mjs; kept as extraResources for packaged app
   - from: resources/models
     to: models
     filter: ["**/*"]

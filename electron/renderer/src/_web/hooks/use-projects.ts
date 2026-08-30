@@ -96,6 +96,7 @@ export function useCreateProject() {
       source: string;
       source_type: string;
       source_size_bytes?: number;
+      llmVariant?: "tiny" | "balanced" | "quality" | null;
     }) => api.post<ProjectListItem>("/projects", payload),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: projectsKey }),
   });

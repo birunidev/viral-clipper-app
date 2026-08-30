@@ -34,7 +34,7 @@ export interface VariantInfo {
 const VARIANTS: Record<ModelVariant, { label: string; sizeMb: number; description: string }> = {
   tiny: { label: "Tiny — 0.5B", sizeMb: 380, description: "380 MB · fastest · weakest hooks, generic JSON" },
   balanced: { label: "Balanced — 1.5B (recommended)", sizeMb: 950, description: "950 MB · best MB/quality · <2 GB installer" },
-  quality: { label: "Quality — 3B", sizeMb: 2000, description: "2.0 GB · better nuance · needs 3 GB RAM" },
+  quality: { label: "Quality — 7B", sizeMb: 4700, description: "4.7 GB · best hooks EN/ID · needs 8 GB RAM, 7B Q4_K_M" },
 };
 
 export function getVariantInfo(v: ModelVariant): VariantInfo {
@@ -63,15 +63,31 @@ export function currentSelectedVariant(): ModelVariant {
   const env = (process.env.LLM_TIER ?? "").toLowerCase();
   if (env === "tiny" || env === "0.5b" || env === "nano") return "tiny";
   if (env === "balanced" || env === "1.5b") return "balanced";
-  if (env === "quality" || env === "3b") return "quality";
+  if (env === "quality" || env === "3b" || env === "7b") return "quality";
   // Try electron-store
+  let stored: string | null = null;
   try {
     const Store = require("electron-store") as unknown as { default: new (o: unknown)=> { get:(k:string, d?:unknown)=>unknown } };
     const Ctor = (Store.default ?? Store) as unknown as new (o: unknown)=> { get:(k:string,d?:unknown)=>unknown };
     const store = new Ctor({ name: "clipzard-config" });
     const v = String(store.get("llmVariant", "") ?? "").toLowerCase();
-    if (v === "tiny" || v === "balanced" || v === "quality") return v as ModelVariant;
+    if (v === "tiny" || v === "balanced" || v === "quality") stored = v;
   } catch {}
+  if (stored) {
+    // If stored variant's file is missing but another variant is installed, reflect what's actually on disk
+    // (user downloaded 7B quality but selected still balanced -> show quality)
+    const info = getVariantInfo(stored as ModelVariant);
+    if (info.installed) return stored as ModelVariant;
+    // Stored not installed — return the installed one if any
+    for (const alt of ["quality", "balanced", "tiny"] as ModelVariant[]) {
+      if (getVariantInfo(alt).installed) return alt;
+    }
+    return stored as ModelVariant;
+  }
+  // No stored preference — if something is already installed, reflect it (don't show balanced selected when only 7B exists)
+  for (const alt of ["quality", "balanced", "tiny"] as ModelVariant[]) {
+    if (getVariantInfo(alt).installed) return alt;
+  }
   // Default based on tier (low=balanced, mid/high keep larger but UI defaults to balanced)
   const tier = ramTier();
   if (tier === "high" || tier === "mid") return "balanced"; // don't default to tiny even on high

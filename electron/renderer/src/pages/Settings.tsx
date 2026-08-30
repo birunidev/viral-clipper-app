@@ -461,10 +461,15 @@ function LocalModelsCard() {
   };
 
   const handleDownload = async (v: string) => {
-    const cf = (window as unknown as { clipzard?: { modelsEnsure: (x: string) => Promise<unknown> } }).clipzard;
+    const cf = (window as unknown as { clipzard?: { modelsEnsure: (x: string) => Promise<unknown>; modelsSetVariant?: (x: string) => Promise<unknown> } }).clipzard;
     if (!cf?.modelsEnsure) return;
     setBusy(v); setError(""); setProgress((p) => ({ ...p, [v]: 0 }));
-    try { await cf.modelsEnsure(v); } catch (e) { setError(String((e as Error).message)); setBusy(null); }
+    try {
+      await cf.modelsEnsure(v);
+      // Auto-select the downloaded variant so Settings and deps check reflect it (user installed quality but UI stayed on balanced)
+      try { await cf.modelsSetVariant?.(v); } catch {}
+      await refresh();
+    } catch (e) { setError(String((e as Error).message)); setBusy(null); }
   };
 
   const handleRemove = async (v: string) => {

@@ -38,6 +38,7 @@ function copyIfExists(src, dest) {
 function findAndCopyBinaries() {
   console.log("[prepare-build] ensuring binaries in resources/bin...");
   ensureDir(resourcesBin);
+  ensureDir(resourcesModels);
 
   // ffmpeg-static: node_modules/ffmpeg-static/ffmpeg.exe (win) or ffmpeg
   const ffmpegSrc = path.join(electronRoot, "node_modules", "ffmpeg-static", process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg");

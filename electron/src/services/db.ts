@@ -22,6 +22,7 @@ const SCHEMA = `
       source_type TEXT NOT NULL DEFAULT 'youtube', source_key TEXT,
       language TEXT, status TEXT NOT NULL DEFAULT 'idle',
       storage_bytes INTEGER NOT NULL DEFAULT 0,
+      llm_variant TEXT,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT
     );
     CREATE TABLE IF NOT EXISTS jobs (
@@ -122,6 +123,7 @@ async function ensureElectronDb(): Promise<void> {
         "ALTER TABLE jobs ADD COLUMN download_ms INTEGER",
         "ALTER TABLE jobs ADD COLUMN transcribe_ms INTEGER",
         "ALTER TABLE jobs ADD COLUMN analyze_ms INTEGER",
+        "ALTER TABLE projects ADD COLUMN llm_variant TEXT",
       ]) { try { await sqliteElectron.executeQuery(sql); } catch {} }
       electronReady = true;
       console.log("[db] sqlite-electron ready at", p);
@@ -273,6 +275,7 @@ function getDbInnerSync() {
       "ALTER TABLE jobs ADD COLUMN download_ms INTEGER",
       "ALTER TABLE jobs ADD COLUMN transcribe_ms INTEGER",
       "ALTER TABLE jobs ADD COLUMN analyze_ms INTEGER",
+      "ALTER TABLE projects ADD COLUMN llm_variant TEXT",
     ]) { try { (db as any).exec(sql); } catch {} }
     const wrap = {
       prepare(sql:string): Stmt {

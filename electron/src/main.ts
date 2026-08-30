@@ -37,6 +37,7 @@ function createWindow() {
   });
 
   const devUrl = process.env.ELECTRON_DEV_URL;
+  const isDev = !!devUrl || !app.isPackaged || process.env.NODE_ENV === "development";
   if (devUrl) {
     console.log("[main] loading devUrl", devUrl);
     win.loadURL(devUrl);
@@ -51,8 +52,11 @@ function createWindow() {
     console.log("[main] loading file", p);
     if (p) {
       win.loadFile(p);
-      win.webContents.openDevTools({ mode: "detach" });
-      win.webContents.on("console-message", (_e, level, msg, line, src) => console.log(`[renderer:${level}] ${msg} @${src}:${line}`));
+      // DevTools only in dev — not in prod packaged builds
+      if (isDev) {
+        win.webContents.openDevTools({ mode: "detach" });
+        win.webContents.on("console-message", (_e, level, msg, line, src) => console.log(`[renderer:${level}] ${msg} @${src}:${line}`));
+      }
     } else win.loadURL("data:text/html,<h1>ClipZard - renderer not built. Run: npm --prefix electron/renderer run build</h1>");
   }
 }
@@ -463,7 +467,7 @@ ipcMain.handle("projects:get", async (_e, id: string) => {
   return flat;
 });
 
-ipcMain.handle("projects:create", async (_e, data: { title: string; source: string; sourceType?: string }) => {
+ipcMain.handle("projects:create", async (_e, data: { title: string; source: string; sourceType?: string; llmVariant?: string }) => {
   if (!(await isLicensed())) throw new Error("License required");
   // Dependency guard: if YT URL and deps missing, reject early with Settings hint
   if (String(data.sourceType ?? "youtube") === "youtube" && !isAllDepsReady()) {
@@ -474,7 +478,8 @@ ipcMain.handle("projects:create", async (_e, data: { title: string; source: stri
   const now = nowIso();
   const sourceType = data.sourceType ?? "youtube";
   const sourceKey = sourceType === "upload" ? data.source : null;
-  await dbExecute("INSERT INTO projects (id, title, source, source_type, source_key, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)", [id, data.title || "Untitled", data.source, sourceType, sourceKey, "idle", now, now]);
+  const llmVariant = ["tiny", "balanced", "quality"].includes(String(data.llmVariant ?? "").toLowerCase()) ? String(data.llmVariant).toLowerCase() : null;
+  await dbExecute("INSERT INTO projects (id, title, source, source_type, source_key, llm_variant, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)", [id, data.title || "Untitled", data.source, sourceType, sourceKey, llmVariant, "idle", now, now]);
   return { id };
 });
 
@@ -892,12 +897,21 @@ ipcMain.handle("jobs:start", async (_e, { projectId, opts }: { projectId: string
   }
   const id = randomUUID();
   const now = nowIso();
-  await dbExecute("INSERT INTO jobs (id, project_id, type, status, stage, progress, options, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)", [id, projectId, "analyze", "queued", "queued", 0, JSON.stringify(opts ?? {}), now, now]);
+  // Merge per-project llm_variant into job options if not already provided (preselected at project creation)
+  let mergedOpts: Record<string, unknown> = { ...(opts ?? {}) };
+  if (!mergedOpts.llm_variant && !mergedOpts.LLM_TIER) {
+    try {
+      const proj = await dbFetchOne<Record<string, unknown>>("SELECT llm_variant FROM projects WHERE id=?", [projectId]);
+      const v = String((proj as Record<string, unknown>)?.llm_variant ?? "").toLowerCase();
+      if (["tiny", "balanced", "quality"].includes(v)) mergedOpts.llm_variant = v;
+    } catch {}
+  }
+  await dbExecute("INSERT INTO jobs (id, project_id, type, status, stage, progress, options, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)", [id, projectId, "analyze", "queued", "queued", 0, JSON.stringify(mergedOpts), now, now]);
   await dbExecute("UPDATE projects SET status='queued', updated_at=? WHERE id=?", [now, projectId]);
   // must not await utility, start async
   void (async () => runJobInUtility(id, projectId))();
   const job = await dbFetchOne<Record<string, unknown>>("SELECT * FROM jobs WHERE id=?", [id]);
-  return job ?? { id, project_id: projectId, type: "analyze", status: "queued", stage: "queued", progress: 0, options: JSON.stringify(opts ?? {}), created_at: now, updated_at: now };
+  return job ?? { id, project_id: projectId, type: "analyze", status: "queued", stage: "queued", progress: 0, options: JSON.stringify(mergedOpts), created_at: now, updated_at: now };
 });
 
 ipcMain.handle("jobs:render", async (_e, { projectId, clipId, opts }: { projectId: string; clipId: string; opts?: Record<string, unknown> }) => {

@@ -38,33 +38,72 @@ export function getDepsStatus(): DepStatus[] {
     required: true,
   });
 
-  // LLM model (7b default) — use same userDataRoot logic as models.ts (handles ESM + USER_DATA_PATH)
+  // LLM model (7b default) — check selected variant first, fallback to any installed variant so "downloaded 7B but selected still balanced" doesn't block
   try {
-    const llmPath = path.join(
-      (() => {
-        if (process.env.USER_DATA_PATH) return process.env.USER_DATA_PATH;
-        try {
-          const { app } = require("electron") as { app: { getPath: (n: string) => string } };
-          return app.getPath("userData");
-        } catch { return path.join(process.cwd(), ".data"); }
-      })(),
-      "models",
-      "llm",
-      llm.file
-    );
+    const baseDir = (() => {
+      if (process.env.USER_DATA_PATH) return process.env.USER_DATA_PATH;
+      try {
+        const { app } = require("electron") as { app: { getPath: (n: string) => string } };
+        return app.getPath("userData");
+      } catch { return path.join(process.cwd(), ".data"); }
+    })();
+    const llmPath = path.join(baseDir, "models", "llm", llm.file);
     let bytes = 0;
     try { if (fs.existsSync(llmPath)) bytes = fs.statSync(llmPath).size; } catch {}
-    const expectedMb = llm.file.includes("7b") ? 4700 : llm.file.includes("1.5b") ? 950 : 380;
-    out.push({
-      key: "llm-model",
-      label: `LLM ${llm.file}`,
-      installed: bytes > 1024 * 1024,
-      path: llmPath,
-      bytesOnDisk: bytes,
-      sizeMb: expectedMb,
-      description: bytes > 1024 * 1024 ? "Ready" : `Will download ${expectedMb} MB`,
-      required: true,
-    });
+    const expectedMb = llm.file.includes("7b") ? 4700 : llm.file.includes("1.5b") ? 950 : llm.file.includes("3b") ? 2000 : 380;
+    if (bytes > 1024 * 1024) {
+      out.push({
+        key: "llm-model",
+        label: `LLM ${llm.file}`,
+        installed: true,
+        path: llmPath,
+        bytesOnDisk: bytes,
+        sizeMb: expectedMb,
+        description: "Ready",
+        required: true,
+      });
+    } else {
+      // Fallback: check other variants — if any LLM is installed, don't block (user can switch via "Use")
+      let altBytes = 0;
+      let altPath: string | null = null;
+      let altFile: string | null = null;
+      for (const alt of ["qwen2.5-7b-q4_k_m.gguf", "qwen2.5-1.5b-q4_k_m.gguf", "qwen2.5-0.5b-q4_k_m.gguf", "qwen2.5-3b-q4_k_m.gguf"]) {
+        if (alt === llm.file) continue;
+        const p = path.join(baseDir, "models", "llm", alt);
+        try {
+          if (fs.existsSync(p) && fs.statSync(p).size > 1024 * 1024) {
+            altBytes = fs.statSync(p).size;
+            altPath = p;
+            altFile = alt;
+            break;
+          }
+        } catch {}
+      }
+      if (altBytes > 0 && altPath && altFile) {
+        const altMb = altFile.includes("7b") ? 4700 : altFile.includes("1.5b") ? 950 : altFile.includes("3b") ? 2000 : 380;
+        out.push({
+          key: "llm-model",
+          label: `LLM ${altFile} (installed)`,
+          installed: true,
+          path: altPath,
+          bytesOnDisk: altBytes,
+          sizeMb: altMb,
+          description: `Ready — using ${altFile} (selected ${llm.file} not found, click "Use" on installed variant to make it default)`,
+          required: true,
+        });
+      } else {
+        out.push({
+          key: "llm-model",
+          label: `LLM ${llm.file}`,
+          installed: false,
+          path: llmPath,
+          bytesOnDisk: bytes,
+          sizeMb: expectedMb,
+          description: `Will download ${expectedMb} MB`,
+          required: true,
+        });
+      }
+    }
   } catch {}
 
   // Whisper binary

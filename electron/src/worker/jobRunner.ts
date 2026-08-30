@@ -150,6 +150,12 @@ async function handleAnalyze(msg: StartAnalyzeMsg) {
   const { sourcePath, thumbsDir, ensureProjectDirs, transcriptCacheDir, cachedTranscriptPath } = await import("../services/storage.js");
 
   const { project, opts, jobId, projectId, cachedWords } = msg;
+  // Per-project model preselect: if job carries llm_variant, honor it for this run
+  const jobVariant = String((opts as Record<string, unknown>).llm_variant ?? (opts as Record<string, unknown>).LLM_TIER ?? "").toLowerCase();
+  if (["tiny", "balanced", "quality"].includes(jobVariant)) {
+    process.env.LLM_TIER = jobVariant;
+    console.log(`[jobRunner] using per-job LLM variant ${jobVariant} (from project preselect)`);
+  }
   const maxClips = Number(opts.max_clips ?? 10);
   const minClipSeconds = Number(opts.min_clip_seconds ?? 15);
   const maxClipSeconds = Number(opts.max_clip_seconds ?? 90);
