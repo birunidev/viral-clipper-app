@@ -1,10 +1,11 @@
 "use client";
 
-import { Check, Coins, Cube, Database, Lightning, Warning } from "@phosphor-icons/react";
+import { Check, Coins, Cube, Database, Key, Lightning, Warning } from "@phosphor-icons/react";
 import Link from "next/link";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { useSession } from "@/hooks/use-auth";
 import {
   loadSnap,
   useBilling,
@@ -32,6 +33,7 @@ export default function BillingPage() {
   const billing = useBilling();
   const checkout = useCheckout();
   const invalidateBilling = useInvalidateBilling();
+  const session = useSession();
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const status = billing.data;
@@ -79,15 +81,30 @@ export default function BillingPage() {
     }
   }
 
+  const isLicensed = session.data?.has_license ?? false;
+  const userTier = session.data?.license_tier ?? null;
+  const maxDevices = session.data?.max_devices ?? 0;
+  const currentDevices = session.data?.current_device_count ?? 0;
+
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-8">
       <div>
-        <h1 className="text-[22px] font-semibold tracking-tight text-ink">Credits &amp; packs</h1>
+        <h1 className="text-[22px] font-semibold tracking-tight text-ink">Billing</h1>
         <p className="mt-1 text-sm text-ink-tertiary">
-          Pay per clip — no subscriptions. Each credit is one minute of source video;
-          1 credit = 1 analyzed minute of your video.
+          Buy a desktop license for the app, or top up cloud credits for the AI
+          transcriber / analyser. Both are one-time purchases, no subscriptions.
         </p>
       </div>
+
+      <DesktopLicenseCard
+        isLicensed={isLicensed}
+        tier={userTier}
+        maxDevices={maxDevices}
+        currentDevices={currentDevices}
+        status={status}
+        busy={checkout.isPending}
+        onBuy={buy}
+      />
 
       {status && <CurrentTier status={status} />}
 
@@ -108,19 +125,20 @@ export default function BillingPage() {
         </p>
       )}
 
+      <TopUpPicker topups={status?.topups ?? []} onSelect={buy} busy={checkout.isPending} />
+
       <PackPicker
         packs={status?.packs ?? []}
         onSelect={buy}
         busy={checkout.isPending}
       />
 
-      <TopUpPicker topups={status?.topups ?? []} onSelect={buy} busy={checkout.isPending} />
-
       <TransactionHistory />
 
       <p className="text-xs text-ink-muted">
-        Buying any pack permanently unlocks its storage/projects/resolution and removes the
-        watermark — the bigger the pack you&apos;ve ever bought, the better your limits, forever.
+        Buying a desktop license also grants 60 free cloud minutes (one-time bundle).
+        Cloud credits are spent on the AI transcriber and analyser; if you run out
+        you can top up here without changing your license.
         {status?.byok_enabled && (
           <>
             {" "}
@@ -133,6 +151,64 @@ export default function BillingPage() {
         )}
       </p>
     </div>
+  );
+}
+
+/** Card 1: the desktop license. Buy or upgrade from here. */
+function DesktopLicenseCard({
+  isLicensed,
+  tier,
+  maxDevices,
+  currentDevices,
+  status,
+  busy,
+  onBuy,
+}: {
+  isLicensed: boolean;
+  tier: string | null;
+  maxDevices: number;
+  currentDevices: number;
+  status: BillingStatus | undefined;
+  busy: boolean;
+  onBuy: (packKey: string) => void;
+}) {
+  // The "lowest" credit pack is also the cheapest license — buying the
+  // entry-level pack mints a desktop license for the same price.
+  const licensePackKey = (status?.packs ?? [])
+    .slice()
+    .sort((a, b) => a.price_usd_cents - b.price_usd_cents)[0]?.key;
+  return (
+    <Card className="p-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+            <Key size={14} weight="fill" className="text-accent" />
+            Desktop license
+          </p>
+          <p className="mt-2 text-sm text-ink-secondary">
+            {isLicensed
+              ? <>Your <span className="font-medium capitalize text-ink">{tier ?? "licensed"}</span> license runs the ClipZard app on up to {maxDevices} devices ({currentDevices} active).</>
+              : "Run the ClipZard desktop app — no monthly fee, lifetime."}
+          </p>
+        </div>
+        {isLicensed ? (
+          <Link
+            href="/app/licenses"
+            className="inline-flex h-9 items-center justify-center rounded-lg border border-line bg-surface-2 px-4 text-sm text-ink hover:bg-surface-3"
+          >
+            Manage devices →
+          </Link>
+        ) : (
+          <Button
+            onClick={() => licensePackKey && onBuy(licensePackKey)}
+            disabled={busy || !licensePackKey}
+            variant="primary"
+          >
+            {busy ? "Opening checkout…" : "Buy license"}
+          </Button>
+        )}
+      </div>
+    </Card>
   );
 }
 
@@ -158,7 +234,10 @@ function CreditBalance({ status }: { status: BillingStatus }) {
   return (
     <Card className="flex items-center justify-between gap-4 p-5">
       <div>
-        <p className="text-xs uppercase tracking-wider text-ink-tertiary">Credit balance</p>
+        <p className="flex items-center gap-1.5 text-xs uppercase tracking-wider text-ink-tertiary">
+          <Coins size={12} weight="fill" className="text-accent" />
+          Cloud credit balance
+        </p>
         <p className="mt-1 flex items-baseline gap-1.5">
           <span className="text-3xl font-semibold tracking-tight text-ink tabular-nums">
             {fmtCredits(status.credits)}

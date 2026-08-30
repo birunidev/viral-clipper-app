@@ -527,3 +527,85 @@ class PasswordResetToken(Base):
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+# --------------------------------------------------------------- credit wallet
+#
+# A user's *cloud* credit balance is the difference between two immutable
+# ledgers (income vs spend), kept in deciminutes (1 minute = 10 units) so
+# the spend path can round half-minutes up without floating-point.  The
+# desktop LICENSE is unrelated and lives in the `licenses` /
+# `entitlements` tables above.
+#
+# `User.credits` is kept as a denormalized cache so existing
+# /auth/me, /billing/status and pipeline hot-paths can read with one
+# query.  The cache is updated inside the same transaction as the ledger
+# insert, so a single read is always consistent with the sum of
+# (ledger - spend) for the most recent committed write.
+
+CREDIT_SOURCE_LICENSE_BUNDLE = "license_bundle"  # 60 free minutes on first license
+CREDIT_SOURCE_PADDLE = "paddle"
+CREDIT_SOURCE_MIDTRANS = "midtrans"
+CREDIT_SOURCE_DEV_SEED = "dev_seed"
+CREDIT_SOURCE_REFUND = "refund"
+CREDIT_SOURCE_TOPUP = "topup"
+
+
+class CreditLedger(Base):
+    """Immutable income rows.  Each row adds ``amount_dm`` (deciminutes) to
+    the user's wallet; balance = SUM(ledger) - SUM(spend).
+
+    ``order_id`` (when present) is the gateway's transaction id and is
+    unique per ``source`` so a redelivered webhook is a no-op instead of
+    a double-grant.
+    """
+
+    __tablename__ = "credit_ledger"
+    __table_args__ = (
+        UniqueConstraint("source", "order_id", name="uq_credit_ledger_source_order"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    # Deciminutes: 1 cloud minute = 10 units.  Always positive.
+    amount_dm: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # "paddle" | "midtrans" | "license_bundle" | "dev_seed" | "refund" | "topup"
+    source: Mapped[str] = mapped_column(String, nullable=False)
+    # Provider's transaction id when applicable; NULL for license bundles / dev seed.
+    order_id: Mapped[str | None] = mapped_column(String, index=True)
+    # Optional human-readable plan key (e.g. "unlimited" or "topup_60").
+    plan_key: Mapped[str | None] = mapped_column(String)
+    # NULL = no expiry; otherwise the row stops counting at ``expires_at``.
+    expires_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    note: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class CreditSpend(Base):
+    """Immutable spend rows.  Each row subtracts ``amount_dm`` from the
+    wallet when the user runs a metered action (cloud transcription, LLM
+    analysis, ...).  Created in the same transaction as the
+    ``User.credits`` decrement so the cached counter stays consistent.
+    """
+
+    __tablename__ = "credit_spend"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    # Deciminutes, always positive (the spend subtracts; we never write negatives).
+    amount_dm: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # "transcribe" | "llm" | "refund" | "admin_adjust" — future-proof.
+    purpose: Mapped[str] = mapped_column(String, nullable=False)
+    # The clip / job that triggered the spend (when applicable). Plain string,
+    # no FK — keeps the spend history even if the project is deleted.
+    job_id: Mapped[str | None] = mapped_column(String, index=True)
+    note: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

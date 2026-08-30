@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowSquareOut, GearSix, Shield, SignOut, SquaresFour } from "@phosphor-icons/react/dist/ssr";
+import { ArrowSquareOut, GearSix, Key, Shield, SignOut, SquaresFour } from "@phosphor-icons/react/dist/ssr";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
@@ -9,6 +9,7 @@ import { useAdminStatus } from "@/hooks/use-admin-updates";
 
 const ADMIN_NAV = [
   { href: "/admin/updates", label: "App updates", icon: Shield },
+  { href: "/admin/licenses", label: "Licenses", icon: Key },
 ];
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {

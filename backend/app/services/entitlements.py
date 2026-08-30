@@ -10,6 +10,9 @@ that the device they're on counts toward their seat.  This module owns:
   * Enforcing the per-license ``max_devices`` cap
   * Building the HMAC-signed ``signed_blob`` the desktop caches for
     offline use
+  * The cloud **credit wallet** (separate from the desktop license):
+    ``credit_ledger`` (income) + ``credit_spend`` (spend), reconciled
+    in the same transaction as the ``User.credits`` cache column.
 
 The function ``resolve_entitlement`` is the single entry point used by
 both the ``/entitlement/check`` endpoint and the dev-mode
@@ -27,10 +30,14 @@ import secrets
 import uuid
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from ..database import session_scope
 from ..models import (
+    CREDIT_SOURCE_LICENSE_BUNDLE,
+    CreditLedger,
+    CreditSpend,
     DeviceActivation,
     Entitlement,
     License,
@@ -417,3 +424,261 @@ def revoke_device(device_id_internal: str, owner_user_id: str) -> bool:
             return False
         row.is_revoked = True
         return True
+
+
+# ============================================================================
+# Cloud credit wallet (separate from the desktop license).
+#
+#   balance_dm(user) = SUM(ledger.amount_dm) - SUM(spend.amount_dm)
+#
+# All amounts are in **deciminutes** (1 minute = 10 units).  Storage
+# stays integer so cloud-transcription rounding (ceil to 0.1 min) is
+# lossless.  The denormalized ``User.credits`` column (whole minutes) is
+# updated inside the same transaction as the ledger/spend insert so
+# ``/auth/me`` and ``/billing/status`` reads see a consistent value.
+#
+# Concurrency: ``spend_credits`` takes a Postgres advisory lock keyed
+# on the user_id hash before reading-then-writing the balance, so two
+# concurrent transcriber jobs cannot both succeed when only one has
+# the balance.
+# ============================================================================
+
+
+# Free cloud minutes granted the first time a user buys a desktop license.
+LICENSE_BUNDLE_CREDITS_DM = 600  # 60 minutes
+
+
+def _user_advisory_lock_key(user_id: str) -> int:
+    """Stable 63-bit lock key from a user id (Postgres advisory lock)."""
+    import hashlib as _h
+    digest = _h.sha1(user_id.encode("utf-8")).digest()[:8]
+    # Mask the sign bit to stay in Postgres' bigint range.
+    return int.from_bytes(digest, "big", signed=False) & 0x7FFFFFFFFFFFFFFF
+
+
+def credits_balance_dm(user_id: str) -> int:
+    """Current cloud credit balance in deciminutes (may be negative? no — clamp at 0)."""
+    if not user_id:
+        return 0
+    with session_scope() as session:
+        income = session.execute(
+            select(func.coalesce(func.sum(CreditLedger.amount_dm), 0))
+            .where(
+                CreditLedger.user_id == user_id,
+                # Exclude expired bundles
+                (CreditLedger.expires_at.is_(None))
+                | (CreditLedger.expires_at > func.now()),
+            )
+        ).scalar_one()
+        spent = session.execute(
+            select(func.coalesce(func.sum(CreditSpend.amount_dm), 0))
+            .where(CreditSpend.user_id == user_id)
+        ).scalar_one()
+    bal = int(income) - int(spent)
+    return max(0, bal)
+
+
+def credits_balance_minutes(user_id: str) -> int:
+    """Same as :func:`credits_balance_dm` but in whole minutes (floor).
+    Matches the existing ``User.credits`` semantics so the API surface
+    and the cache column stay in step."""
+    return credits_balance_dm(user_id) // 10
+
+
+def _sync_user_credits_cache(session, user_id: str) -> None:
+    """Recompute the denormalized ``User.credits`` cache column (whole
+    minutes) and stamp it.  Caller must pass the same session that owns
+    the ledger/spend insert so the read-after-write is consistent."""
+    income = session.execute(
+        select(func.coalesce(func.sum(CreditLedger.amount_dm), 0))
+        .where(
+            CreditLedger.user_id == user_id,
+            (CreditLedger.expires_at.is_(None))
+            | (CreditLedger.expires_at > func.now()),
+        )
+    ).scalar_one()
+    spent = session.execute(
+        select(func.coalesce(func.sum(CreditSpend.amount_dm), 0))
+        .where(CreditSpend.user_id == user_id)
+    ).scalar_one()
+    new_minutes = max(0, (int(income) - int(spent)) // 10)
+    user_row = session.get(User, user_id)
+    if user_row is not None:
+        user_row.credits = new_minutes
+
+
+def grant_credits(
+    user_id: str,
+    amount_dm: int,
+    source: str,
+    order_id: str | None = None,
+    plan_key: str | None = None,
+    note: str | None = None,
+    expires_at: dt.datetime | None = None,
+) -> str:
+    """Add ``amount_dm`` deciminutes to the user's wallet.  Idempotent on
+    ``(source, order_id)`` so a redelivered webhook is a no-op.
+
+    Returns the ledger row id.  Updates the ``User.credits`` cache
+    column inside the same transaction.
+    """
+    if amount_dm <= 0:
+        raise ValueError("amount_dm must be > 0")
+    with session_scope() as session:
+        existing = None
+        if order_id:
+            existing = session.execute(
+                select(CreditLedger).where(
+                    CreditLedger.source == source,
+                    CreditLedger.order_id == order_id,
+                )
+            ).scalars().first()
+        if existing is not None:
+            # Idempotent re-delivery: do nothing.
+            return existing.id
+        row_id = uuid.uuid4().hex
+        try:
+            session.add(CreditLedger(
+                id=row_id,
+                user_id=user_id,
+                amount_dm=int(amount_dm),
+                source=source,
+                order_id=order_id,
+                plan_key=plan_key,
+                expires_at=expires_at,
+                note=note,
+            ))
+            session.flush()
+        except IntegrityError:
+            # Race: another concurrent request inserted the same
+            # (source, order_id) pair.  Treat as idempotent.
+            session.rollback()
+            return row_id
+        _sync_user_credits_cache(session, user_id)
+        return row_id
+
+
+def spend_credits(
+    user_id: str,
+    amount_dm: int,
+    purpose: str,
+    job_id: str | None = None,
+    note: str | None = None,
+) -> bool:
+    """Subtract ``amount_dm`` deciminutes from the user's wallet.  Returns
+    True on success, False if the balance is too low.  Concurrency-safe
+    via a Postgres advisory lock keyed on the user id.
+
+    The spend is recorded in ``credit_spend`` and the ``User.credits``
+    cache is updated in the same transaction.
+    """
+    if amount_dm <= 0:
+        raise ValueError("amount_dm must be > 0")
+    if not user_id:
+        return False
+    with session_scope() as session:
+        # Per-user lock: serialise all credit operations for this user
+        # so concurrent transcriber jobs can't both succeed when only
+        # one has the balance.
+        session.execute(
+            select(func.pg_advisory_xact_lock(_user_advisory_lock_key(user_id)))
+        )
+        income = session.execute(
+            select(func.coalesce(func.sum(CreditLedger.amount_dm), 0))
+            .where(
+                CreditLedger.user_id == user_id,
+                (CreditLedger.expires_at.is_(None))
+                | (CreditLedger.expires_at > func.now()),
+            )
+        ).scalar_one()
+        spent = session.execute(
+            select(func.coalesce(func.sum(CreditSpend.amount_dm), 0))
+            .where(CreditSpend.user_id == user_id)
+        ).scalar_one()
+        balance = int(income) - int(spent)
+        if balance < amount_dm:
+            return False
+        session.add(CreditSpend(
+            id=uuid.uuid4().hex,
+            user_id=user_id,
+            amount_dm=int(amount_dm),
+            purpose=purpose,
+            job_id=job_id,
+            note=note,
+        ))
+        session.flush()
+        _sync_user_credits_cache(session, user_id)
+        return True
+
+
+def grant_license_bundle_if_first_license(user_id: str) -> str | None:
+    """The one-time 60-minute cloud credit bundle the first desktop license
+    comes with.  Idempotent: returns the ledger row id on the first
+    grant, or ``None`` if the user already has a bundle (or already has
+    another active ``license_bundle`` row, which we treat as the
+    "received the bundle" signal)."""
+    with session_scope() as session:
+        already = session.execute(
+            select(CreditLedger.id)
+            .where(
+                CreditLedger.user_id == user_id,
+                CreditLedger.source == CREDIT_SOURCE_LICENSE_BUNDLE,
+            )
+            .limit(1)
+        ).scalars().first()
+        if already is not None:
+            return None
+    return grant_credits(
+        user_id=user_id,
+        amount_dm=LICENSE_BUNDLE_CREDITS_DM,
+        source=CREDIT_SOURCE_LICENSE_BUNDLE,
+        plan_key="license_bundle",
+        note="One-time 60-min cloud credit bundle on first desktop license",
+    )
+
+
+def list_credit_ledger(user_id: str, limit: int = 50) -> list[dict]:
+    """Audit view: most-recent income + spend rows for the wallet."""
+    with session_scope() as session:
+        income = session.execute(
+            select(CreditLedger)
+            .where(CreditLedger.user_id == user_id)
+            .order_by(CreditLedger.created_at.desc())
+            .limit(limit)
+        ).scalars().all()
+        spend = session.execute(
+            select(CreditSpend)
+            .where(CreditSpend.user_id == user_id)
+            .order_by(CreditSpend.created_at.desc())
+            .limit(limit)
+        ).scalars().all()
+    return {
+        "balance_minutes": credits_balance_minutes(user_id),
+        "ledger": [
+            {
+                "id": r.id,
+                "amount_minutes": r.amount_dm / 10,
+                "amount_dm": int(r.amount_dm),
+                "source": r.source,
+                "order_id": r.order_id,
+                "plan_key": r.plan_key,
+                "expires_at": r.expires_at.isoformat() if r.expires_at else None,
+                "note": r.note,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in income
+        ],
+        "spend": [
+            {
+                "id": r.id,
+                "amount_minutes": r.amount_dm / 10,
+                "amount_dm": int(r.amount_dm),
+                "purpose": r.purpose,
+                "job_id": r.job_id,
+                "note": r.note,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in spend
+        ],
+    }
+

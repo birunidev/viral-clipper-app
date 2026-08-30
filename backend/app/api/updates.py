@@ -25,7 +25,7 @@ from typing import Optional
 from fastapi import APIRouter, Cookie, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from ..database import session_scope
 from ..models import AppUpdate
@@ -567,4 +567,54 @@ async def upload_update(
         "size_bytes": size,
         "s3_key": s3_key,
     }
+
+
+# ----------------------------------------------------------------- admin: licenses
+
+# Read-only view of every desktop license, plus the owner's email and
+# the count of active (non-revoked, non-stale) devices.  Used by the
+# /admin/licenses page.  Gated on the same allowlist as
+# /update/{list,upload,delete}.
+
+
+@router.get("/admin/licenses", response_model=list[dict])
+def admin_list_licenses(_: SessionUser = Depends(_require_admin)) -> list[dict]:
+    """List every License row, newest first, joined to the owner.
+
+    Read-only — admins can see the table to support users; they cannot
+    revoke / reissue from here.  Those actions are owned by the user
+    on ``/app/licenses``.
+    """
+    from ..models import DeviceActivation, License, User
+
+    with session_scope() as session:
+        rows = session.execute(
+            select(License, User)
+            .outerjoin(User, User.id == License.user_id)
+            .order_by(License.created_at.desc())
+        ).all()
+        out: list[dict] = []
+        for lic, user in rows:
+            dev_count = 0
+            if user is not None:
+                dev_count = session.execute(
+                    select(func.count())
+                    .select_from(DeviceActivation)
+                    .where(
+                        DeviceActivation.user_id == user.id,
+                        DeviceActivation.is_revoked == False,  # noqa: E712
+                    )
+                ).scalar_one() or 0
+            out.append({
+                "id": lic.id,
+                "user_id": lic.user_id,
+                "user_email": (user.email if user else None) or "<orphan>",
+                "tier": lic.tier,
+                "is_valid": bool(lic.is_valid),
+                "issued_at": lic.created_at.isoformat() if lic.created_at else None,
+                "reissued_at": lic.reissued_at.isoformat() if lic.reissued_at else None,
+                "reissued_from_id": lic.reissued_from_id,
+                "device_count": int(dev_count),
+            })
+        return out
 

@@ -72,21 +72,39 @@ def byok_enabled() -> bool:
 
 
 def credit_balance(user_id: str) -> int:
+    """Whole-minute balance.  Reads the denormalized cache column on
+    ``users.credits``; the cache is kept in sync by the new ledger
+    service (app.services.entitlements.grant_credits / spend_credits).
+    """
     user = db.get_user(user_id)
     return int(user.get("credits") or 0) if user else 0
 
 
-def record_credits(user_id: str, seconds: float) -> int:
+def record_credits(user_id: str, seconds: float, job_id: str | None = None) -> int:
     """Deduct credits for a completed analysis (ceil to a whole minute).
 
     Returns the number of credits consumed (0 if the job is free/BYOK-less or
-    too short to meter). The deduction is a plain ceil of ``seconds/60``.
+    too short to meter). The deduction is routed through the new
+    credit-ledger service so ``credit_ledger`` / ``credit_spend`` and the
+    ``User.credits`` cache stay consistent. Returns 0 if the wallet
+    can't cover the spend (the pipeline doesn't block on this; it
+    gracefully degrades the user's balance).
     """
     if seconds <= 0:
         return 0
-    need = max(1, int(-(-seconds // 60)))
-    db.increment_user_credits(user_id, -need)
-    return need
+    # Convert seconds -> deciminutes (1 minute = 10 units), round UP.
+    need_dm = max(10, int(-(-int(seconds * 10) // 60)))
+    try:
+        from app.services.entitlements import spend_credits
+        ok = spend_credits(user_id, need_dm, purpose="transcribe", job_id=job_id)
+        if not ok:
+            return 0
+    except Exception:
+        # If the ledger service is unavailable (e.g. during a schema
+        # migration), don't break the analysis pipeline — the user's
+        # cache column will be slightly off until the next ledger write.
+        db.increment_user_credits(user_id, -(need_dm // 10))
+    return need_dm // 10
 
 
 def enforce_credits(user_id: str, estimated_seconds: float | None = None) -> None:
@@ -113,9 +131,9 @@ def grant_pack(user_id: str, pack_key: str) -> dict | None:
 
     Idempotent-ish: re-buying a pack re-adds its credit allowance but never
     *lowers* the tier. Returns the pack, or None if the key is unknown.
-    Credits are incremented atomically so a concurrent job deduction cannot
-    be overwritten (important when a Studio user buys a lower tier like
-    Starter — tier stays, credits must still add).
+
+    Routes the credit grant through the new ledger service so the
+    credit_ledger row + the ``User.credits`` cache stay in sync.
     """
     pack = pack_for_key(pack_key)
     if pack is None:
@@ -127,7 +145,18 @@ def grant_pack(user_id: str, pack_key: str) -> dict | None:
     )
     new_tier = pack["key"] if tier_rank(pack["key"]) >= tier_rank(current_tier) else current_tier
 
-    db.increment_user_credits(user_id, int(pack["credits"]))
+    try:
+        from app.services.entitlements import grant_credits
+        grant_credits(
+            user_id=user_id,
+            amount_dm=int(pack["credits"]) * 10,
+            source="plan",
+            plan_key=pack_key,
+            note=f"Pack purchase: {pack.get('name') or pack_key}",
+        )
+    except Exception:
+        # Fall back to the legacy denormalized bump if the ledger is unavailable.
+        db.increment_user_credits(user_id, int(pack["credits"]))
     db.set_user_billing(
         user_id,
         entitlement_tier=new_tier,
@@ -142,7 +171,17 @@ def grant_topup(user_id: str, topup_key: str) -> dict | None:
     if topup is None:
         return None
     user = db.get_user(user_id) or {}
-    db.increment_user_credits(user_id, int(topup["credits"]))
+    try:
+        from app.services.entitlements import grant_credits
+        grant_credits(
+            user_id=user_id,
+            amount_dm=int(topup["credits"]) * 10,
+            source="topup",
+            plan_key=topup_key,
+            note=f"Top-up: {topup.get('name') or topup_key}",
+        )
+    except Exception:
+        db.increment_user_credits(user_id, int(topup["credits"]))
     db.set_user_billing(
         user_id,
         plan_key=topup_key,

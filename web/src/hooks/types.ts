@@ -231,3 +231,17 @@ export type DeviceSummary = {
 export type PasswordResetResponse = {
   ok: true;
 };
+
+// ------------------------------------------------------------------ admin
+
+export type AdminLicenseRow = {
+  id: string;
+  user_id: string;
+  user_email: string;
+  tier: string;
+  is_valid: boolean;
+  issued_at: string;
+  reissued_at: string | null;
+  reissued_from_id: string | null;
+  device_count: number;
+};

@@ -269,10 +269,55 @@ def _checkout_midtrans(user: SessionUser, pack_key: str) -> CheckoutResponse:
     )
 
 
+# ------------------------------------------------------------------ web-only
+
+# Browsers send an Origin header on POST.  Acceptable origins for the
+# checkout flow: the public web app (`https://clipzard.web.id`) and the
+# local dev URL (http://localhost:3000, http://localhost:3005).  Anything
+# else (curl, scripts, the Electron app's null/file:// origin, missing
+# Origin) is a 403 — topup is web-only.
+ALLOWED_CHECKOUT_ORIGINS = frozenset({
+    "https://clipzard.web.id",
+    "http://localhost:3000",
+    "http://localhost:3005",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3005",
+    "http://127.0.0.1:8765",  # smoke-test stub
+})
+
+
+def _require_browser_origin(request: Request) -> None:
+    """Reject checkout calls that don't carry a browser Origin header.
+
+    Web-only check (decision 4 in the build plan).  The browser always
+    sends Origin on a POST; the desktop app sends ``null`` or
+    ``file://`` (already blocked by the CORS middleware); curl/SDKs
+    without an Origin header are 403'd here as a defense-in-depth.
+
+    Webhook receivers (Paddle, Midtrans) are NOT routed through this
+    check — they're authenticated by gateway signature instead.
+    """
+    origin = request.headers.get("origin")
+    if not origin:
+        raise HTTPException(status_code=403, detail="Missing Origin header")
+    if origin not in ALLOWED_CHECKOUT_ORIGINS:
+        raise HTTPException(status_code=403, detail="Origin not allowed")
+
+
 @router.post("/billing/checkout", response_model=CheckoutResponse)
 def create_checkout(
-    payload: CheckoutRequest, user: SessionUser = Depends(current_user)
+    request: Request,
+    payload: CheckoutRequest,
+    user: SessionUser = Depends(current_user),
 ) -> CheckoutResponse:
+    """Initiate a purchase for a credit pack, top-up, or desktop license.
+
+    Web-only: requires a real session AND a browser Origin header.  This
+    is the second of two gates — the first is the desktop renderer's
+    lack of a Buy button.  The Origin check stops curl / scripts / the
+    Electron app from calling this directly, even if it has a session.
+    """
+    _require_browser_origin(request)
     if purchasable_for_key(payload.plan_key) is None:
         raise HTTPException(status_code=400, detail=f"Unknown pack: {payload.plan_key!r}")
     provider = provider_for(payload.timezone, forced=payload.provider)
@@ -401,17 +446,35 @@ def _grant_paddle_pack(user_id: str, data: dict, event_type: str) -> None:
             return
 
     if is_topup_key(pack_key):
-        billing.grant_topup(user_id, pack_key)
-    else:
-        billing.grant_pack(user_id, pack_key)
-        # Create the server-side entitlement (one row per (user, license))
-        # so the desktop can authenticate and run.  Idempotent: re-issuing
-        # the same pack re-grants credits but only adds a new license row
-        # if no active entitlement exists for this user/tier.
+        # Pure topup: credits-only, no license change.
         try:
-            from ..services.entitlements import grant_license_for_user
+            from ..services.entitlements import grant_credits
+            grant_credits(
+                user_id=user_id,
+                amount_dm=int(pack.get("credits") or 0) * 10,
+                source="paddle",
+                order_id=str(custom.get("order_id") or "") or None,
+                plan_key=pack_key,
+                note=f"Paddle topup {pack_key}",
+            )
+        except Exception as e:
+            logger.exception("Failed to grant paddle topup credits for user=%s: %s", user_id, e)
+            billing.grant_topup(user_id, pack_key)
+    else:
+        # License-shaped pack: tier promotion + desktop license + the
+        # 60-minute cloud credit bundle on first license.
+        billing.grant_pack(user_id, pack_key)
+        try:
+            from ..services.entitlements import (
+                grant_license_bundle_if_first_license,
+                grant_license_for_user,
+            )
             lic_id, ent_id = grant_license_for_user(user_id, tier=pack_key)
-            logger.info("Entitlement granted for user=%s tier=%s license=%s ent=%s", user_id, pack_key, lic_id, ent_id)
+            bundle_id = grant_license_bundle_if_first_license(user_id)
+            logger.info(
+                "Entitlement granted for user=%s tier=%s license=%s ent=%s bundle=%s",
+                user_id, pack_key, lic_id, ent_id, bundle_id,
+            )
         except Exception as e:
             logger.exception("Failed to create entitlement for user=%s: %s", user_id, e)
     order_id = str(custom.get("order_id") or "")
@@ -552,13 +615,36 @@ async def midtrans_webhook(request: Request) -> dict:
             return {"ok": True, "deduplicated": True}
         before = billing.credit_balance(order["user_id"])
         if is_topup_key(order["plan_key"]):
-            billing.grant_topup(order["user_id"], order["plan_key"])
+            try:
+                from ..services.entitlements import grant_credits
+                # Resolve the configured credit count for the topup key.
+                from app.plans import topup_for_key
+                _topup = topup_for_key(order["plan_key"]) or {}
+                _credits = int(_topup.get("credits") or 0)
+                grant_credits(
+                    user_id=order["user_id"],
+                    amount_dm=_credits * 10,
+                    source="midtrans",
+                    order_id=order_id,
+                    plan_key=order["plan_key"],
+                    note=f"Midtrans topup {order['plan_key']}",
+                )
+            except Exception as e:
+                logger.exception("Failed to grant midtrans topup credits for user=%s: %s", order["user_id"], e)
+                billing.grant_topup(order["user_id"], order["plan_key"])
         else:
             billing.grant_pack(order["user_id"], order["plan_key"])
             try:
-                from ..services.entitlements import grant_license_for_user
+                from ..services.entitlements import (
+                    grant_license_bundle_if_first_license,
+                    grant_license_for_user,
+                )
                 lic_id, ent_id = grant_license_for_user(order["user_id"], tier=order["plan_key"])
-                logger.info("Entitlement granted for user=%s tier=%s license=%s ent=%s", order["user_id"], order["plan_key"], lic_id, ent_id)
+                bundle_id = grant_license_bundle_if_first_license(order["user_id"])
+                logger.info(
+                    "Entitlement granted for user=%s tier=%s license=%s ent=%s bundle=%s",
+                    order["user_id"], order["plan_key"], lic_id, ent_id, bundle_id,
+                )
             except Exception as e:
                 logger.exception("Failed to create entitlement for user=%s: %s", order["user_id"], e)
         after = billing.credit_balance(order["user_id"])
