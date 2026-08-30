@@ -175,3 +175,24 @@ export type Transaction = {
   status: string;
   created_at: string | null;
 };
+
+// ------------------------------------------------------------------ app updates
+
+export type AppUpdateRow = {
+  id: string;
+  version: string;
+  platform: string;
+  arch: string;
+  is_beta: boolean;
+  size_bytes: number;
+  sha512: string;
+  release_notes: string;
+  s3_key: string;
+  created_at: string | null;
+};
+
+export type AppUpdateAdminStatus = {
+  is_admin: boolean;
+  email: string | null;
+  admin_emails_configured: boolean;
+};

@@ -2,8 +2,10 @@
 
 Public read endpoints expose the latest published version per
 ``(platform, arch, channel)`` so the Electron auto-updater can decide
-whether to install a newer binary.  Upload is admin-only (env-based
-admin token + signed admin payload).
+whether to install a newer binary.  Upload is admin-only — admins are
+identified either by ``CLIPZARD_ADMIN_EMAILS`` (comma-separated allowlist
+matched against the logged-in user's email) or by a static
+``CLIPZARD_ADMIN_TOKEN`` (used by the CI upload CLI).
 
 S3 stores the binary; the backend streams it back to the client so the
 Electron app never sees S3 credentials.  The ``sha512`` hash is computed
@@ -18,39 +20,66 @@ import os
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Cookie, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
 from ..database import session_scope
 from ..models import AppUpdate
+from ..security import SESSION_COOKIE, SessionUser, get_user_from_session
 
 router = APIRouter(tags=["updates"])
 
 ALLOWED_PLATFORMS = {"win32", "darwin", "linux"}
 ALLOWED_ARCHES = {"ia32", "x64", "arm64"}
 ALLOWED_CHANNELS = {"stable", "beta"}
-ADMIN_ENV_VAR = "CLIPZARD_ADMIN_TOKEN"
+ADMIN_EMAILS_ENV = "CLIPZARD_ADMIN_EMAILS"
+ADMIN_TOKEN_ENV = "CLIPZARD_ADMIN_TOKEN"
+
+
+def _admin_emails() -> set[str]:
+    raw = os.environ.get(ADMIN_EMAILS_ENV, "")
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}
 
 
 def _admin_token() -> Optional[str]:
-    return os.environ.get(ADMIN_ENV_VAR, "").strip() or None
+    return os.environ.get(ADMIN_TOKEN_ENV, "").strip() or None
 
 
-def _require_admin(authorization: Optional[str] = Header(default=None)) -> None:
-    """Verify the admin token.  Token can be sent as ``Authorization: Bearer <token>``
-    or as the literal value (no scheme) for simplicity when invoked from CI."""
-    expected = _admin_token()
-    if not expected:
-        raise HTTPException(status_code=503, detail="admin upload disabled (CLIPZARD_ADMIN_TOKEN not set)")
-    if not authorization:
-        raise HTTPException(status_code=401, detail="missing admin token")
-    token = authorization.strip()
-    if token.lower().startswith("bearer "):
-        token = token[7:].strip()
-    if token != expected:
-        raise HTTPException(status_code=403, detail="invalid admin token")
+def _is_admin_user(user: Optional[SessionUser]) -> bool:
+    if user is None or not user.email:
+        return False
+    return user.email.lower() in _admin_emails()
+
+
+def _require_admin(
+    request: Request,
+    session: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE),
+    authorization: Optional[str] = Header(default=None),
+) -> SessionUser:
+    """Admin check with two paths:
+
+    1. **Session-cookie path** (web UI): the request must include a
+       valid session whose email is in ``CLIPZARD_ADMIN_EMAILS``.
+    2. **Bearer-token path** (CI/CLI): ``Authorization: Bearer <token>``
+       matching ``CLIPZARD_ADMIN_TOKEN`` (kept for backwards compatibility).
+    """
+    expected_token = _admin_token()
+    if expected_token and authorization:
+        token = authorization.strip()
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+        if token == expected_token:
+            # Synthetic admin principal — token auth does not bind a user.
+            return SessionUser(id="__token__", email="__token__", name="admin-token")
+    # Fall back to session-cookie auth
+    user = get_user_from_session(session)
+    if _is_admin_user(user):
+        return user
+    if user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    raise HTTPException(status_code=403, detail="Admin access required")
 
 
 def _parse_version(v: str) -> tuple[int, ...]:
@@ -59,7 +88,6 @@ def _parse_version(v: str) -> tuple[int, ...]:
     v = (v or "").strip()
     if not v:
         return (0,)
-    # Split off any pre-release suffix (e.g. "0.2.0-beta.1")
     core = v.split("-", 1)[0]
     parts: list[int] = []
     for p in core.split("."):
@@ -68,7 +96,6 @@ def _parse_version(v: str) -> tuple[int, ...]:
         except ValueError:
             parts.append(0)
     is_prerelease = "-" in v
-    # Add a high number for release so 0.2.0 > 0.2.0-beta.1
     return (*parts, 0 if is_prerelease else 1)
 
 
@@ -125,10 +152,8 @@ def check_update(
         ).scalars().all()
         candidates = [r for r in rows if _is_newer(r.version, version)]
         if not candidates:
-            # No newer version found in this channel — return 204 (no body)
             from fastapi import Response
             return Response(status_code=204)
-        # Pick the highest-versioned candidate
         best = max(candidates, key=lambda r: _parse_version(r.version))
         return _check_response(best, request)
 
@@ -142,9 +167,7 @@ def download_update(
 ):
     """Stream the S3 binary for ``(platform, arch, version)``.
 
-    Streams via FastAPI so the client never sees S3 credentials.  Uses a
-    ranged GET to avoid loading the entire binary into memory; falls back
-    to streaming the body for older boto3 versions.
+    Streams via FastAPI so the client never sees S3 credentials.
     """
     if platform not in ALLOWED_PLATFORMS or arch not in ALLOWED_ARCHES:
         raise HTTPException(status_code=400, detail="invalid platform/arch")
@@ -166,8 +189,6 @@ def download_update(
         size = int(row.size_bytes or 0)
         binary_name = f"clipzard-{platform}-{arch}-{version}{'-beta' if row.is_beta else ''}.bin"
 
-    # Resolve S3 helpers lazily so import-time failures (e.g. boto3 missing
-    # in CI) don't break the rest of the app.
     try:
         from core import s3
     except Exception as exc:  # pragma: no cover
@@ -196,31 +217,71 @@ def download_update(
 
 
 class UpdateRow(BaseModel):
+    id: str
     version: str
     platform: str
     arch: str
     is_beta: bool
     size_bytes: int
+    sha512: str
+    release_notes: str
+    s3_key: str
     created_at: Optional[str] = None
 
 
+@router.get("/update/admin-status")
+def admin_status(
+    session: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE),
+) -> dict:
+    """Returns whether the current session is an admin (for nav visibility)."""
+    user = get_user_from_session(session)
+    return {
+        "is_admin": _is_admin_user(user),
+        "email": user.email if user else None,
+        "admin_emails_configured": bool(_admin_emails()),
+    }
+
+
 @router.get("/update/list", response_model=list[UpdateRow])
-def list_updates(authorization: Optional[str] = Header(default=None)):
+def list_updates(_: SessionUser = Depends(_require_admin)):
     """Admin-only: list all published updates (most recent first)."""
-    _require_admin(authorization)
     with session_scope() as session:
         rows = session.execute(select(AppUpdate).order_by(AppUpdate.created_at.desc())).scalars().all()
         return [
             UpdateRow(
+                id=r.id,
                 version=r.version,
                 platform=r.platform,
                 arch=r.arch,
                 is_beta=bool(r.is_beta),
                 size_bytes=int(r.size_bytes or 0),
+                sha512=r.sha512 or "",
+                release_notes=r.release_notes or "",
+                s3_key=r.s3_key or "",
                 created_at=r.created_at.isoformat() if r.created_at else None,
             )
             for r in rows
         ]
+
+
+@router.delete("/update/{update_id}")
+def delete_update(update_id: str, _: SessionUser = Depends(_require_admin)):
+    """Admin-only: delete an update record and its S3 object."""
+    from core import s3
+    with session_scope() as session:
+        row = session.execute(
+            select(AppUpdate).where(AppUpdate.id == update_id).limit(1)
+        ).scalars().first()
+        if not row:
+            raise HTTPException(status_code=404, detail="update not found")
+        s3_key = row.s3_key
+        if s3_key:
+            try:
+                s3.delete_object(s3._get_bucket(), s3_key)
+            except Exception as e:
+                print(f"[updates] failed to delete S3 object {s3_key}: {e}")
+        session.delete(row)
+    return {"ok": True}
 
 
 @router.post("/update/upload")
@@ -231,15 +292,14 @@ async def upload_update(
     arch: str = Form(...),
     release_notes: str = Form(""),
     is_beta: str = Form("false"),
-    authorization: Optional[str] = Header(default=None),
+    _: SessionUser = Depends(_require_admin),
 ):
     """Admin-only: stream an installer binary to S3 and record metadata.
 
     Computes ``sha512`` on the fly so a corrupt upload is detected before
-    it reaches the bucket.  Rejects uploads for ``(platform, arch,
-    version, is_beta)`` combinations that already exist.
+    it reaches the bucket.  Upserts on ``(platform, arch, version, is_beta)``;
+    uploading the same combination again overwrites the previous binary.
     """
-    _require_admin(authorization)
     if platform not in ALLOWED_PLATFORMS:
         raise HTTPException(status_code=400, detail=f"invalid platform: {platform}")
     if arch not in ALLOWED_ARCHES:
@@ -255,25 +315,8 @@ async def upload_update(
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=500, detail=f"s3 backend unavailable: {exc}")
 
-    bucket = s3._get_bucket()
-    client = s3._client()
-
-    # Upload in a single PUT while computing SHA512 incrementally.
     hasher = hashlib.sha512()
     size = 0
-    try:
-        upload = client.put_object(
-            Bucket=bucket,
-            Key=s3_key,
-            # Use a placeholder body, then replace with file-like below
-            Body=b"",
-            ContentType="application/octet-stream",
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"failed to start S3 upload: {exc}")
-
-    # Multipart upload for large files; boto3's upload_fileobj is fine for
-    # arbitrary sizes and supports streaming.
     try:
         from boto3.s3.transfer import TransferConfig
         config = TransferConfig(
@@ -281,8 +324,7 @@ async def upload_update(
             multipart_chunksize=8 * 1024 * 1024,
             use_threads=False,
         )
-        file_obj = file.file
-        # Wrap to compute hash as bytes flow through
+
         class _HashingReader:
             def __init__(self, inner):
                 self._inner = inner
@@ -296,10 +338,15 @@ async def upload_update(
             def readable(self):
                 return True
 
-        reader = _HashingReader(file_obj)
-        client.upload_fileobj(reader, bucket, s3_key, Config=config, ExtraArgs={"ContentType": "application/octet-stream"})
-        # Determine total size: the wrapper can't track it; ask S3 for HEAD
-        head = client.head_object(Bucket=bucket, Key=s3_key)
+        reader = _HashingReader(file.file)
+        s3._client().upload_fileobj(
+            reader,
+            s3._get_bucket(),
+            s3_key,
+            Config=config,
+            ExtraArgs={"ContentType": "application/octet-stream"},
+        )
+        head = s3._client().head_object(Bucket=s3._get_bucket(), Key=s3_key)
         size = int(head.get("ContentLength", 0))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"S3 upload failed: {exc}")
@@ -316,7 +363,6 @@ async def upload_update(
             ).limit(1)
         ).scalars().first()
         if existing:
-            # Update metadata in place; the file has already been overwritten in S3.
             existing.release_notes = release_notes or ""
             existing.sha512 = sha512_hex
             existing.size_bytes = size
@@ -347,3 +393,4 @@ async def upload_update(
         "size_bytes": size,
         "s3_key": s3_key,
     }
+

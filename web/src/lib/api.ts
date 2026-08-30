@@ -89,3 +89,27 @@ export const api = {
     request<T>(path, { method: "PUT", body: body !== undefined ? JSON.stringify(body) : undefined }),
   delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 };
+
+/**
+ * Multipart upload helper for the updates admin UI. Uses the native
+ * browser FormData (no body serialization), so the request layer above
+ * is bypassed. Credentials are included to send the session cookie.
+ */
+export async function uploadForm<T>(path: string, form: FormData): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+  if (!res.ok) {
+    let message = res.statusText;
+    try {
+      const body = await res.json();
+      message = body.detail ?? body.error ?? message;
+    } catch {
+      // no JSON body
+    }
+    throw new ApiError(res.status, message);
+  }
+  return res.json() as Promise<T>;
+}
