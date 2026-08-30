@@ -31,7 +31,7 @@ export default function SettingsPage() {
   const pct = cap > 0 ? Math.min(100, (used / cap) * 100) : 0;
 
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-6">
+    <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-6">
       <div>
         <h1 className="text-[22px] font-semibold tracking-tight text-ink">Settings</h1>
         <p className="mt-1 text-sm text-ink-tertiary">

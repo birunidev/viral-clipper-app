@@ -179,6 +179,14 @@ async function desktopRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (restoreMatch && method === "POST") return (await (d.projectRestore as (id:string)=>Promise<unknown>)(restoreMatch[1])) as T;
   const purgeMatch = path.match(/^\/projects\/([^/]+)\/purge$/);
   if (purgeMatch && method === "DELETE") return (await (d.projectPurge as (id:string)=>Promise<unknown>)(purgeMatch[1])) as T;
+  const renderedMatch = path.match(/^\/projects\/([^/]+)\/clips\/([^/]+)\/rendered$/);
+  if (renderedMatch) {
+    if (method === "DELETE") return (await (d.clipDeleteRendered as (p:string,c:string)=>Promise<unknown>)(renderedMatch[1], renderedMatch[2])) as T;
+    if (method === "GET") {
+      const clip = await (d.jobGet as (id:string)=>Promise<unknown>)(renderedMatch[2]) as Record<string, unknown>;
+      return clip as T;
+    }
+  }
   if (path.startsWith("/uploads/presign") && method === "POST") throw new ApiError(400, "Upload via local file picker — use Choose file in dashboard (local)");
 
   throw new ApiError(404, `Desktop IPC: no handler for ${method} ${path}`);

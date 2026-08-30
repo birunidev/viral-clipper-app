@@ -121,7 +121,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <SignOut size={18} />
           </button>
         </div>
-        <main className="flex-1 px-4 py-6 md:px-8 md:py-8">{children}</main>
+        <main className="flex-1 px-4 py-6 md:px-10 md:py-8 lg:px-8">{children}</main>
       </div>
     </div>
   );

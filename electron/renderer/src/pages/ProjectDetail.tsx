@@ -5,12 +5,15 @@ import {
   CircleNotch,
   ClosedCaptioning,
   Download,
+  Eye,
   FilmReel,
+  FolderOpen,
   Lightning,
   Play,
   Scissors,
   SlidersHorizontal,
   Terminal,
+  Trash,
   Warning,
   Waveform,
   X,
@@ -24,6 +27,7 @@ import { SourceTypeIcon } from "@/components/project/source-icon";
 import {
   useCancelJob,
   useCaptionStyles,
+  useDeleteRenderedClip,
   useJob,
   useJobLogs,
   useProject,
@@ -209,9 +213,10 @@ export default function ProjectPage() {
 
   const lastJob = project?.jobs.find((j) => j.type === "analyze");
   const clips = project?.clips ?? [];
+  const renderedClips = clips.filter((c) => Boolean(c.signed_video_url));
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-6">
+    <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-6">
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
@@ -348,6 +353,25 @@ export default function ProjectPage() {
         )}
       </Card>
 
+      {/* Rendered outputs gallery */}
+      {renderedClips.length > 0 && (
+        <div className="rounded-xl border border-success/20 bg-success-soft/20 p-4">
+          <div className="flex items-center gap-2">
+            <div className="flex h-7 w-7 items-center justify-center rounded-full bg-success text-white">
+              <Check size={14} weight="bold" />
+            </div>
+            <h2 className="text-sm font-semibold text-ink">Rendered outputs</h2>
+            <span className="rounded-full bg-success px-2 py-0.5 text-xs font-medium tabular-nums text-white">{renderedClips.length}</span>
+            <span className="ml-auto hidden text-xs text-ink-tertiary sm:block">{renderedClips.length} ready to preview, locate or delete</span>
+          </div>
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {renderedClips.map((clip) => (
+              <RenderedMiniCard key={clip.id} clip={clip} projectId={project!.id} />
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Clips */}
       <div className="flex flex-col gap-4">
         <div className="flex items-center justify-between">
@@ -358,7 +382,7 @@ export default function ProjectPage() {
         </div>
 
         {projectQuery.isLoading && (
-          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {[0, 1, 2].map((i) => (
               <Card key={i} className="overflow-hidden">
                 <Skeleton className="aspect-video w-full rounded-none" />
@@ -380,7 +404,7 @@ export default function ProjectPage() {
         )}
 
         {project && (
-          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {clips.map((clip) => (
               <ClipCard key={clip.id} clip={clip} project={project} />
             ))}
@@ -400,6 +424,7 @@ export default function ProjectPage() {
  */
 function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [renderedPreviewOpen, setRenderedPreviewOpen] = useState(false);
   const [captionsOpen, setCaptionsOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
   const [selectedStyleId, setSelectedStyleId] = useState<string | null>(
@@ -407,16 +432,59 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
   );
   const captionStylesQuery = useCaptionStyles();
   const billingQuery = useBilling();
+  const deleteRendered = useDeleteRenderedClip(project.id);
   // Client-side (WebCodecs) render first, transparent server fallback.
   const renderClip = useSmartRenderClip(project.id, billingQuery.data);
   const [localProgress, setLocalProgress] = useState<number | null>(null);
   const [renderError, setRenderError] = useState("");
-  const renderJobId = clip.render_job?.id;
-  const renderJobQuery = useJob(renderJobId ?? "");
-  const renderJob = renderJobQuery.data ?? clip.render_job;
+  const [optimisticRenderJob, setOptimisticRenderJob] = useState<import("@/hooks/types").Job | null>(null);
+  const renderJobId = optimisticRenderJob?.id ?? clip.render_job?.id ?? "";
+  const renderJobQuery = useJob(renderJobId);
+  const renderJob = renderJobQuery.data ?? optimisticRenderJob ?? clip.render_job ?? null;
   const isRendering = renderJob?.status === "queued" || renderJob?.status === "running";
 
   useRefreshProjectOnJobDone(project.id, renderJobQuery.data);
+
+  // Keep optimistic in sync / clear when job finishes or project refetches with final clip
+  useEffect(() => {
+    if (renderJobQuery.data && optimisticRenderJob && renderJobQuery.data.id === optimisticRenderJob.id) {
+      if (renderJobQuery.data.status === "completed" || renderJobQuery.data.status === "failed" || renderJobQuery.data.status === "cancelled") {
+        setOptimisticRenderJob(null);
+      } else {
+        setOptimisticRenderJob(renderJobQuery.data as import("@/hooks/types").Job);
+      }
+    }
+    // If project now has signed_video_url, the render succeeded — clear optimistic
+    if (clip.signed_video_url && optimisticRenderJob) {
+      const q = renderJobQuery.data;
+      if (q?.status === "completed" || clip.render_job === null) {
+        // keep until query confirms completed, but allow clear if clip already has video
+      }
+    }
+  }, [renderJobQuery.data, optimisticRenderJob, clip.signed_video_url, clip.render_job]);
+
+  // Listen to live job:progress for this clip's render job (instant, no poll delay)
+  useEffect(() => {
+    const w = window as unknown as { clipzard?: { onJobProgress?: (cb: (d: unknown) => void) => () => void } };
+    const off = w.clipzard?.onJobProgress?.((data) => {
+      const d = data as { jobId?: string; projectId?: string; clipId?: string; stage?: string; progress?: number };
+      if (d.clipId === clip.id && d.jobId) {
+        renderJobQuery.refetch?.();
+        // also patch optimistic progress for immediate UI
+        if (optimisticRenderJob && d.jobId === optimisticRenderJob.id) {
+          setOptimisticRenderJob((prev) => prev ? ({ ...prev, stage: d.stage ?? prev.stage, progress: typeof d.progress === "number" ? d.progress : prev.progress } as import("@/hooks/types").Job) : prev);
+        }
+      }
+    });
+    return () => { off?.(); };
+  }, [clip.id, optimisticRenderJob]);
+
+  // Clear stale "already in progress" error once the job is gone / failed
+  useEffect(() => {
+    if (!isRendering && renderError.includes("already in progress")) {
+      setRenderError("");
+    }
+  }, [isRendering, renderError]);
 
   // A client-side render lives entirely in this tab's memory — closing or
   // reloading mid-render loses the work (and any in-flight registration).
@@ -439,14 +507,26 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
   const filename = `${clip.title.replace(/[^\w]+/g, "-").toLowerCase() || "clip"}.mp4`;
   const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipzard?: unknown }).clipzard;
   // Resolve absolute local path from media:// URL for save dialog
+  // Handles both media:///C:/... (triple slash) and media://C:/... and Windows leading slash
   const localClipPath = (() => {
     const u = clip.signed_video_url ?? clip.video_url;
     if (!u) return null;
-    if (u.startsWith("media://")) return decodeURIComponent(u.slice("media://".length));
-    return null;
+    if (u.startsWith("media://")) {
+      let p = decodeURIComponent(u.slice("media://".length));
+      // Strip leading slash for Windows drive paths like /C:/Users/...
+      if (p.startsWith("/") && /^[a-zA-Z]:/.test(p.slice(1))) p = p.slice(1);
+      if (p.startsWith("\\") && /^[a-zA-Z]:/.test(p.slice(1))) p = p.slice(1);
+      return p;
+    }
+    return u;
   })();
 
   function handleRender(styleId: string | null) {
+    // Block until done: ignore if already rendering (either server job or local)
+    if (isRendering || renderClip.isPending || localProgress !== null) {
+      setRenderError("Render already in progress — please wait until it finishes.");
+      return;
+    }
     setSelectedStyleId(styleId);
     setCaptionsOpen(false);
     setLocalProgress(0);
@@ -471,7 +551,21 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
         onFallback: () => setLocalProgress(null),
       },
       {
-        onError: (err) => setRenderError(err.message),
+        onSuccess: (res) => {
+          if (res?.mode === "server" && res.job) {
+            setOptimisticRenderJob(res.job as import("@/hooks/types").Job);
+          } else if (res?.mode === "client" && res.clip) {
+            // client path already downloaded; refresh project to show download button
+          }
+        },
+        onError: (err) => {
+          const msg = err.message ?? String(err);
+          if (msg.includes("Render already")) {
+            setRenderError("Render already in progress — please wait until it finishes.");
+            return;
+          }
+          setRenderError(msg);
+        },
         onSettled: () => setLocalProgress(null),
       }
     );
@@ -480,6 +574,26 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
   function handleSaveAndRenderFromEditor(styleId: string) {
     setEditorOpen(false);
     handleRender(styleId);
+  }
+
+  async function handleLocateRendered() {
+    if (!localClipPath) return;
+    const cf = (window as unknown as { clipzard?: { shellShowItemInFolder?: (p: string) => Promise<void> } }).clipzard;
+    try {
+      await cf?.shellShowItemInFolder?.(localClipPath);
+    } catch (e) {
+      setRenderError(String((e as Error).message));
+    }
+  }
+
+  async function handleDeleteRendered() {
+    if (!window.confirm(`Delete rendered output for "${clip.title}"? This removes the file at ${localClipPath ?? "rendered location"} and you'll need to re-render.`)) return;
+    try {
+      await deleteRendered.mutateAsync(clip.id);
+      setRenderError("");
+    } catch (e) {
+      setRenderError(String((e as Error).message));
+    }
   }
 
   return (
@@ -538,23 +652,35 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
             </span>
           </div>
 
-          <div className="mt-2 flex items-center gap-2">
+          <div className="mt-2 flex flex-col gap-2">
             {isRendering || renderClip.isPending ? (
-              <div className="flex flex-1 items-center gap-2 rounded-lg border border-line bg-surface-2 px-3 py-1.5 text-xs text-ink-secondary">
-                <CircleNotch size={13} className="animate-spin" />
-                {localProgress !== null ? (
-                  <>
-                    <span className="whitespace-nowrap">Rendering locally…</span>
-                    <span className="ml-auto tabular-nums">
-                      {Math.round(localProgress * 100)}%
-                    </span>
-                  </>
-                ) : (
-                  <>Rendering… {renderJob?.progress ?? 0}%</>
-                )}
+              <div className="flex flex-col gap-2 rounded-lg border border-accent/20 bg-accent-soft px-3 py-2">
+                <div className="flex items-center gap-2 text-xs font-medium text-accent-strong">
+                  <CircleNotch size={13} className="animate-spin" />
+                  {localProgress !== null ? (
+                    <>
+                      <span className="whitespace-nowrap">Rendering locally…</span>
+                      <span className="ml-auto tabular-nums">
+                        {Math.round(localProgress * 100)}%
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="whitespace-nowrap">{renderJob?.stage === "cutting" ? "Cutting clip…" : renderJob?.stage === "queued" ? "Queued…" : "Rendering…"}</span>
+                      <span className="ml-auto tabular-nums">{renderJob?.progress ?? 0}%</span>
+                    </>
+                  )}
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/40">
+                  <div
+                    className="h-full rounded-full bg-accent transition-all duration-300"
+                    style={{ width: `${Math.max(4, localProgress !== null ? Math.round(localProgress * 100) : (renderJob?.progress ?? 0))}%` }}
+                  />
+                </div>
+                {renderJob?.stage && <span className="text-[10px] text-ink-tertiary capitalize">{renderJob.stage}</span>}
               </div>
             ) : (
-              <>
+              <div className="flex items-center gap-2">
                 {canDownload && (
                   <Button
                     size="sm"
@@ -602,13 +728,21 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
                   size="sm"
                   variant={canDownload ? "ghost" : "secondary"}
                   className={canDownload ? "" : "flex-1"}
-                  onClick={() => setCaptionsOpen((v) => !v)}
+                  onClick={() => {
+                    if (isRendering || renderClip.isPending) {
+                      setRenderError("Render already in progress — please wait until it finishes.");
+                      return;
+                    }
+                    setCaptionsOpen((v) => !v);
+                  }}
                   loading={renderClip.isPending}
+                  disabled={isRendering || renderClip.isPending}
+                  title={isRendering ? "Render in progress — please wait" : undefined}
                 >
                   <Scissors size={13} />
                   {canDownload ? "Change captions" : "Render for download"}
                 </Button>
-              </>
+              </div>
             )}
           </div>
 
@@ -616,6 +750,12 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
             <p className="mt-1 flex items-start gap-1.5 text-xs text-danger">
               <Warning size={13} weight="fill" className="mt-0.5 shrink-0" />
               <span className="pretty">{renderError}</span>
+            </p>
+          )}
+          {renderJob?.status === "failed" && (renderJob as unknown as { error?: string })?.error && !isRendering && !renderError && (
+            <p className="mt-1 flex items-start gap-1.5 text-xs text-danger">
+              <Warning size={13} weight="fill" className="mt-0.5 shrink-0" />
+              <span className="pretty">{String((renderJob as unknown as { error?: string }).error).slice(0, 300)}</span>
             </p>
           )}
 
@@ -629,7 +769,7 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
                     styles={captionStylesQuery.data ?? []}
                     selectedId={selectedStyleId}
                     onSelect={handleRender}
-                    disabled={renderClip.isPending}
+                    disabled={renderClip.isPending || Boolean(isRendering)}
                   />
                   {hasCaptionWords && canPreview && (
                     <Button
@@ -648,6 +788,31 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
                   )}
                 </>
               )}
+            </div>
+          )}
+
+          {canDownload && !isRendering && (
+            <div className="mt-1 rounded-lg border border-success/20 bg-success-soft/40 p-3">
+              <div className="flex items-center gap-2 text-xs font-medium text-success">
+                <Check size={12} weight="bold" />
+                Rendered output ready
+                <span className="ml-auto hidden sm:block max-w-[160px] truncate font-mono text-[10px] text-ink-tertiary">{localClipPath?.split(/[/\\]/).pop()}</span>
+              </div>
+              <div className="mt-2 flex gap-2">
+                <Button size="sm" variant="primary" onClick={() => setRenderedPreviewOpen(true)} className="flex-1">
+                  <Eye size={13} />
+                  Preview
+                </Button>
+                <Button size="sm" variant="secondary" onClick={handleLocateRendered} title={localClipPath ?? ""}>
+                  <FolderOpen size={13} />
+                  Locate
+                </Button>
+                <Button size="sm" variant="ghost" onClick={handleDeleteRendered} loading={deleteRendered.isPending} className="text-danger hover:bg-danger-soft hover:text-danger">
+                  <Trash size={13} />
+                  Delete
+                </Button>
+              </div>
+              {localClipPath && <p className="mt-2 truncate font-mono text-[10px] text-ink-tertiary">{localClipPath}</p>}
             </div>
           )}
         </div>
@@ -679,7 +844,7 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
             initialConfig={
               selectedStyleId
                 ? (captionStylesQuery.data?.find((s) => s.id === selectedStyleId)
-                    ?.config as Record<string, unknown> | undefined)
+                     ?.config as Record<string, unknown> | undefined)
                 : undefined
             }
             onCancel={() => setEditorOpen(false)}
@@ -687,6 +852,17 @@ function ClipCard({ clip, project }: { clip: Clip; project: ProjectDetail }) {
             isRendering={renderClip.isPending}
           />
         </CaptionEditorModal>
+      )}
+
+      {renderedPreviewOpen && canDownload && clip.signed_video_url && (
+        <RenderedPreview
+          videoUrl={clip.signed_video_url}
+          title={clip.title}
+          filePath={localClipPath}
+          onClose={() => setRenderedPreviewOpen(false)}
+          onLocate={handleLocateRendered}
+          onDelete={handleDeleteRendered}
+        />
       )}
     </>
   );
@@ -856,5 +1032,166 @@ function SeekPreview({
         </div>
       </div>
     </div>
+  );
+}
+
+function RenderedPreview({
+  videoUrl,
+  title,
+  filePath,
+  onClose,
+  onLocate,
+  onDelete,
+}: {
+  videoUrl: string;
+  title: string;
+  filePath: string | null;
+  onClose: () => void;
+  onLocate: () => void;
+  onDelete: () => void;
+}) {
+  useEffect(() => {
+    const original = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = original;
+    };
+  }, []);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Rendered preview: ${title}`}
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-2xl overflow-hidden rounded-xl border border-line bg-surface-1 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-line px-4 py-3">
+          <div className="flex items-center gap-2 text-sm font-medium text-ink">
+            <Eye size={14} className="text-success" />
+            {title}
+            <span className="ml-1 rounded-full bg-success-soft px-2 py-0.5 text-[10px] font-medium text-success">Rendered</span>
+          </div>
+          <button
+            onClick={onClose}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-ink-tertiary hover:bg-surface-2 hover:text-ink"
+            aria-label="Close preview"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="bg-black">
+          <video src={videoUrl} controls autoPlay className="aspect-video w-full bg-black" />
+        </div>
+        <div className="flex flex-col gap-2 border-t border-line bg-surface-2 p-3">
+          {filePath && <p className="truncate font-mono text-[10px] text-ink-tertiary">{filePath}</p>}
+          <div className="flex gap-2">
+            <Button size="sm" variant="secondary" onClick={onLocate} className="flex-1">
+              <FolderOpen size={13} />
+              Show in folder
+            </Button>
+            <Button size="sm" variant="ghost" onClick={onDelete} className="text-danger hover:bg-danger-soft hover:text-danger">
+              <Trash size={13} />
+              Delete rendered
+            </Button>
+            <Button size="sm" variant="ghost" onClick={onClose}>
+              <X size={13} />
+              Close
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RenderedMiniCard({ clip, projectId }: { clip: Clip; projectId: string }) {
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const deleteRendered = useDeleteRenderedClip(projectId);
+  const videoUrl = clip.signed_video_url ?? clip.video_url;
+  const localPath = (() => {
+    const u = clip.signed_video_url ?? clip.video_url;
+    if (!u) return null;
+    if (u.startsWith("media://")) {
+      let p = decodeURIComponent(u.slice("media://".length));
+      if (p.startsWith("/") && /^[a-zA-Z]:/.test(p.slice(1))) p = p.slice(1);
+      if (p.startsWith("\\") && /^[a-zA-Z]:/.test(p.slice(1))) p = p.slice(1);
+      return p;
+    }
+    return u;
+  })();
+
+  async function handleLocate() {
+    if (!localPath) return;
+    const cf = (window as unknown as { clipzard?: { shellShowItemInFolder?: (p: string) => Promise<void> } }).clipzard;
+    try {
+      await cf?.shellShowItemInFolder?.(localPath);
+    } catch {}
+  }
+
+  async function handleDelete() {
+    if (!window.confirm(`Delete rendered output for "${clip.title}"?`)) return;
+    try {
+      await deleteRendered.mutateAsync(clip.id);
+    } catch {}
+  }
+
+  return (
+    <>
+      <Card className="overflow-hidden">
+        <div className="relative aspect-video bg-black">
+          {videoUrl ? (
+            <video src={videoUrl} className="h-full w-full object-cover" muted playsInline preload="metadata" />
+          ) : (
+            <div className="flex h-full items-center justify-center bg-surface-2 text-ink-muted">
+              <FilmReel size={20} />
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => setPreviewOpen(true)}
+            className="absolute inset-0 flex items-center justify-center bg-black/30 opacity-0 transition-opacity hover:opacity-100"
+          >
+            <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white/90 text-ink">
+              <Play size={18} weight="fill" />
+            </span>
+          </button>
+          <span className="absolute left-2 top-2 rounded-full bg-success px-2 py-0.5 text-[10px] font-medium text-white">Rendered</span>
+        </div>
+        <div className="p-3">
+          <p className="truncate text-sm font-medium text-ink">{clip.title}</p>
+          <p className="mt-1 truncate font-mono text-[10px] text-ink-tertiary">{localPath?.split(/[/\\]/).pop()}</p>
+          <div className="mt-2 flex gap-1.5">
+            <Button size="sm" variant="primary" onClick={() => setPreviewOpen(true)} className="flex-1">
+              <Eye size={12} />
+              Preview
+            </Button>
+            <Button size="sm" variant="secondary" onClick={handleLocate} title={localPath ?? ""}>
+              <FolderOpen size={12} />
+            </Button>
+            <Button size="sm" variant="ghost" onClick={handleDelete} loading={deleteRendered.isPending} className="px-2 text-danger hover:bg-danger-soft hover:text-danger">
+              <Trash size={12} />
+            </Button>
+          </div>
+        </div>
+      </Card>
+      {previewOpen && videoUrl && (
+        <RenderedPreview
+          videoUrl={videoUrl}
+          title={clip.title}
+          filePath={localPath}
+          onClose={() => setPreviewOpen(false)}
+          onLocate={handleLocate}
+          onDelete={() => {
+            setPreviewOpen(false);
+            handleDelete();
+          }}
+        />
+      )}
+    </>
   );
 }

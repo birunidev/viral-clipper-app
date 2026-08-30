@@ -138,10 +138,12 @@ export function useRenderClip(projectId: string) {
       clipId: string;
       orientation: string;
       captionStyleId?: string | null;
+      captionConfig?: Record<string, unknown> | null;
     }) =>
       api.post<Job>(`/projects/${projectId}/clips/${payload.clipId}/render`, {
         orientation: payload.orientation,
         caption_style_id: payload.captionStyleId ?? null,
+        caption_config: payload.captionConfig ?? null,
       }),
     onSuccess: (job) => {
       queryClient.setQueryData(jobKey(job.id), job);
@@ -192,12 +194,25 @@ export function useSmartRenderClip(
       // Desktop: 100% local ffmpeg — no S3, no mediabunny. Use serverRender path which maps to main.ts jobs:render → local file.
       if (isDesktop) {
         payload.onFallback?.(); // not needed but keeps parity
-        const job = await serverRender.mutateAsync({
-          clipId: payload.clip.id,
-          orientation: payload.orientation,
-          captionStyleId: payload.captionStyleId ?? null,
-        });
-        return { mode: "server", job };
+        try {
+          const job = await serverRender.mutateAsync({
+            clipId: payload.clip.id,
+            orientation: payload.orientation,
+            captionStyleId: payload.captionStyleId ?? null,
+            captionConfig: payload.captionStyleConfig ?? null,
+          });
+          return { mode: "server", job };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          // Legacy main threw "Render already queued"; new main returns existing job.
+          // Handle both gracefully: surface as existing job so UI shows progress (block until done).
+          if (msg.includes("Render already")) {
+            // Try to surface existing job from cache; invalidate to refetch real render_job
+            // The main now returns existing, so this path only hits old binaries.
+            throw new Error("Render already in progress — please wait until it finishes.");
+          }
+          throw err;
+        }
       }
       const { clip, sourceUrl } = payload;
       if (
@@ -233,6 +248,7 @@ export function useSmartRenderClip(
             clipId: clip.id,
             orientation: payload.orientation,
             captionStyleId: payload.captionStyleId ?? null,
+            captionConfig: payload.captionStyleConfig ?? null,
           });
           return { mode: "server", job };
         }
@@ -290,6 +306,7 @@ export function useSmartRenderClip(
         clipId: clip.id,
         orientation: payload.orientation,
         captionStyleId: payload.captionStyleId ?? null,
+        captionConfig: payload.captionStyleConfig ?? null,
       });
       return { mode: "server", job };
     },
@@ -382,6 +399,46 @@ export function useCancelJob() {
     onSuccess: (_data, jobId) => {
       queryClient.invalidateQueries({ queryKey: jobKey(jobId) });
       queryClient.invalidateQueries({ queryKey: projectsKey });
+    },
+  });
+}
+
+export function useDeleteRenderedClip(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (clipId: string) => api.delete<void>(`/projects/${projectId}/clips/${clipId}/rendered`),
+    onMutate: async (clipId) => {
+      await queryClient.cancelQueries({ queryKey: projectKey(projectId) });
+      const previous = queryClient.getQueryData<ProjectDetail>(projectKey(projectId));
+      // Optimistic: clear video URLs immediately so UI reflects without waiting for refetch
+      queryClient.setQueryData<ProjectDetail>(projectKey(projectId), (old) => {
+        if (!old) return old;
+        const patchClip = (c: Clip) =>
+          c.id === clipId ? { ...c, video_url: null, signed_video_url: null, caption_style_id: null, render_job: null } : c;
+        // Handle both flat and nested shapes (main returns both)
+        const maybeNested = old as unknown as { project?: ProjectDetail };
+        if (maybeNested.project && Array.isArray((maybeNested.project as unknown as { clips?: unknown }).clips)) {
+          // shouldn't happen, but be safe
+        }
+        return {
+          ...old,
+          clips: old.clips.map(patchClip),
+        } as ProjectDetail;
+      });
+      return { previous };
+    },
+    onError: (_err, _clipId, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(projectKey(projectId), context.previous);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: projectKey(projectId) });
+      queryClient.invalidateQueries({ queryKey: projectsKey });
+    },
+    onSettled: () => {
+      // Ensure fresh data from disk
+      queryClient.invalidateQueries({ queryKey: projectKey(projectId) });
     },
   });
 }

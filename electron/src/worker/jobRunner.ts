@@ -457,12 +457,15 @@ async function handleRender(msg: StartRenderMsg) {
   const { cutClip } = await import("../services/cutter.js");
   const { buildAss, cropDimensions } = await import("../services/captions.js");
   const { clipsDir, thumbsDir } = await import("../services/storage.js");
+  const { ffmpegPath } = await import("../services/bin.js");
 
   const { project, clip, opts, jobId, projectId } = msg;
+  console.log(`[jobRunner][render] jobId=${jobId} projectId=${projectId} clipId=${clip.id} orientation=${opts.orientation} hasCaptionConfig=${!!opts.caption_config} captionStyleId=${opts.caption_style_id}`);
+  console.log(`[jobRunner][render] ffmpegPath=${ffmpegPath()} exists=${fs.existsSync(ffmpegPath())} sourceKey=${String(project.source_key ?? "")} exists=${String(project.source_key ?? "") ? fs.existsSync(String(project.source_key)) : false} clipCaptionJsonLen=${String(clip.caption_json ?? "").length}`);
   const sourceKey = String(project.source_key ?? "");
   if (!sourceKey || !fs.existsSync(sourceKey)) throw new Error("no source video");
   const orientation: string = opts.orientation ?? "portrait";
-  const captionConfig = opts.caption_config ?? null;
+  const captionConfig = (opts.caption_config as Record<string, unknown> | null) ?? (opts as unknown as { captionConfig?: Record<string, unknown> }).captionConfig ?? null;
 
   parentPort?.postMessage({ type: "progress", stage: "cutting", progress: 2 });
 
@@ -481,7 +484,21 @@ async function handleRender(msg: StartRenderMsg) {
   }
 
   const outDir = clipsDir(projectId);
-  const out = await cutClip(sourceKey, Number(clip.start_time), Number(clip.end_time), String(clip.title), outDir, 1, orientation, assPath, null, null);
+  let out: string;
+  try {
+    out = await cutClip(sourceKey, Number(clip.start_time), Number(clip.end_time), String(clip.title), outDir, 1, orientation, assPath, null, null);
+  } catch (e) {
+    const msg = String((e as Error).message ?? "");
+    // If subtitles caused failure (e.g. bad ASS path with spaces, missing font), retry without subtitles to at least produce video
+    if (assPath && msg.includes("FFmpeg failed")) {
+      console.warn(`[jobRunner][render] cut with subtitles failed, retrying without subtitles: ${msg.slice(0, 500)}`);
+      try { if (assPath) fs.unlinkSync(assPath); } catch {}
+      assPath = null;
+      out = await cutClip(sourceKey, Number(clip.start_time), Number(clip.end_time), String(clip.title), outDir, 1, orientation, null, null, null);
+    } else {
+      throw e;
+    }
+  }
 
   // Ensure thumbnail if missing
   let thumbPath = clip.thumbnail_url;

@@ -27,7 +27,9 @@ function escapeFilterPath(p: string): string {
 
 function subtitlesFilterFor(assPath: string, fontsDir?: string): string {
   const e = escapeFilterPath(assPath);
-  return fontsDir ? `subtitles=${e}:fontsdir=${escapeFilterPath(fontsDir)}` : `subtitles=${e}`;
+  // Wrap in single quotes to handle Windows paths with spaces (e.g. C:\Users\AL EL FAMILY\...)
+  // FFmpeg libass expects the filename to be quoted when it contains spaces or special chars
+  return fontsDir ? `subtitles='${e}':fontsdir='${escapeFilterPath(fontsDir)}'` : `subtitles='${e}'`;
 }
 
 function scaleFilter(maxRes?: number | null): string | null {
@@ -59,15 +61,27 @@ export function cutClip(src: string, start: number, end: number, title: string, 
   fs.mkdirSync(outDir, { recursive: true });
   const cmd = buildCommand(src, start, end, title, outDir, index, orientation, subtitlesPath, fontsDir, maxResolution);
   const outPath = cmd[cmd.length - 1];
+  console.log(`[cutter] ffmpeg bin=${cmd[0]} exists=${fs.existsSync(String(cmd[0]))} src=${src} start=${start} end=${end} out=${outPath}`);
+  console.log(`[cutter] cmd: ${cmd.join(" ")}`);
+  if (subtitlesPath) console.log(`[cutter] subtitlesPath=${subtitlesPath} exists=${fs.existsSync(String(subtitlesPath))} fontsDir=${fontsDir}`);
   return new Promise((resolve, reject) => {
     const [bin, ...args] = cmd;
     const p = spawn(bin, args, { stdio: "pipe" });
     let stderr = "";
+    let stdout = "";
     p.stderr.on("data", (d) => (stderr += d.toString()));
-    p.on("error", (e) => reject(new CutterError(String(e))));
+    p.stdout.on("data", (d) => (stdout += d.toString()));
+    p.on("error", (e) => {
+      console.error(`[cutter] spawn error bin=${bin} err=${String(e)} exists=${fs.existsSync(String(bin))}`);
+      reject(new CutterError(`FFmpeg spawn failed for ${title}: ${String(e)} (bin=${bin})`));
+    });
     p.on("close", (code) => {
+      console.log(`[cutter] close code=${code} stderr=${stderr.slice(0, 2000)} stdout=${stdout.slice(0, 500)} outExists=${fs.existsSync(outPath)}`);
       if (code === 0 && fs.existsSync(outPath)) resolve(outPath);
-      else reject(new CutterError(`FFmpeg failed for ${title}: ${stderr.split("\n").pop() ?? "unknown"}`));
+      else {
+        const fullErr = (stderr || stdout || `exit code ${code}`).trim().slice(0, 2000) || "unknown";
+        reject(new CutterError(`FFmpeg failed for ${title}: ${fullErr} (bin=${bin} code=${code})`));
+      }
     });
   });
 }

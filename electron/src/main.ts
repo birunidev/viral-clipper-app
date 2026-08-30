@@ -58,7 +58,14 @@ function createWindow() {
 }
 
 function isSafeMediaPath(p: string): string | null {
-  const normalized = path.normalize(p);
+  let toCheck = p;
+  // Handle Windows media:// style paths like /C:/Users/... or \C:\Users\... (from media:// URLs)
+  if (process.platform === "win32") {
+    if ((toCheck.startsWith("/") || toCheck.startsWith(path.sep)) && /^[a-zA-Z]:/.test(toCheck.slice(1))) {
+      toCheck = toCheck.slice(1);
+    }
+  }
+  const normalized = path.normalize(toCheck);
   const roots = [
     path.normalize(path.join(app.getPath("userData"), "projects")),
     path.normalize(path.join(app.getPath("userData"), "youtube-cache")),
@@ -67,6 +74,11 @@ function isSafeMediaPath(p: string): string | null {
   ];
   if (roots.some((r) => normalized.startsWith(r))) return normalized;
   if (process.platform === "win32" && /^[a-zA-Z]:\\/.test(normalized) && roots.some((r) => normalized.toLowerCase().startsWith(r.toLowerCase()))) return normalized;
+  // Fallback: also check with forward-slash normalized version for media:// decoded paths
+  const forwardNormalized = toCheck.replace(/\\/g, "/");
+  const forwardRoots = roots.map((r) => r.replace(/\\/g, "/"));
+  if (forwardRoots.some((r) => forwardNormalized.startsWith(r))) return normalized;
+  if (process.platform === "win32" && /^[a-zA-Z]:\//.test(forwardNormalized) && forwardRoots.some((r) => forwardNormalized.toLowerCase().startsWith(r.toLowerCase()))) return normalized;
   return null;
 }
 
@@ -165,6 +177,18 @@ app.whenReady().then(async () => {
 
   await seedCaptionStyles();
   startJobWatchdog();
+  // Immediate sweep for orphan jobs left from previous run (before map empty + restart)
+  void (async () => {
+    try {
+      const rows = await dbFetchAll<Record<string, unknown>>("SELECT id, project_id, clip_id, status FROM jobs WHERE status IN ('running','queued')");
+      for (const r of rows) {
+        const jobId = String(r.id);
+        if (!activeUtilities.has(jobId)) {
+          await reconcileRunningJob(jobId, String(r.project_id), r.clip_id ? String(r.clip_id) : undefined, "orphan after restart");
+        }
+      }
+    } catch {}
+  })();
 
   // Onboarding gate: if never completed/skipped, show /onboarding first (capcut-like)
   try {
@@ -380,24 +404,63 @@ ipcMain.handle("projects:get", async (_e, id: string) => {
   if (!project) return null;
   const jobs = await dbFetchAll<Record<string, unknown>>("SELECT * FROM jobs WHERE project_id=? ORDER BY created_at DESC", [id]);
   const rawClips = await dbFetchAll<Record<string, unknown>>("SELECT * FROM clips WHERE project_id=? ORDER BY start_time", [id]);
-  const clips = rawClips.map((c) => {
+  const clips: Record<string, unknown>[] = [];
+  for (const c of rawClips) {
     let parsedCaption: unknown = c.caption_json;
     if (typeof parsedCaption === "string" && parsedCaption.trim()) {
       try { parsedCaption = JSON.parse(parsedCaption as string); } catch { parsedCaption = null; }
     }
-    return {
+    // Active render job for this clip (queued/running) — lets UI show progress + block duplicate renders
+    // Don't return orphan rows (no live utility) so a crashed/restarted job doesn't block new renders forever.
+    // Actual DB cleanup is done in jobs:render / watchdog — here we just hide stale.
+    let renderJob: Record<string, unknown> | undefined = await dbFetchOne<Record<string, unknown>>(
+      "SELECT * FROM jobs WHERE clip_id=? AND type='render' AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1",
+      [c.id as string]
+    );
+    if (renderJob && !activeUtilities.has(String(renderJob.id))) {
+      renderJob = undefined;
+    }
+    // Which style produced current video_url (if any) — mirrors backend/app/api/projects.py
+    let captionStyleId: string | null = null;
+    if (c.video_url) {
+      const lastRender = await dbFetchOne<Record<string, unknown>>(
+        "SELECT options FROM jobs WHERE clip_id=? AND type='render' AND status='completed' ORDER BY updated_at DESC LIMIT 1",
+        [c.id as string]
+      );
+      if (lastRender?.options) {
+        try {
+          const opts = JSON.parse(String(lastRender.options));
+          captionStyleId = (opts.caption_style_id as string) ?? null;
+        } catch {}
+      }
+    }
+    clips.push({
       ...c,
       caption_json: parsedCaption as unknown,
       video_url: toMediaUrl(c.video_url as string | null),
       thumbnail_url: toMediaUrl(c.thumbnail_url as string | null),
       signed_video_url: toMediaUrl(c.video_url as string | null),
       signed_thumbnail_url: toMediaUrl(c.thumbnail_url as string | null),
-    };
-  });
+      render_job: renderJob ?? null,
+      caption_style_id: captionStyleId,
+    });
+  }
   const words = await dbFetchAll<Record<string, unknown>>("SELECT * FROM timeline_words WHERE project_id=? ORDER BY idx", [id]);
   const sourceUrl = toMediaUrl(project.source_key as string | null) ?? toMediaUrl(project.source as string | null);
-  // Provide both naming conventions for renderer compat (web expects source_video_url, desktop legacy expects source_url)
-  return { project: { ...project, source_url: sourceUrl, signed_source_url: sourceUrl, source_video_url: sourceUrl, signed_source_video_url: sourceUrl }, jobs, clips, words, source_url: sourceUrl, source_video_url: sourceUrl };
+  // Provide both shapes for renderer compat: flat ProjectDetail (web expects top-level id/title/clips/jobs) + nested `project` for legacy
+  const flat: Record<string, unknown> = {
+    ...project,
+    source_url: sourceUrl,
+    signed_source_url: sourceUrl,
+    source_video_url: sourceUrl,
+    signed_source_video_url: sourceUrl,
+    jobs,
+    clips,
+    words,
+    project: { ...project, source_url: sourceUrl, signed_source_url: sourceUrl, source_video_url: sourceUrl, signed_source_video_url: sourceUrl },
+    source_key: project.source_key,
+  };
+  return flat;
 });
 
 ipcMain.handle("projects:create", async (_e, data: { title: string; source: string; sourceType?: string }) => {
@@ -462,6 +525,7 @@ const audioRetriedProjects = new Set<string>();
 // If a job is still marked running/queued but its backing utility is gone
 // (crashed, OOM-killed, or exited without a done/error message), reconcile it
 // to 'failed' instead of leaving a zombie "running" row that never progresses.
+// Render jobs (clipId present) do NOT affect project status.
 async function reconcileRunningJob(jobId: string, projectId: string, clipId?: string, reason = "utility vanished") {
   try {
     const j = await dbFetchOne<Record<string, unknown>>("SELECT status FROM jobs WHERE id=?", [jobId]);
@@ -469,7 +533,9 @@ async function reconcileRunningJob(jobId: string, projectId: string, clipId?: st
     if (st === "running" || st === "queued") {
       console.warn(`[main] reconciling orphan job ${jobId} (${st}) -> failed: ${reason}`);
       await dbExecute("UPDATE jobs SET status='failed', error=?, stage=NULL, updated_at=? WHERE id=?", [reason.slice(0, 500), nowIso(), jobId]);
-      await dbExecute("UPDATE projects SET status='failed', updated_at=? WHERE id=?", [nowIso(), projectId]);
+      if (!clipId) {
+        await dbExecute("UPDATE projects SET status='failed', updated_at=? WHERE id=?", [nowIso(), projectId]);
+      }
       win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "failed", error: reason });
     }
   } catch {}
@@ -537,10 +603,14 @@ async function runJobInUtility(jobId: string, projectId: string, clipId?: string
   const jobType = String(job.type ?? "analyze");
 
   // Mark running immediately (main owns DB, not utility)
+  // Render jobs (clipId) are per-clip and do NOT affect overall project status
   const now = nowIso();
-  await dbExecute("UPDATE jobs SET status='running', stage='downloading', progress=2, updated_at=? WHERE id=?", [now, jobId]);
-  await dbExecute("UPDATE projects SET status='running', updated_at=? WHERE id=?", [now, projectId]);
-  win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "downloading", progress: 2 });
+  const initialStage = clipId ? "cutting" : "downloading";
+  await dbExecute("UPDATE jobs SET status='running', stage=?, progress=2, updated_at=? WHERE id=?", [initialStage, now, jobId]);
+  if (!clipId) {
+    await dbExecute("UPDATE projects SET status='running', updated_at=? WHERE id=?", [now, projectId]);
+  }
+  win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: initialStage, progress: 2 });
 
   // For analyze, include cached timeline_words if any (so utility can skip transcribe on re-run)
   let cachedWords: unknown[] | undefined;
@@ -560,7 +630,9 @@ async function runJobInUtility(jobId: string, projectId: string, clipId?: string
     console.error("[main] utilityProcess.fork failed", e);
     try {
       await dbExecute("UPDATE jobs SET status='failed', error=? WHERE id=?", [String((e as Error).message).slice(0, 500), jobId]);
-      await dbExecute("UPDATE projects SET status='failed' WHERE id=?", [projectId]);
+      if (!clipId) {
+        await dbExecute("UPDATE projects SET status='failed' WHERE id=?", [projectId]);
+      }
     } catch {}
     win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "failed", error: String(e) });
     return;
@@ -782,7 +854,9 @@ async function runJobInUtility(jobId: string, projectId: string, clipId?: string
       } catch {}
       try {
         await dbExecute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?", [err.slice(0, 500), nowIso(), jobId]);
-        await dbExecute("UPDATE projects SET status='failed', updated_at=? WHERE id=?", [nowIso(), projectId]);
+        if (!clipId) {
+          await dbExecute("UPDATE projects SET status='failed', updated_at=? WHERE id=?", [nowIso(), projectId]);
+        }
       } catch {}
       win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "failed", error: err });
     }
@@ -794,7 +868,9 @@ async function runJobInUtility(jobId: string, projectId: string, clipId?: string
     activeUtilities.delete(jobId);
     try {
       await dbExecute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?", [String(err).slice(0, 500), nowIso(), jobId]);
-      await dbExecute("UPDATE projects SET status='failed', updated_at=? WHERE id=?", [nowIso(), projectId]);
+      if (!clipId) {
+        await dbExecute("UPDATE projects SET status='failed', updated_at=? WHERE id=?", [nowIso(), projectId]);
+      }
     } catch {}
     win?.webContents.send("job:progress", { jobId, projectId, clipId, stage: "failed", error: String(err) });
   });
@@ -826,14 +902,45 @@ ipcMain.handle("jobs:start", async (_e, { projectId, opts }: { projectId: string
 
 ipcMain.handle("jobs:render", async (_e, { projectId, clipId, opts }: { projectId: string; clipId: string; opts?: Record<string, unknown> }) => {
   if (!(await isLicensed())) throw new Error("License required");
+  if (!projectId || projectId === "undefined" || !clipId || clipId === "undefined") {
+    console.error("[main] jobs:render invalid ids", { projectId, clipId });
+    throw new Error("Invalid project or clip ID — please refresh the project page");
+  }
   const existing = await dbFetchOne<Record<string, unknown>>("SELECT * FROM jobs WHERE project_id=? AND clip_id=? AND status IN ('queued','running')", [projectId, clipId]);
-  if (existing) throw new Error("Render already queued");
+  if (existing) {
+    const child = activeUtilities.get(String(existing.id));
+    if (!child) {
+      // Orphaned (app restart / crash) — fail it so user can re-render immediately instead of hanging.
+      console.log(`[main] jobs:render found orphan ${existing.id} status=${existing.status} — reconciling then allowing new render`);
+      await reconcileRunningJob(String(existing.id), String(existing.project_id), existing.clip_id ? String(existing.clip_id) : undefined, "orphan render reconciled on new render request");
+      // Fall through to create new job
+    } else {
+      // Truly running — block until done
+      console.log(`[main] jobs:render duplicate blocked — returning existing ${existing.id} status=${existing.status}`);
+      return existing;
+    }
+  }
   const id = randomUUID();
   const now = nowIso();
-  await dbExecute("INSERT INTO jobs (id, project_id, type, clip_id, status, stage, progress, options, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)", [id, projectId, "render", clipId, "queued", "queued", 0, JSON.stringify(opts ?? {}), now, now]);
+  // Enrich opts with full caption config if only style id was sent (so subtitles are actually burned)
+  let enrichedOpts: Record<string, unknown> = { ...(opts ?? {}) };
+  const styleId = enrichedOpts.caption_style_id ?? enrichedOpts.captionStyleId;
+  if (styleId && !enrichedOpts.caption_config && !enrichedOpts.captionConfig) {
+    try {
+      const style = await dbFetchOne<Record<string, unknown>>("SELECT config FROM caption_styles WHERE id=? OR key=?", [String(styleId), String(styleId)]);
+      if (style?.config) {
+        const cfg = typeof style.config === "string" ? JSON.parse(style.config as string) : style.config;
+        enrichedOpts.caption_config = cfg;
+        enrichedOpts.caption_style_id = styleId;
+      }
+    } catch {}
+  }
+  // Normalize camelCase to snake_case for worker
+  if (enrichedOpts.captionConfig && !enrichedOpts.caption_config) enrichedOpts.caption_config = enrichedOpts.captionConfig;
+  await dbExecute("INSERT INTO jobs (id, project_id, type, clip_id, status, stage, progress, options, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)", [id, projectId, "render", clipId, "queued", "queued", 0, JSON.stringify(enrichedOpts), now, now]);
   void (async () => runJobInUtility(id, projectId, clipId))();
   const job = await dbFetchOne<Record<string, unknown>>("SELECT * FROM jobs WHERE id=?", [id]);
-  return job ?? { id, project_id: projectId, type: "render", clip_id: clipId, status: "queued", stage: "queued", progress: 0, options: JSON.stringify(opts ?? {}), created_at: now, updated_at: now };
+  return job ?? { id, project_id: projectId, type: "render", clip_id: clipId, status: "queued", stage: "queued", progress: 0, options: JSON.stringify(enrichedOpts), created_at: now, updated_at: now };
 });
 
 ipcMain.handle("jobs:cancel", async (_e, jobId: string) => {
@@ -844,22 +951,25 @@ ipcMain.handle("jobs:cancel", async (_e, jobId: string) => {
     activeUtilities.delete(jobId);
   }
   try {
-    const j = await dbFetchOne<Record<string, unknown>>("SELECT id, project_id, status FROM jobs WHERE id=?", [jobId]);
+    const j = await dbFetchOne<Record<string, unknown>>("SELECT id, project_id, clip_id, type, status FROM jobs WHERE id=?", [jobId]);
     if (j && (j.status === "queued" || j.status === "running")) {
       const projectId = String(j.project_id);
+      const isRender = Boolean(j.clip_id) || String(j.type) === "render";
       await dbExecute("UPDATE jobs SET status='cancelled', stage=NULL, progress=0, error='cancelled', updated_at=? WHERE id=?", [nowIso(), jobId]);
-      await dbExecute("UPDATE projects SET status='cancelled', updated_at=? WHERE id=?", [nowIso(), projectId]);
-      await dbExecute("DELETE FROM timeline_words WHERE project_id=?", [projectId]);
+      if (!isRender) {
+        await dbExecute("UPDATE projects SET status='cancelled', updated_at=? WHERE id=?", [nowIso(), projectId]);
+        await dbExecute("DELETE FROM timeline_words WHERE project_id=?", [projectId]);
+        const proj = await dbFetchOne<Record<string, unknown>>("SELECT source_key FROM projects WHERE id=?", [projectId]);
+        if (proj?.source_key) {
+          try { if (fs.existsSync(proj.source_key as string)) fs.unlinkSync(proj.source_key as string); } catch {}
+          await dbExecute("UPDATE projects SET source_key=NULL WHERE id=?", [projectId]);
+        }
+      }
       await dbExecute("DELETE FROM job_logs WHERE job_id=?", [jobId]);
       const logId = randomUUID();
       try { await dbExecute("INSERT INTO job_logs (id, job_id, ts, level, stage, message) VALUES (?,?,?,?,?,?)", [logId, jobId, nowIso(), "warn", "cancelled", "Stopped by user — next run will start from scratch."]); } catch {}
       win?.webContents.send("job:log", { jobId, projectId, log: { id: logId, ts: nowIso(), level: "warn", stage: "cancelled", message: "Stopped by user — next run will start from scratch." } });
-      const proj = await dbFetchOne<Record<string, unknown>>("SELECT source_key FROM projects WHERE id=?", [projectId]);
-      if (proj?.source_key) {
-        try { if (fs.existsSync(proj.source_key as string)) fs.unlinkSync(proj.source_key as string); } catch {}
-        await dbExecute("UPDATE projects SET source_key=NULL WHERE id=?", [projectId]);
-      }
-      win?.webContents.send("job:progress", { jobId, projectId, stage: "cancelled", error: "cancelled", progress: 0 });
+      win?.webContents.send("job:progress", { jobId, projectId, stage: "cancelled", error: "cancelled", progress: 0, clipId: j.clip_id ? String(j.clip_id) : undefined });
     }
   } catch {}
   return { ok: true };
@@ -874,14 +984,38 @@ ipcMain.handle("jobs:clearLogs", async (_e, jobId: string) => {
   return { ok: true };
 });
 ipcMain.handle("clips:list", async (_e, projectId: string) => await dbFetchAll<Record<string, unknown>>("SELECT * FROM clips WHERE project_id=? ORDER BY start_time", [projectId]));
+ipcMain.handle("clips:deleteRendered", async (_e, { projectId, clipId }: { projectId: string; clipId: string }) => {
+  const clip = await dbFetchOne<Record<string, unknown>>("SELECT * FROM clips WHERE id=? AND project_id=?", [clipId, projectId]);
+  if (!clip) throw new Error("Clip not found");
+  const videoPath = String(clip.video_url ?? "");
+  if (videoPath) {
+    const safe = isSafeMediaPath(videoPath);
+    const target = safe ?? videoPath;
+    try { if (fs.existsSync(target)) fs.unlinkSync(target); } catch {}
+  }
+  await dbExecute("UPDATE clips SET video_url=NULL WHERE id=?", [clipId]);
+  // Cancel any queued/running render job for this clip
+  const activeRender = await dbFetchOne<Record<string, unknown>>("SELECT id FROM jobs WHERE clip_id=? AND status IN ('queued','running')", [clipId]);
+  if (activeRender) {
+    await dbExecute("UPDATE jobs SET status='cancelled', error='render output deleted', updated_at=? WHERE id=?", [nowIso(), String(activeRender.id)]);
+  }
+  return { ok: true };
+});
 ipcMain.handle("dialog:openVideo", async () => {
   const res = await dialog.showOpenDialog(win!, { properties: ["openFile"], filters: [{ name: "Video", extensions: ["mp4", "mov", "mkv", "webm", "avi", "m4v"] }] });
   if (res.canceled || !res.filePaths[0]) return null;
   return res.filePaths[0];
 });
 ipcMain.handle("dialog:saveVideo", async (_e, { sourcePath, defaultName }: { sourcePath: string; defaultName?: string }) => {
-  const safe = isSafeMediaPath(sourcePath);
-  if (!safe) throw new Error("forbidden path");
+  let toCheck = sourcePath;
+  if (process.platform === "win32" && (toCheck.startsWith("/") || toCheck.startsWith(path.sep)) && /^[a-zA-Z]:/.test(toCheck.slice(1))) {
+    toCheck = toCheck.slice(1);
+  }
+  const safe = isSafeMediaPath(toCheck) ?? isSafeMediaPath(sourcePath) ?? (fs.existsSync(toCheck) ? toCheck : fs.existsSync(sourcePath) ? sourcePath : null);
+  if (!safe) {
+    console.error(`[main] dialog:saveVideo forbidden: original=${sourcePath} toCheck=${toCheck}`);
+    throw new Error(`forbidden path: ${sourcePath}`);
+  }
   if (!fs.existsSync(safe)) throw new Error("file not found");
   const { canceled, filePath } = await dialog.showSaveDialog(win!, {
     defaultPath: defaultName ?? path.basename(safe),
@@ -892,14 +1026,28 @@ ipcMain.handle("dialog:saveVideo", async (_e, { sourcePath, defaultName }: { sou
   return filePath;
 });
 ipcMain.handle("shell:showItemInFolder", async (_e, filePath: string) => {
-  const safe = isSafeMediaPath(filePath) ?? (fs.existsSync(filePath) ? filePath : null);
-  if (!safe) throw new Error("forbidden");
+  let toCheck = filePath;
+  if (process.platform === "win32" && (toCheck.startsWith("/") || toCheck.startsWith(path.sep)) && /^[a-zA-Z]:/.test(toCheck.slice(1))) {
+    toCheck = toCheck.slice(1);
+  }
+  const safe = isSafeMediaPath(toCheck) ?? isSafeMediaPath(filePath) ?? (fs.existsSync(toCheck) ? toCheck : fs.existsSync(filePath) ? filePath : null);
+  if (!safe) {
+    console.error(`[main] shell:showItemInFolder forbidden: original=${filePath} toCheck=${toCheck} existsOriginal=${fs.existsSync(filePath)} existsToCheck=${fs.existsSync(toCheck)} isSafeOriginal=${!!isSafeMediaPath(filePath)} isSafeToCheck=${!!isSafeMediaPath(toCheck)}`);
+    throw new Error(`forbidden: ${filePath}`);
+  }
   shell.showItemInFolder(safe);
   return { ok: true };
 });
 ipcMain.handle("shell:openPath", async (_e, filePath: string) => {
-  const safe = isSafeMediaPath(filePath) ?? (fs.existsSync(filePath) ? filePath : null);
-  if (!safe) throw new Error("forbidden");
+  let toCheck = filePath;
+  if (process.platform === "win32" && (toCheck.startsWith("/") || toCheck.startsWith(path.sep)) && /^[a-zA-Z]:/.test(toCheck.slice(1))) {
+    toCheck = toCheck.slice(1);
+  }
+  const safe = isSafeMediaPath(toCheck) ?? isSafeMediaPath(filePath) ?? (fs.existsSync(toCheck) ? toCheck : fs.existsSync(filePath) ? filePath : null);
+  if (!safe) {
+    console.error(`[main] shell:openPath forbidden: original=${filePath} toCheck=${toCheck}`);
+    throw new Error(`forbidden: ${filePath}`);
+  }
   const r = await shell.openPath(safe);
   if (r) throw new Error(r);
   return { ok: true };

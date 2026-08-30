@@ -133,7 +133,7 @@ export default function DashboardPage() {
   const isUploading = createProject.isPending;
 
   return (
-    <div className="mx-auto flex max-w-4xl flex-col gap-8">
+    <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-[22px] font-semibold tracking-tight text-ink">

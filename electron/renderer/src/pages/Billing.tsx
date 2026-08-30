@@ -32,7 +32,7 @@ export default function BillingPage() {
   const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipzard?: unknown }).clipzard;
   if (isDesktop) {
     return (
-      <div className="mx-auto flex max-w-4xl flex-col gap-6">
+      <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-6">
         <div>
           <h1 className="text-[22px] font-semibold tracking-tight text-ink">License</h1>
           <p className="mt-1 text-sm text-ink-tertiary">One-time purchase — unlimited forever. No packs, no credits. Runs fully offline after activation.</p>
@@ -95,7 +95,7 @@ export default function BillingPage() {
   }
 
   return (
-    <div className="mx-auto flex max-w-4xl flex-col gap-8">
+    <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-8">
       <div>
         <h1 className="text-[22px] font-semibold tracking-tight text-ink">Credits &amp; packs</h1>
         <p className="mt-1 text-sm text-ink-tertiary">
