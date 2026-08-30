@@ -1,3 +1,14 @@
+"""Legacy ``/license/verify`` endpoint.
+
+The desktop no longer uses license keys — it authenticates as a real
+user via the new ``/auth/login`` flow and the server-side
+``/entitlement/check`` gate.  This module is kept for backward
+compatibility with older desktop builds (e.g. third parties who
+bought before the migration) but is now **strictly DB-backed**:
+no env-allowlist, no ``LICENSE_KEYS`` fallback.  Production
+deployments must not set ``LICENSE_KEYS`` — there is no code path
+that reads it any more.
+"""
 from __future__ import annotations
 
 import os
@@ -33,33 +44,47 @@ def verify_license(payload: LicenseVerifyRequest) -> dict:
     if not key:
         raise HTTPException(status_code=400, detail="missing licenseKey")
 
-    # Check licenses table (one-time unlimited) - if exists
-    try:
-        with session_scope() as session:
-            row = session.execute(text("SELECT license_key, email, is_valid, tier, expires_at FROM licenses WHERE license_key = :k LIMIT 1"), {"k": key}).mappings().first()
-            if row:
-                if not row["is_valid"]:
-                    return {"valid": False, "message": "license revoked", "signature": _sign(f'{{"licenseKey":"{key}","valid":false}}'), "expiresAt": None}
-                expires_at = row["expires_at"]
-                if expires_at and expires_at < dt.datetime.now(dt.timezone.utc):
-                    return {"valid": False, "message": "license expired", "signature": _sign(f'{{"licenseKey":"{key}","valid":false}}'), "expiresAt": expires_at.isoformat() if expires_at else None}
-                # valid
-                expires = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=GRACE_DAYS)).isoformat()
-                tier = row["tier"] or "unlimited"
-                payload_str = f'{{"licenseKey":"{key}","valid":true}}'
-                return {"valid": True, "tier": tier, "signature": _sign(payload_str), "expiresAt": expires, "email": row["email"]}
-    except Exception:
-        # Table may not exist in some envs, fall through to env check
-        pass
-
-    # Fallback: env LICENSE_KEYS
-    raw = os.environ.get("LICENSE_KEYS", "")
-    allowed = [s.strip() for s in raw.split(",") if s.strip()]
-    env_valid = (not raw) or (key in allowed) or key.startswith("CF-")
-    if not env_valid:
-        return {"valid": False, "message": "invalid license", "signature": _sign(f'{{"licenseKey":"{key}","valid":false}}'), "expiresAt": None}
-    expires = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=GRACE_DAYS)).isoformat()
-    return {"valid": True, "tier": "unlimited", "signature": _sign(f'{{"licenseKey":"{key}","valid":true}}'), "expiresAt": expires}
+    with session_scope() as session:
+        row = session.execute(
+            text(
+                "SELECT license_key, email, is_valid, tier, expires_at "
+                "FROM licenses WHERE license_key = :k LIMIT 1"
+            ),
+            {"k": key},
+        ).mappings().first()
+        if not row:
+            return {
+                "valid": False,
+                "message": "unknown license",
+                "signature": _sign(f'{{"licenseKey":"{key}","valid":false}}'),
+                "expiresAt": None,
+            }
+        if not row["is_valid"]:
+            return {
+                "valid": False,
+                "message": "license revoked",
+                "signature": _sign(f'{{"licenseKey":"{key}","valid":false}}'),
+                "expiresAt": None,
+            }
+        expires_at = row["expires_at"]
+        if expires_at and expires_at < dt.datetime.now(dt.timezone.utc):
+            return {
+                "valid": False,
+                "message": "license expired",
+                "signature": _sign(f'{{"licenseKey":"{key}","valid":false}}'),
+                "expiresAt": expires_at.isoformat() if expires_at else None,
+            }
+        expires = (
+            dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=GRACE_DAYS)
+        ).isoformat()
+        tier = row["tier"] or "unlimited"
+        return {
+            "valid": True,
+            "tier": tier,
+            "signature": _sign(f'{{"licenseKey":"{key}","valid":true}}'),
+            "expiresAt": expires,
+            "email": row["email"],
+        }
 
 
 @router.get("/license/verify")

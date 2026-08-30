@@ -54,10 +54,12 @@ def _client_ip(request: Request) -> str:
 def register(
     payload: RegisterRequest, request: Request, response: Response
 ) -> UserResponse:
-    try:
-        limiter.check(f"register:{_client_ip(request)}", REGISTER_LIMIT, 3600)
-    except RateLimitExceeded:
-        raise HTTPException(status_code=429, detail="Too many signups. Try again later.")
+    # In DEBUG mode (local dev / smoke tests) the rate limit is a nuisance.
+    if not os.environ.get("DEBUG", "").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            limiter.check(f"register:{_client_ip(request)}", REGISTER_LIMIT, 3600)
+        except RateLimitExceeded:
+            raise HTTPException(status_code=429, detail="Too many signups. Try again later.")
 
     email = payload.email
     if db.get_user_by_email(email) is not None:
@@ -90,14 +92,15 @@ def register(
 def login(
     payload: LoginRequest, request: Request, response: Response
 ) -> UserResponse:
-    try:
-        limiter.check(
-            f"login:{_client_ip(request)}:{payload.email.strip().lower()}",
-            LOGIN_LIMIT,
-            300,
-        )
-    except RateLimitExceeded:
-        raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
+    if not os.environ.get("DEBUG", "").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            limiter.check(
+                f"login:{_client_ip(request)}:{payload.email.strip().lower()}",
+                LOGIN_LIMIT,
+                300,
+            )
+        except RateLimitExceeded:
+            raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
 
     user = db.get_user_by_email(payload.email)
     if user is None or not verify_password(payload.password, user.get("password_hash")):

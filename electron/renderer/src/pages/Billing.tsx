@@ -30,17 +30,86 @@ type SnapWindow = Window & {
 
 export default function BillingPage() {
   const isDesktop = typeof window !== "undefined" && !!(window as unknown as { clipzard?: unknown }).clipzard;
+  const [ent, setEnt] = useState<{
+    ok: boolean;
+    reason?: string;
+    message?: string;
+    payload?: { tier: string; credits: number; current_device_count: number; max_devices: number };
+  } | null>(null);
+
+  useState(() => {
+    if (!isDesktop) return;
+    (window as unknown as { clipzard: { entitlementStatus: () => Promise<unknown> } }).clipzard
+      .entitlementStatus()
+      .then((s) => setEnt(s as never))
+      .catch(() => setEnt({ ok: false, message: "Could not reach server." }));
+  });
+
   if (isDesktop) {
+    const payload = ent?.payload;
     return (
       <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-6">
         <div>
-          <h1 className="text-[22px] font-semibold tracking-tight text-ink">License</h1>
-          <p className="mt-1 text-sm text-ink-tertiary">One-time purchase — unlimited forever. No packs, no credits. Runs fully offline after activation.</p>
+          <h1 className="text-[22px] font-semibold tracking-tight text-ink">License &amp; devices</h1>
+          <p className="mt-1 text-sm text-ink-tertiary">
+            Manage your desktop license at clipzard.web.id/account — purchases, top-ups, and
+            device revocations all live in the web.
+          </p>
         </div>
-        <Card className="p-6">
-          <p className="text-sm font-medium text-ink">Unlimited</p>
-          <p className="mt-1 text-xs text-ink-tertiary">All projects, storage, clips and 4K exports unlocked. RAM-adaptive whisper + Qwen picks the best model for your machine.</p>
-        </Card>
+
+        {ent === null && (
+          <Card className="p-6 text-sm text-ink-tertiary">Loading…</Card>
+        )}
+
+        {ent && !ent.ok && (
+          <Card className="p-6">
+            <p className="text-sm font-medium text-danger">No active license</p>
+            <p className="mt-2 text-sm text-ink-tertiary">{ent.message ?? "Unknown reason."}</p>
+            <a
+              href="https://clipzard.web.id"
+              target="_blank"
+              rel="noreferrer"
+              className="mt-3 inline-flex h-9 items-center justify-center rounded-lg bg-accent px-4 text-sm font-medium text-accent-ink hover:bg-accent-strong"
+            >
+              Buy a license
+            </a>
+          </Card>
+        )}
+
+        {ent?.ok && payload && (
+          <Card className="p-6">
+            <p className="text-sm font-medium text-ink">Active license</p>
+            <dl className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div>
+                <dt className="text-xs uppercase tracking-wide text-ink-tertiary">Tier</dt>
+                <dd className="mt-1 text-sm capitalize text-ink">{payload.tier}</dd>
+              </div>
+              <div>
+                <dt className="text-xs uppercase tracking-wide text-ink-tertiary">Credits</dt>
+                <dd className="mt-1 text-sm text-ink">
+                  {payload.credits.toLocaleString("en-US")} min
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs uppercase tracking-wide text-ink-tertiary">This device</dt>
+                <dd className="mt-1 text-sm text-ink">
+                  {payload.current_device_count} of {payload.max_devices} active
+                </dd>
+              </div>
+            </dl>
+            <p className="mt-4 text-xs text-ink-tertiary">
+              Need more credits or want to free a device seat? Open the web.
+            </p>
+            <a
+              href="https://clipzard.web.id/app/billing"
+              target="_blank"
+              rel="noreferrer"
+              className="mt-3 inline-flex h-9 items-center justify-center rounded-lg border border-line bg-surface-2 px-4 text-sm text-ink hover:bg-surface-3"
+            >
+              Open billing in browser →
+            </a>
+          </Card>
+        )}
       </div>
     );
   }

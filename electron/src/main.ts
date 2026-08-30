@@ -4,7 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { getDb, getRaw, nowIso, initDb, dbFetchOne, dbFetchAll, dbExecute, getDbPathExport } from "./services/db.js";
-import { verifyLicense, isLicensed, isLicensedSync, getLicense } from "./services/license.js";
+import * as auth from "./services/auth.js";
+import { checkEntitlement, clearEntitlementCache, ensureFreshCheck, isEntitledSync } from "./services/entitlement.js";
 import { ramTier, whisperModelForTier, llmModelForTier } from "./services/system.js";
 import { listVariants, currentSelectedVariant, whisperStatus, ensureVariant, removeVariant } from "./services/models.js";
 import { getDepsStatus, isAllDepsReady, missingDeps } from "./services/deps.js";
@@ -421,17 +422,38 @@ app.on("child-process-gone", (_e, details) => {
 });
 
 ipcMain.handle("fastapi:getUrl", async () => fastApiUrl);
-ipcMain.handle("license:verify", async (_e, { key, email }: { key: string; email?: string }) => {
-  try { return await verifyLicense(key, email); } catch (e) { return { valid: false, message: String((e as Error).message ?? e) }; }
+// ─── Auth (replaces license:verify / license:status) ────────────────────
+ipcMain.handle("auth:login", async (_e, { email, password }: { email: string; password: string }) => {
+  try { return await auth.login(email, password); }
+  catch (e) { return { ok: false, reason: "server_error", message: String((e as Error).message ?? e) }; }
 });
-ipcMain.handle("license:status", async () => {
-  try { return { licensed: await isLicensed(), license: await getLicense() }; } catch { return { licensed: false, license: null }; }
+ipcMain.handle("auth:logout", async () => {
+  try { await auth.logout(); return { ok: true }; } catch { return { ok: true }; }
+});
+ipcMain.handle("auth:me", async () => {
+  try { return await auth.me(); } catch { return null; }
+});
+ipcMain.handle("auth:forgot-password", async (_e, { email }: { email: string }) => {
+  try { return await auth.requestPasswordReset(email); }
+  catch (e) { return { ok: false, message: String((e as Error).message ?? e) }; }
+});
+// ─── Entitlement gate ──────────────────────────────────────────────────
+ipcMain.handle("entitlement:check", async () => {
+  try { return await checkEntitlement(true); } catch (e) { return { ok: false, reason: "network", message: String((e as Error).message ?? e) }; }
+});
+ipcMain.handle("entitlement:status", async () => {
+  try { return await ensureFreshCheck(); } catch (e) { return { ok: false, reason: "network", message: String((e as Error).message ?? e) }; }
+});
+ipcMain.handle("entitlement:sign-out", async () => {
+  clearEntitlementCache();
+  try { await auth.logout(); } catch {}
+  return { ok: true };
 });
 ipcMain.handle("system:info", async () => {
   try {
     const tier = ramTier();
-    return { tier, whisperModel: whisperModelForTier(tier), llmModel: llmModelForTier(tier).file, licensed: await isLicensed(), fastApiUrl, selectedVariant: currentSelectedVariant(), whisper: whisperStatus() };
-  } catch { return { tier: "low", whisperModel: "base", llmModel: "qwen2.5-1.5b-q4_k_m.gguf", licensed: false, fastApiUrl: null, selectedVariant: "balanced", whisper: null }; }
+    return { tier, whisperModel: whisperModelForTier(tier), llmModel: llmModelForTier(tier).file, entitled: isEntitledSync(), fastApiUrl, selectedVariant: currentSelectedVariant(), whisper: whisperStatus() };
+  } catch { return { tier: "low", whisperModel: "base", llmModel: "qwen2.5-1.5b-q4_k_m.gguf", entitled: false, fastApiUrl: null, selectedVariant: "balanced", whisper: null }; }
 });
 ipcMain.handle("models:list", async () => {
   try { return { variants: listVariants(), selected: currentSelectedVariant(), whisper: whisperStatus() }; }
@@ -627,7 +649,8 @@ ipcMain.handle("projects:get", async (_e, id: string) => {
 });
 
 ipcMain.handle("projects:create", async (_e, data: { title: string; source: string; sourceType?: string; llmVariant?: string }) => {
-  if (!(await isLicensed())) throw new Error("License required");
+  const ent = await ensureFreshCheck();
+  if (!ent.ok) throw new Error(ent.message || "Entitlement required");
   // Dependency guard: if YT URL and deps missing, reject early with Settings hint
   if (String(data.sourceType ?? "youtube") === "youtube" && !isAllDepsReady()) {
     const missing = missingDeps().map((d) => d.label).join(", ");
@@ -738,7 +761,7 @@ function startJobWatchdog() {
 }
 
 async function runJobInUtility(jobId: string, projectId: string, clipId?: string) {
-  console.log(`[main] runJobInUtility jobId=${jobId} projectId=${projectId} clipId=${clipId} isLicensed=${isLicensedSync()} packaged=${app.isPackaged}`);
+  console.log(`[main] runJobInUtility jobId=${jobId} projectId=${projectId} clipId=${clipId} isEntitled=${isEntitledSync()} packaged=${app.isPackaged}`);
   const userDataPath = app.getPath("userData");
   const resourcesPath = process.resourcesPath ?? process.cwd();
   const runnerPath = path.join(__dirname, "worker", "jobRunner.js");
@@ -1049,7 +1072,8 @@ async function runJobInUtility(jobId: string, projectId: string, clipId?: string
 }
 
 ipcMain.handle("jobs:start", async (_e, { projectId, opts }: { projectId: string; opts?: Record<string, unknown> }) => {
-  if (!(await isLicensed())) throw new Error("License required");
+  const ent = await ensureFreshCheck();
+  if (!ent.ok) throw new Error(ent.message || "Entitlement required");
   if (!isAllDepsReady()) {
     const missing = missingDeps().map((d) => d.label).join(", ");
     throw new Error(`Please go to Settings and finish all dependency setup before proceed. Missing: ${missing}`);
@@ -1074,7 +1098,8 @@ ipcMain.handle("jobs:start", async (_e, { projectId, opts }: { projectId: string
 });
 
 ipcMain.handle("jobs:render", async (_e, { projectId, clipId, opts }: { projectId: string; clipId: string; opts?: Record<string, unknown> }) => {
-  if (!(await isLicensed())) throw new Error("License required");
+  const ent = await ensureFreshCheck();
+  if (!ent.ok) throw new Error(ent.message || "Entitlement required");
   if (!projectId || projectId === "undefined" || !clipId || clipId === "undefined") {
     console.error("[main] jobs:render invalid ids", { projectId, clipId });
     throw new Error("Invalid project or clip ID — please refresh the project page");

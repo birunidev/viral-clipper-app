@@ -125,9 +125,9 @@ async function desktopRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const d = desktop() as unknown as Record<string, (...a: unknown[])=>Promise<unknown>>;
 
   if (path === "/auth/me" && method === "GET") {
-    const s = await (d.licenseStatus as () => Promise<{ licensed: boolean; license?: { license_key?: string } }>)();
-    if (!s.licensed) throw new ApiError(401, "Not licensed");
-    return { id: "desktop", email: "licensed@clipzard.local", name: "Licensed", terms_accepted_at: new Date().toISOString() } as T;
+    const s = await (d.authMe as () => Promise<{ id: string; email: string; name: string | null; terms_accepted_at: string | null } | null>)();
+    if (!s) throw new ApiError(401, "Not signed in");
+    return s as T;
   }
   if ((path === "/auth/logout" || path === "/auth/register" || path === "/auth/login") && method === "POST") {
     return { id: "desktop", email: "licensed@clipzard.local", name: "Licensed", terms_accepted_at: new Date().toISOString() } as T;
@@ -137,10 +137,11 @@ async function desktopRequest<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (path === "/billing/status" && method === "GET") {
     const info = await (d.systemInfo as () => Promise<{ tier: string }>)().catch(() => ({ tier: "mid" }));
+    const me = await (d.authMe as () => Promise<{ credits?: number; license_tier?: string | null } | null>)().catch(() => null);
     return {
-      tier: "unlimited",
-      tier_name: "Unlimited",
-      credits: 0,
+      tier: me?.license_tier ?? "unlimited",
+      tier_name: me?.license_tier ? me.license_tier.charAt(0).toUpperCase() + me.license_tier.slice(1) : "Unlimited",
+      credits: me?.credits ?? 0,
       limits: { storage_cap_bytes: 1024*1024*1024*100, max_projects: null, max_resolution: 2160, watermark: false },
       usage: { storage_used_bytes: 0, projects: 0 },
       packs: [],

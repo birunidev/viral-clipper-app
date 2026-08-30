@@ -5,8 +5,13 @@ try {
   contextBridge.exposeInMainWorld("clipzard", {
   fastapiUrl: null as string | null,
   getFastApiUrl: () => ipcRenderer.invoke("fastapi:getUrl"),
-  licenseVerify: (key: string, email?: string) => ipcRenderer.invoke("license:verify", { key, email }),
-  licenseStatus: () => ipcRenderer.invoke("license:status"),
+  authLogin: (email: string, password: string) => ipcRenderer.invoke("auth:login", { email, password }),
+  authLogout: () => ipcRenderer.invoke("auth:logout"),
+  authMe: () => ipcRenderer.invoke("auth:me"),
+  authForgotPassword: (email: string) => ipcRenderer.invoke("auth:forgot-password", { email }),
+  entitlementCheck: () => ipcRenderer.invoke("entitlement:check"),
+  entitlementStatus: () => ipcRenderer.invoke("entitlement:status"),
+  entitlementSignOut: () => ipcRenderer.invoke("entitlement:sign-out"),
   systemInfo: () => ipcRenderer.invoke("system:info"),
   projectsList: () => ipcRenderer.invoke("projects:list"),
   projectGet: (id: string) => ipcRenderer.invoke("projects:get", id),
@@ -76,8 +81,13 @@ try {
 declare global {
   interface Window {
     clipzard: {
-      licenseVerify: (k: string, e?: string) => Promise<{ valid: boolean; message?: string }>;
-      licenseStatus: () => Promise<unknown>;
+      authLogin: (email: string, password: string) => Promise<{ ok: boolean; reason?: string; message?: string; user?: unknown }>;
+      authLogout: () => Promise<{ ok: boolean }>;
+      authMe: () => Promise<unknown>;
+      authForgotPassword: (email: string) => Promise<{ ok: boolean; message?: string }>;
+      entitlementCheck: () => Promise<unknown>;
+      entitlementStatus: () => Promise<unknown>;
+      entitlementSignOut: () => Promise<{ ok: boolean }>;
       systemInfo: () => Promise<unknown>;
       projectsList: () => Promise<unknown>;
       projectGet: (id: string) => Promise<unknown>;

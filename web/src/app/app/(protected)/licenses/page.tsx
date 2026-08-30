@@ -127,6 +127,7 @@ export default function LicensesPage() {
   const [reissued, setReissued] = useState<string | null>(null);
 
   const licenses = licensesQuery.data?.licenses ?? [];
+  const maxDevices = Math.max(...licenses.map((l) => l.device_count), 0);
 
   function handleReissue(licenseId: string) {
     reissueMutation.mutate(licenseId, {
@@ -143,7 +144,7 @@ export default function LicensesPage() {
         <h1 className="text-2xl font-semibold tracking-tight">Licenses</h1>
         <p className="mt-1 text-sm text-ink-tertiary">
           Manage your desktop license keys and the devices authorised to run ClipZard.
-          Maximum {activeLicense?.device_count ?? 0} active devices.
+          Maximum {maxDevices} active devices.
         </p>
       </header>
 

@@ -18,41 +18,79 @@ const qc = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 5_000, refetchOnWindowFocus: false } },
 });
 
-function LicenseGate({ children }: { children: React.ReactNode }) {
-  const [licensed, setLicensed] = React.useState<boolean | null>(null);
+type EntitlementState =
+  | { kind: "loading" }
+  | { kind: "ok" }
+  | { kind: "no_session" }
+  | { kind: "denied"; reason: string; message: string };
+
+function useEntitlement(): EntitlementState {
+  const [state, setState] = React.useState<EntitlementState>({ kind: "loading" });
   React.useEffect(() => {
-    console.log("[renderer] LicenseGate checking, clipzard=", !!(window as unknown as { clipzard?: unknown }).clipzard);
-    const cf = (window as unknown as { clipzard?: { licenseStatus: () => Promise<{ licensed: boolean }> } }).clipzard;
-    if (!cf?.licenseStatus) {
-      console.warn("[renderer] no clipzard, treating as dev licensed");
-      setLicensed(true);
+    const cf = (window as unknown as {
+      clipzard?: { entitlementStatus: () => Promise<unknown> };
+    }).clipzard;
+    if (!cf?.entitlementStatus) {
+      // No preload (e.g. pure web dev). Treat as ok so the app renders.
+      setState({ kind: "ok" });
       return;
     }
     let done = false;
     const t = setTimeout(() => {
-      if (!done) {
-        console.warn("[renderer] licenseStatus timeout");
-        setLicensed(false);
-      }
-    }, 3000);
-    cf.licenseStatus()
+      if (!done) setState({ kind: "denied", reason: "timeout", message: "Entitlement check timed out." });
+    }, 10_000);
+    cf.entitlementStatus()
       .then((r) => {
         done = true;
         clearTimeout(t);
-        console.log("[renderer] licenseStatus", r);
-        setLicensed(!!(r as { licensed: boolean }).licensed);
+        const status = r as { ok: boolean; reason?: string; message?: string };
+        if (status?.ok) setState({ kind: "ok" });
+        else setState({ kind: "denied", reason: status?.reason ?? "unknown", message: status?.message ?? "Not entitled." });
       })
       .catch((e) => {
         done = true;
         clearTimeout(t);
-        console.error("[renderer] licenseStatus error", e);
-        setLicensed(false);
+        setState({ kind: "denied", reason: "error", message: String((e as Error)?.message ?? e) });
       });
     return () => clearTimeout(t);
   }, []);
-  if (licensed === null) return <div className="flex min-h-dvh items-center justify-center p-8 text-sm text-ink-tertiary">Checking license… (dev bypass in 3s)</div>;
-  if (!licensed) return <Navigate to="/login" replace />;
-  return <>{children}</>;
+  return state;
+}
+
+function EntitlementGate({ children }: { children: React.ReactNode }) {
+  const state = useEntitlement();
+  if (state.kind === "loading") {
+    return (
+      <div className="flex min-h-dvh items-center justify-center p-8 text-sm text-ink-tertiary">
+        Checking your license…
+      </div>
+    );
+  }
+  if (state.kind === "ok") return <>{children}</>;
+  if (state.kind === "no_session") return <Navigate to="/login" replace />;
+  return (
+    <div className="flex min-h-dvh flex-col items-center justify-center gap-3 p-8 text-center">
+      <h1 className="text-lg font-semibold text-ink">ClipZard needs a license</h1>
+      <p className="max-w-md text-sm text-ink-tertiary">{state.message}</p>
+      <div className="flex gap-3">
+        <a
+          href="https://clipzard.web.id"
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex h-9 items-center justify-center rounded-lg bg-accent px-4 text-sm font-medium text-accent-ink hover:bg-accent-strong"
+        >
+          Get a license
+        </a>
+        <a
+          href="/login"
+          onClick={(e) => { e.preventDefault(); window.location.hash = "#/login"; }}
+          className="inline-flex h-9 items-center justify-center rounded-lg border border-line bg-surface-2 px-4 text-sm text-ink hover:bg-surface-3"
+        >
+          Sign in
+        </a>
+      </div>
+    </div>
+  );
 }
 
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err: unknown }> {
@@ -73,10 +111,10 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Routes>
             <Route path="/onboarding" element={<OnboardingPage />} />
             <Route path="/login" element={<AuthLayout><LoginPage /></AuthLayout>} />
-            <Route path="/" element={<LicenseGate><AppShell><DashboardPage /></AppShell></LicenseGate>} />
-            <Route path="/projects/:id" element={<LicenseGate><AppShell><ProjectDetailPage /></AppShell></LicenseGate>} />
-            <Route path="/billing" element={<LicenseGate><AppShell><BillingPage /></AppShell></LicenseGate>} />
-            <Route path="/settings" element={<LicenseGate><AppShell><SettingsPage /></AppShell></LicenseGate>} />
+            <Route path="/" element={<EntitlementGate><AppShell><DashboardPage /></AppShell></EntitlementGate>} />
+            <Route path="/projects/:id" element={<EntitlementGate><AppShell><ProjectDetailPage /></AppShell></EntitlementGate>} />
+            <Route path="/billing" element={<EntitlementGate><AppShell><BillingPage /></AppShell></EntitlementGate>} />
+            <Route path="/settings" element={<EntitlementGate><AppShell><SettingsPage /></AppShell></EntitlementGate>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </HashRouter>
@@ -84,16 +122,3 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     </ErrorBoundary>
   </React.StrictMode>
 );
-
-declare global {
-  interface Window {
-    clipzard?: {
-      licenseStatus: () => Promise<{ licensed: boolean }>;
-      licenseVerify: (k: string, e?: string) => Promise<{ valid: boolean; message?: string }>;
-      projectsList: () => Promise<unknown[]>;
-      projectGet: (id: string) => Promise<unknown>;
-      projectCreate: (d: unknown) => Promise<unknown>;
-      systemInfo: () => Promise<{ tier: string; licensed: boolean }>;
-    };
-  }
-}
