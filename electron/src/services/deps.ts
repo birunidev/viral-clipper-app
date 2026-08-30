@@ -1,8 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { whisperModelForTier, llmModelForTier, ramTier } from "./system.js";
 import { whisperStatus } from "./models.js";
 import { ffmpegPath, ffprobePath, whisperPath, ytdlpPath } from "./bin.js";
+
+const require = createRequire(import.meta.url);
 
 export type DepStatus = {
   key: string;
@@ -34,14 +38,15 @@ export function getDepsStatus(): DepStatus[] {
     required: true,
   });
 
-  // LLM model (7b default)
+  // LLM model (7b default) — use same userDataRoot logic as models.ts (handles ESM + USER_DATA_PATH)
   try {
     const llmPath = path.join(
       (() => {
+        if (process.env.USER_DATA_PATH) return process.env.USER_DATA_PATH;
         try {
           const { app } = require("electron") as { app: { getPath: (n: string) => string } };
           return app.getPath("userData");
-        } catch { return process.cwd(); }
+        } catch { return path.join(process.cwd(), ".data"); }
       })(),
       "models",
       "llm",
@@ -105,19 +110,49 @@ export function getDepsStatus(): DepStatus[] {
     required: true,
   });
 
-  // GPU check (optional, not required but nice)
+  // GPU check (optional, not required but nice) — robust for Windows ESM + packaged app
   let gpu = false;
-  try {
-    const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
-    const r = spawnSync("nvidia-smi", ["--query-gpu=name", "--format=csv,noheader"], { timeout: 2000 });
-    gpu = r.status === 0 && String(r.stdout ?? "").trim().length > 0;
-  } catch {}
+  let gpuName = "";
+  const trySmi = (cmd: string, args: string[], opts: Record<string, unknown> = {}) => {
+    try {
+      const r = spawnSync(cmd, args, { timeout: 2000, ...opts } as never);
+      const out = String((r.stdout as unknown as string) ?? "").trim();
+      if (r.status === 0 && out.length > 0) {
+        gpu = true;
+        gpuName = out.split("\n")[0].trim();
+        return true;
+      }
+    } catch {}
+    return false;
+  };
+  // Try nvidia-smi in PATH (with and without .exe, with and without shell)
+  if (!gpu) trySmi("nvidia-smi", ["--query-gpu=name", "--format=csv,noheader"]);
+  if (!gpu) trySmi("nvidia-smi.exe", ["--query-gpu=name", "--format=csv,noheader"]);
+  if (!gpu) trySmi("nvidia-smi", ["--query-gpu=name", "--format=csv,noheader"], { shell: true });
+  if (!gpu) trySmi("nvidia-smi.exe", ["--query-gpu=name", "--format=csv,noheader"], { shell: true });
+  // Explicit System32 path (always present on Windows, but may not be in Electron's PATH when launched from shortcut)
+  if (!gpu && process.platform === "win32") {
+    trySmi("C:\\Windows\\System32\\nvidia-smi.exe", ["--query-gpu=name", "--format=csv,noheader"]);
+  }
+  // Fallback: PowerShell WMI (works even if nvidia-smi not in PATH, catches NVIDIA in VideoController name)
+  if (!gpu && process.platform === "win32") {
+    try {
+      const r = spawnSync("powershell.exe", ["-NoProfile", "-Command", "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name"], { timeout: 3000, shell: true } as never);
+      const out = String((r.stdout as unknown as string) ?? "");
+      if (out.toLowerCase().includes("nvidia")) {
+        gpu = true;
+        const match = out.split("\n").find((l) => l.toLowerCase().includes("nvidia"));
+        if (match) gpuName = match.trim();
+        else gpuName = "NVIDIA GPU (via WMI)";
+      }
+    } catch {}
+  }
   out.push({
     key: "gpu",
-    label: "NVIDIA GPU",
+    label: gpuName ? `NVIDIA GPU — ${gpuName}` : "NVIDIA GPU",
     installed: gpu,
-    path: null,
-    description: gpu ? "Detected — will use CUDA if ggml-cuda.dll present" : "Not detected — will use CPU",
+    path: gpuName ? gpuName : null,
+    description: gpu ? `Detected — will use CUDA if ggml-cuda.dll present${gpuName ? ` (${gpuName})` : ""}` : "Not detected — will use CPU (nvidia-smi not found in PATH)",
     required: false,
   });
 

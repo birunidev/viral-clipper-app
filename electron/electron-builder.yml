@@ -6,15 +6,49 @@ directories:
 asarUnpack:
   - "**/node_modules/sqlite-electron/**"
   - "**/sqlite-electron/**"
+  - "**/node_modules/ffmpeg-static/**"
+  - "**/node_modules/ffprobe-static/**"
+  - "**/node_modules/yt-dlp-exec/**"
+  - "**/node_modules/node-llama-cpp/**"
+  - "**/node_modules/@node-llama-cpp/**"
 files:
   - dist/**/*
   - renderer/dist/**/*
   - ../web/out/**/*
   - resources/**/*
   - package.json
+  - "!**/*.map"
+  - "!**/playwright.config.*"
+  - "!**/tests/**/*"
+  - "!resources/models/**/*"
+  - "node_modules/ffmpeg-static/**/*"
+  - "node_modules/ffprobe-static/**/*"
+  - "node_modules/yt-dlp-exec/**/*"
+  - "node_modules/sqlite-electron/**/*"
+  - "node_modules/node-llama-cpp/**/*"
+  - "node_modules/@node-llama-cpp/**/*"
 extraResources:
   - from: resources/bin
     to: bin
+    filter: ["**/*"]
+  - from: node_modules/ffmpeg-static
+    to: bin
+    filter: ["ffmpeg.exe", "ffmpeg"]
+  - from: node_modules/ffprobe-static/bin/win32/x64
+    to: bin
+    filter: ["ffprobe.exe"]
+  - from: node_modules/ffprobe-static/bin/linux
+    to: bin
+    filter: ["**/*"]
+  - from: node_modules/ffprobe-static/bin/darwin
+    to: bin
+    filter: ["**/*"]
+  - from: node_modules/yt-dlp-exec/bin
+    to: bin
+    filter: ["yt-dlp", "yt-dlp.exe"]
+  # Offline models — bundled when present (makes installer ~8GB). Run `npm run models:download -- --out=resources/models` first to pre-seed.
+  - from: resources/models
+    to: models
     filter: ["**/*"]
 # Models (whisper GGML + Qwen GGUF) are NOT bundled by default to keep installer small (~150MB vs +8GB).
 # They are lazily downloaded on first transcribe/analyze to userData/models/ (see src/services/transcriber.ts:39, analyzer.ts:147).

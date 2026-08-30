@@ -78,23 +78,32 @@ export function ffprobePath(): string {
 
 export function ytdlpPath(): string {
   const exe = process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
-  const r = resolveBin(exe);
-  if (r) return r;
-  const alt = resolveBin("yt-dlp");
-  if (alt) return alt;
-  try {
-    const require = createRequire(import.meta.url);
-    const execPath = require.resolve("yt-dlp-exec/bin/yt-dlp");
-    if (execPath && fs.existsSync(execPath)) {
-      try { if (process.platform !== "win32") fs.chmodSync(execPath, 0o755); } catch {}
-      return execPath;
+  const candidates = [exe, "yt-dlp", "yt-dlp.exe"];
+  for (const n of candidates) {
+    const r = resolveBin(n);
+    if (r) return r;
+  }
+  // Try via yt-dlp-exec package (handle both with and without .exe)
+  for (const sub of ["yt-dlp", "yt-dlp.exe"]) {
+    try {
+      const require = createRequire(import.meta.url);
+      const execPath = require.resolve(`yt-dlp-exec/bin/${sub}`);
+      if (execPath && fs.existsSync(execPath)) {
+        try { if (process.platform !== "win32") fs.chmodSync(execPath, 0o755); } catch {}
+        return execPath;
+      }
+    } catch {}
+  }
+  // Fallback: check common node_modules locations (root and electron)
+  for (const base of [process.cwd(), path.join(process.cwd(), "electron"), path.resolve(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".."))]) {
+    for (const sub of [exe, "yt-dlp", "yt-dlp.exe"]) {
+      try {
+        const p = path.join(base, "node_modules", "yt-dlp-exec", "bin", sub);
+        if (fs.existsSync(p)) return p;
+      } catch {}
     }
-  } catch {}
-  try {
-    const p = path.join(process.cwd(), "node_modules", "yt-dlp-exec", "bin", exe);
-    if (fs.existsSync(p)) return p;
-  } catch {}
-  return process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
+  }
+  return exe;
 }
 
 export function whisperPath(): string {

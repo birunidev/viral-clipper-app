@@ -3,7 +3,10 @@ import path from "node:path";
 import os from "node:os";
 import https from "node:https";
 import http from "node:http";
+import { createRequire } from "node:module";
 import { llmModelForVariant, whisperModelForTier, ramTier } from "./system.js";
+
+const require = createRequire(import.meta.url);
 
 function userDataRoot(): string {
   if (process.env.USER_DATA_PATH) return process.env.USER_DATA_PATH;

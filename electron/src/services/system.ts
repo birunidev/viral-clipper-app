@@ -1,4 +1,6 @@
 import os from "node:os";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
 
 export type Tier = "low" | "mid" | "high";
 // Extra tiny tier for sub-1GB installer — selected via LLM_TIER env or auto on <8GB if you opt-in.
