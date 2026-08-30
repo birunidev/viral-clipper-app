@@ -232,7 +232,149 @@ app.whenReady().then(async () => {
     createWindow();
   }
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+
+  // Self-update mechanism. Only enabled in packaged builds against a
+  // public update server (configured via env vars).  Disabled when
+  // CLIPZARD_UPDATE_URL is unset (local dev / community builds).
+  if (app.isPackaged) {
+    void initAutoUpdater().catch((e) => console.error("[updater] init failed", e));
+  }
 });
+
+// ----------------------------------------------------------------- updater
+
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h
+
+async function readStoredUpdateChannel(): Promise<"stable" | "beta"> {
+  try {
+    const Store = (await import("electron-store")).default;
+    const store = new Store();
+    const ch = store.get("updateChannel", "stable");
+    return ch === "beta" ? "beta" : "stable";
+  } catch {
+    return "stable";
+  }
+}
+
+async function initAutoUpdater() {
+  const feedBase = (process.env.CLIPZARD_UPDATE_URL ?? "").trim();
+  if (!feedBase) {
+    console.log("[updater] CLIPZARD_UPDATE_URL not set — auto-update disabled");
+    return;
+  }
+  let mod: typeof import("electron-updater");
+  try {
+    mod = await import("electron-updater");
+  } catch (e) {
+    console.error("[updater] electron-updater not available", e);
+    return;
+  }
+  const { autoUpdater } = mod;
+
+  // Tell autoUpdater to use our custom feed (electron-updater speaks the
+  // same JSON shape as GitHub Releases by default).
+  const feedUrl = `${feedBase.replace(/\/$/, "")}/api/v1/update/check`;
+  const storedChannel = await readStoredUpdateChannel();
+  const channel = (process.env.CLIPZARD_UPDATE_CHANNEL ?? storedChannel) as "stable" | "beta";
+  autoUpdater.setFeedURL({
+    provider: "generic",
+    url: feedUrl,
+    channel,
+  });
+  autoUpdater.autoDownload = false; // user must opt-in via dialog
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on("checking-for-update", () => {
+    console.log("[updater] checking for update");
+    win?.webContents.send("update:status", { state: "checking" });
+  });
+  autoUpdater.on("update-available", async (info) => {
+    console.log("[updater] update available", info.version);
+    win?.webContents.send("update:status", { state: "available", version: info.version, releaseNotes: info.releaseNotes });
+    const { response } = await dialog.showMessageBox(win ?? undefined as never, {
+      type: "info",
+      title: "Update available",
+      message: `Version ${info.version} is available`,
+      detail: typeof info.releaseNotes === "string" ? info.releaseNotes : "A new version of ClipZard is ready to download.",
+      buttons: ["Download", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (response === 0) {
+      try {
+        await autoUpdater.downloadUpdate();
+      } catch (e) {
+        console.error("[updater] download failed", e);
+      }
+    }
+  });
+  autoUpdater.on("update-not-available", (info) => {
+    console.log("[updater] no update available (current:", info.version, ")");
+    win?.webContents.send("update:status", { state: "current", version: info.version });
+  });
+  autoUpdater.on("download-progress", (p) => {
+    win?.webContents.send("update:status", { state: "downloading", percent: Math.round(p.percent), version: (p as unknown as { version?: string }).version });
+  });
+  autoUpdater.on("update-downloaded", async (info) => {
+    console.log("[updater] update downloaded", info.version);
+    win?.webContents.send("update:status", { state: "downloaded", version: info.version });
+    const { response } = await dialog.showMessageBox(win ?? undefined as never, {
+      type: "question",
+      title: "Update downloaded",
+      message: `Version ${info.version} is ready to install`,
+      detail: "ClipZard will restart to apply the update.",
+      buttons: ["Restart now", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (response === 0) {
+      autoUpdater.quitAndInstall();
+    }
+  });
+  autoUpdater.on("error", (err) => {
+    console.error("[updater] error", String(err).slice(0, 500));
+    win?.webContents.send("update:status", { state: "error", message: String(err).slice(0, 300) });
+  });
+
+  // Initial check (after a small delay so the window has a chance to show
+  // the status indicator)
+  setTimeout(() => {
+    autoUpdater.checkForUpdates().catch((e) => console.error("[updater] checkForUpdates failed", e));
+  }, 5_000);
+  // Periodic re-check
+  setInterval(() => {
+    autoUpdater.checkForUpdates().catch((e) => console.error("[updater] periodic check failed", e));
+  }, UPDATE_CHECK_INTERVAL_MS);
+
+  // Expose manual trigger for renderer (Settings page "Check for Updates")
+  ipcMain.handle("updates:check", async () => {
+    try {
+      const r = await autoUpdater.checkForUpdates();
+      return { ok: true, version: r?.updateInfo?.version ?? null };
+    } catch (e) {
+      return { ok: false, error: String(e).slice(0, 300) };
+    }
+  });
+  ipcMain.handle("updates:install", async () => {
+    autoUpdater.quitAndInstall();
+  });
+  ipcMain.handle("updates:channel", async (_e, channel: "stable" | "beta") => {
+    if (channel !== "stable" && channel !== "beta") return { ok: false, error: "invalid channel" };
+    autoUpdater.channel = channel;
+    // Persist for next launch
+    try {
+      const Store = (await import("electron-store")).default;
+      const store = new Store();
+      store.set("updateChannel", channel);
+    } catch {}
+    try {
+      const r = await autoUpdater.checkForUpdates();
+      return { ok: true, version: r?.updateInfo?.version ?? null };
+    } catch (e) {
+      return { ok: false, error: String(e).slice(0, 300) };
+    }
+  });
+}
 
 async function seedCaptionStyles() {
   try {

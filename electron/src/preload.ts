@@ -59,6 +59,14 @@ try {
       ipcRenderer.on("job:log", handler);
       return () => ipcRenderer.removeListener("job:log", handler);
     },
+    updatesCheck: () => ipcRenderer.invoke("updates:check"),
+    updatesInstall: () => ipcRenderer.invoke("updates:install"),
+    updatesSetChannel: (ch: "stable" | "beta") => ipcRenderer.invoke("updates:channel", ch),
+    onUpdateStatus: (cb: (data: unknown) => void) => {
+      const handler = (_: unknown, data: unknown) => cb(data);
+      ipcRenderer.on("update:status", handler);
+      return () => ipcRenderer.removeListener("update:status", handler);
+    },
   });
   console.log("[preload] exposed clipzard");
 } catch (e) {
@@ -84,6 +92,10 @@ declare global {
       getJobLogs: (jobId: string) => Promise<unknown>;
       clearJobLogs: (jobId: string) => Promise<unknown>;
       onJobLog: (cb: (d: unknown) => void) => () => void;
+      updatesCheck: () => Promise<{ ok: boolean; version?: string | null; error?: string }>;
+      updatesInstall: () => Promise<void>;
+      updatesSetChannel: (ch: "stable" | "beta") => Promise<{ ok: boolean; version?: string | null; error?: string }>;
+      onUpdateStatus: (cb: (d: unknown) => void) => () => void;
     };
   }
 }

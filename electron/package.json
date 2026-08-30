@@ -40,6 +40,7 @@
   },
   "dependencies": {
     "electron-store": "^8.1.0",
+    "electron-updater": "^6.3.9",
     "ffmpeg-static": "^5.2.0",
     "ffprobe-static": "^3.0.0",
     "sqlite-electron": "^3.9.12",

@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Database, Warning, XCircle, DownloadSimple, Trash, HardDrive } from "@phosphor-icons/react";
+import { Check, Database, Warning, XCircle, DownloadSimple, Trash, HardDrive, ArrowsClockwise } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -113,6 +113,9 @@ export default function SettingsPage() {
           settings={settings ?? null}
         />
       )}
+
+      {/* Updates channel — desktop only */}
+      <UpdatesCard />
     </div>
   );
 }
@@ -546,6 +549,118 @@ function LocalModelsCard() {
       <p className="mt-2 text-[11px] text-ink-muted">
         Analyser runs locally via <span className="font-mono">node-llama-cpp</span>. If <span className="font-mono">LLM_API_KEY</span> is set, cloud is used instead (0 MB). Models live at <span className="font-mono">userData/models/llm/</span>.
       </p>
+    </Card>
+  );
+}
+
+/**
+ * Update channel selector.  Hidden in the web build (only the Electron
+ * desktop exposes ``window.clipzard.updatesCheck``).  Listens to the
+ * ``update:status`` IPC channel to surface what the auto-updater is
+ * currently doing.
+ */
+function UpdatesCard() {
+  const isDesktop = typeof window !== "undefined" && !!(window as { clipzard?: unknown }).clipzard;
+  const cap = (window as { clipzard?: { updatesCheck?: unknown; updatesSetChannel?: unknown; onUpdateStatus?: unknown } }).clipzard;
+  if (!isDesktop || !cap?.updatesCheck) return null;
+
+  const [channel, setChannel] = useState<"stable" | "beta">("stable");
+  const [status, setStatus] = useState<
+    | { state: "idle" }
+    | { state: "checking" }
+    | { state: "current"; version?: string }
+    | { state: "available"; version?: string; releaseNotes?: string }
+    | { state: "downloading"; percent?: number; version?: string }
+    | { state: "downloaded"; version?: string }
+    | { state: "error"; message?: string }
+  >({ state: "idle" });
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    try {
+      const off = cap.onUpdateStatus?.((d: unknown) => {
+        setStatus(d as typeof status);
+      });
+      return () => {
+        if (typeof off === "function") (off as () => void)();
+      };
+    } catch {
+      return;
+    }
+  }, [cap]);
+
+  async function check() {
+    if (!cap.updatesCheck) return;
+    setBusy(true);
+    try {
+      await cap.updatesCheck();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changeChannel(next: "stable" | "beta") {
+    if (next === channel) return;
+    setChannel(next);
+    if (cap.updatesSetChannel) {
+      setBusy(true);
+      try {
+        await cap.updatesSetChannel(next);
+      } finally {
+        setBusy(false);
+      }
+    }
+  }
+
+  return (
+    <Card className="p-5">
+      <div className="flex items-center gap-2 text-sm font-medium text-ink">
+        <ArrowsClockwise size={16} className="text-accent" />
+        Updates
+      </div>
+      <p className="mt-1 text-xs text-ink-tertiary">
+        Choose which builds you receive. Stable is recommended; Beta includes pre-release features.
+      </p>
+
+      <div className="mt-4 flex flex-col gap-2">
+        {(["stable", "beta"] as const).map((opt) => (
+          <label
+            key={opt}
+            className="flex cursor-pointer items-start gap-3 rounded-lg border border-line bg-surface-2/40 p-3 transition-colors hover:border-line-strong"
+          >
+            <input
+              type="radio"
+              name="update-channel"
+              value={opt}
+              checked={channel === opt}
+              onChange={() => changeChannel(opt)}
+              className="mt-0.5 h-3.5 w-3.5 accent-accent"
+              disabled={busy}
+            />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-ink capitalize">{opt}</p>
+              <p className="text-xs text-ink-tertiary">
+                {opt === "stable" ? "Production builds only. No pre-releases." : "Includes pre-release builds. May be unstable."}
+              </p>
+            </div>
+          </label>
+        ))}
+      </div>
+
+      <div className="mt-4 flex items-center justify-between gap-3 border-t border-line-soft pt-4">
+        <div className="text-xs text-ink-secondary">
+          {status.state === "idle" && "Click to check for updates."}
+          {status.state === "checking" && "Checking for updates…"}
+          {status.state === "current" && `You're on the latest version${status.version ? ` (${status.version})` : ""}.`}
+          {status.state === "available" && `Update ${status.version ?? ""} available — see dialog.`}
+          {status.state === "downloading" && `Downloading ${status.version ?? ""}… ${status.percent ?? 0}%`}
+          {status.state === "downloaded" && `Update ${status.version ?? ""} downloaded — restart to install.`}
+          {status.state === "error" && <span className="text-danger">Update error: {status.message}</span>}
+        </div>
+        <Button variant="secondary" size="sm" onClick={check} disabled={busy}>
+          {busy ? "Checking…" : "Check for updates"}
+        </Button>
+      </div>
     </Card>
   );
 }

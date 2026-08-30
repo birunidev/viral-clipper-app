@@ -413,3 +413,28 @@ class Upload(Base):
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class AppUpdate(Base, TimestampMixin):
+    """Available app updates per platform/arch, with hash for integrity.
+
+    One row per (platform, arch, version, is_beta) combination.
+    ``sha512`` and ``size_bytes`` are set when the admin uploads a new binary
+    via ``POST /api/v1/update/upload``.  The electron app uses ``sha512``
+    to verify the download and ``version`` to decide whether to update.
+    """
+
+    __tablename__ = "app_updates"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    version: Mapped[str] = mapped_column(String, nullable=False)
+    platform: Mapped[str] = mapped_column(String, nullable=False)  # win32/darwin/linux
+    arch: Mapped[str] = mapped_column(String, nullable=False)  # ia32/x64/arm64
+    release_notes: Mapped[str] = mapped_column(Text, nullable=False)
+    sha512: Mapped[str | None] = mapped_column(String, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    is_beta: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)
+    s3_key: Mapped[str | None] = mapped_column(String, nullable=False)  # e.g. releases/win32/x64/0.2.0.exe
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
