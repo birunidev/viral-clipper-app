@@ -32,6 +32,76 @@ class UserResponse(BaseModel):
     name: str | None = None
     email: str
     terms_accepted_at: dt.datetime | None = None
+    # Augmentations for the new account dashboard.  The /auth/me endpoint
+    # fills these in from a single SELECT, so the web UI gets a single
+    # round-trip to render the sidebar + the profile page.
+    has_license: bool = False
+    license_tier: str | None = None
+    credits: int = 0
+    current_device_count: int = 0
+    max_devices: int = 0
+
+
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetConfirm(BaseModel):
+    token: str
+    new_password: str = Field(min_length=8, max_length=200)
+
+
+class PasswordResetResponse(BaseModel):
+    ok: bool = True
+
+
+class LicenseSummary(BaseModel):
+    id: str
+    tier: str
+    is_active: bool
+    issued_at: dt.datetime
+    reissued_at: dt.datetime | None = None
+    reissued_from_id: str | None = None
+    device_count: int = 0
+
+
+class LicenseListResponse(BaseModel):
+    licenses: list[LicenseSummary]
+
+
+class DeviceSummary(BaseModel):
+    id: str
+    device_id: str
+    device_name: str
+    os: str
+    last_seen_at: dt.datetime
+    is_revoked: bool
+
+
+class LicenseDevicesResponse(BaseModel):
+    devices: list[DeviceSummary]
+
+
+class EntitlementCheckRequest(BaseModel):
+    device_id: str = Field(min_length=8, max_length=128)
+    device_name: str = Field(min_length=1, max_length=120)
+    os: str = Field(min_length=1, max_length=16)  # win32 / darwin / linux
+
+
+class EntitlementCheckResponse(BaseModel):
+    entitled: bool
+    tier: str | None = None
+    max_devices: int = 0
+    current_device_count: int = 0
+    expires_at: dt.datetime | None = None
+    credits: int = 0
+    cloud_enabled: bool = False
+    server_time: dt.datetime
+    cache_max_age_days: int = 0
+    # HMAC-SHA256 over the canonical JSON of the rest of the response, with
+    # the secret ENTITLEMENT_SIGN_SECRET.  The desktop verifies this
+    # signature locally before trusting the offline cache.
+    signed_blob: str = ""
 
 
 # ------------------------------------------------------------------ projects

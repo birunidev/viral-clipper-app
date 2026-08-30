@@ -13,7 +13,7 @@ from fastapi.responses import Response
 from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp
 
-from .api import auth, billing, caption_styles, jobs, licenses, projects, reels, settings, updates, uploads, youtube_proxy, ytdlp_stats, yt_wasm_proxy
+from .api import auth, billing, caption_styles, dev_test, jobs, licenses, licenses_v2, projects, reels, settings, updates, uploads, youtube_proxy, ytdlp_stats, yt_wasm_proxy
 from .worker import pool
 
 # ─── CORS configuration ────────────────────────────────────────────────────
@@ -167,6 +167,9 @@ app.include_router(youtube_proxy.router, prefix="/api/v1")
 app.include_router(ytdlp_stats.router, prefix="/api/v1")
 app.include_router(yt_wasm_proxy.router, prefix="/api/v1")
 app.include_router(updates.router, prefix="/api/v1")
+app.include_router(licenses_v2.router, prefix="/api/v1")
+# Dev-only test endpoints; 404 in production unless DEBUG=1
+app.include_router(dev_test.router, prefix="/api/v1")
 
 
 @app.get("/health")

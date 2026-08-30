@@ -404,6 +404,16 @@ def _grant_paddle_pack(user_id: str, data: dict, event_type: str) -> None:
         billing.grant_topup(user_id, pack_key)
     else:
         billing.grant_pack(user_id, pack_key)
+        # Create the server-side entitlement (one row per (user, license))
+        # so the desktop can authenticate and run.  Idempotent: re-issuing
+        # the same pack re-grants credits but only adds a new license row
+        # if no active entitlement exists for this user/tier.
+        try:
+            from ..services.entitlements import grant_license_for_user
+            lic_id, ent_id = grant_license_for_user(user_id, tier=pack_key)
+            logger.info("Entitlement granted for user=%s tier=%s license=%s ent=%s", user_id, pack_key, lic_id, ent_id)
+        except Exception as e:
+            logger.exception("Failed to create entitlement for user=%s: %s", user_id, e)
     order_id = str(custom.get("order_id") or "")
     if order_id:
         try:
@@ -545,6 +555,12 @@ async def midtrans_webhook(request: Request) -> dict:
             billing.grant_topup(order["user_id"], order["plan_key"])
         else:
             billing.grant_pack(order["user_id"], order["plan_key"])
+            try:
+                from ..services.entitlements import grant_license_for_user
+                lic_id, ent_id = grant_license_for_user(order["user_id"], tier=order["plan_key"])
+                logger.info("Entitlement granted for user=%s tier=%s license=%s ent=%s", order["user_id"], order["plan_key"], lic_id, ent_id)
+            except Exception as e:
+                logger.exception("Failed to create entitlement for user=%s: %s", order["user_id"], e)
         after = billing.credit_balance(order["user_id"])
         logger.info("Midtrans settled %s: user=%s pack=%s credits %s->%s tier=%s", order_id, order["user_id"], order["plan_key"], before, after, billing.entitlement_tier(order["user_id"]))
     elif transaction_status in _MT_FAILURE_STATUSES:

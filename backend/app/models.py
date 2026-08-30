@@ -22,6 +22,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -216,8 +217,10 @@ class License(Base):
     """One-time desktop license (single purchase, unlimited).
 
     Generated after a successful Paddle/Midtrans payment or seeded for dev.
-    Desktop verifies via POST /api/v1/license/verify (FastAPI) or
-    /api/license/verify (web, which proxies to the same table).
+    The actual entitlement is granted via the ``entitlements`` table — this
+    row is the audit / payment record.  ``reissued_from_id`` chains a
+    replacement to the license it superseded; the original ``issued_at`` is
+    preserved so the user's billing history stays intact.
     """
 
     __tablename__ = "licenses"
@@ -231,6 +234,13 @@ class License(Base):
     expires_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     meta: Mapped[dict | None] = mapped_column("metadata", JSON)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # Reissue chain: when this license is reissued, a new License row is
+    # created with reissued_from_id pointing back here, and we set
+    # reissued_at + is_valid=false on the superseded row.
+    reissued_from_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("licenses.id", ondelete="SET NULL"), index=True
+    )
+    reissued_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
     user: Mapped[User | None] = relationship()
 
@@ -435,6 +445,85 @@ class AppUpdate(Base, TimestampMixin):
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     is_beta: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)
     s3_key: Mapped[str | None] = mapped_column(String, nullable=False)  # e.g. releases/win32/x64/0.2.0.exe
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+# --------------------------------------------------------------- entitlements
+
+class Entitlement(Base, TimestampMixin):
+    """The server-side "is this user licensed to run the desktop?" answer.
+
+    One row per (user, license) — a reissue creates a new row, the old one
+    is marked inactive.  The desktop authenticates as the user, hits
+    ``/entitlement/check``, and the server decides entitlement based on
+    whichever active row matches.  The license string is never sent to the
+    desktop.
+    """
+
+    __tablename__ = "entitlements"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    license_id: Mapped[str] = mapped_column(
+        String, ForeignKey("licenses.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    tier: Mapped[str] = mapped_column(String, nullable=False)  # unlimited / creator / studio
+    max_devices: Mapped[int] = mapped_column(Integer, server_default="3", nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, server_default="true", nullable=False)
+    revoked_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_reason: Mapped[str | None] = mapped_column(String)
+    # Server allows the desktop to keep using the last successful
+    # entitlement response for this many days offline.  After that the
+    # desktop blocks analysis until a fresh /entitlement/check succeeds.
+    cache_max_age_days: Mapped[int] = mapped_column(Integer, server_default="7", nullable=False)
+
+
+class DeviceActivation(Base, TimestampMixin):
+    """Per-device registration the desktop sends on first launch.
+
+    Unique on (user_id, device_id) so the same physical box counts as one
+    device even if the user logs in repeatedly.  Devices not seen in 30
+    days are auto-revoked to free slots in the limit.
+    """
+
+    __tablename__ = "device_activations"
+    __table_args__ = (UniqueConstraint("user_id", "device_id", name="uq_device_per_user"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    device_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    device_name: Mapped[str] = mapped_column(String, nullable=False)
+    os: Mapped[str] = mapped_column(String, nullable=False)  # win32 / darwin / linux
+    last_seen_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    is_revoked: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)
+
+
+class PasswordResetToken(Base):
+    """Magic-link password reset.
+
+    Only the SHA-256 of the raw token is stored; the raw value lives
+    exactly once, in the email we send.  Single-use, 1h expiry.
+    """
+
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    ip_address: Mapped[str | None] = mapped_column(String)
+    user_agent: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

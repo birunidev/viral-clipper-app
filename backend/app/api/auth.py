@@ -1,15 +1,28 @@
-"""Auth endpoints: register, login, logout, me (session info)."""
+"""Auth endpoints: register, login, logout, me (session info), and the
+email magic-link password-reset flow."""
 
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import os
+import secrets
+import uuid
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from .. import db
 from ..ratelimit import RateLimitExceeded, limiter
-from ..schemas import LoginRequest, RegisterRequest, UserResponse
+from ..schemas import (
+    LoginRequest,
+    PasswordResetConfirm,
+    PasswordResetRequest,
+    PasswordResetResponse,
+    RegisterRequest,
+    UserResponse,
+)
 from ..security import (
     SESSION_COOKIE,
     SessionUser,
@@ -139,9 +152,155 @@ def logout(
 
 @router.get("/me", response_model=UserResponse)
 def me(user: SessionUser = Depends(current_user)) -> UserResponse:
+    """Return the current session user + license / device summary.
+
+    Single round-trip so the web sidebar can render Profile/Licenses/Billing
+    badges without a second request.
+    """
+    from sqlalchemy import select
+
+    from ..database import session_scope
+    from ..models import DeviceActivation, Entitlement
+    from ..services.entitlements import _credits_for
+
+    with session_scope() as session:
+        ent = session.execute(
+            select(Entitlement).where(
+                Entitlement.user_id == user.id, Entitlement.is_active == True  # noqa: E712
+            ).order_by(Entitlement.created_at.desc()).limit(1)
+        ).scalars().first()
+        active_devices = session.execute(
+            select(DeviceActivation).where(
+                DeviceActivation.user_id == user.id,
+                DeviceActivation.is_revoked == False,  # noqa: E712
+            )
+        ).scalars().all()
+        credits = _credits_for(user.id)
     return UserResponse(
         id=user.id,
         name=user.name,
         email=user.email,
         terms_accepted_at=user.terms_accepted_at,
+        has_license=ent is not None,
+        license_tier=(ent.tier if ent else None),
+        credits=credits,
+        current_device_count=len(active_devices),
+        max_devices=(int(ent.max_devices) if ent else 0),
     )
+
+
+# ------------------------------------------------------------ magic link
+
+PASSWORD_RESET_LIMIT_PER_EMAIL = 5   # /hour
+PASSWORD_RESET_LIMIT_PER_IP = 20     # /hour
+PASSWORD_RESET_TOKEN_TTL_HOURS = 1
+PASSWORD_RESET_TOKEN_BYTES = 32
+
+
+def _hash_token(raw: str) -> str:
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _is_debug() -> bool:
+    raw = os.environ.get("DEBUG", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+@router.post("/password/reset-request", response_model=PasswordResetResponse, status_code=202)
+async def password_reset_request(payload: PasswordResetRequest, request: Request) -> PasswordResetResponse:
+    """Email a one-time password-reset link.
+
+    Always returns 202 with ``ok=true`` regardless of whether the email
+    matches an account (no email enumeration).  The token is single-use
+    and expires in 1h.  In dev (``DEBUG=1``) the response is augmented
+    with ``dev_reset_link`` so the smoke script can complete the flow
+    without an SMTP server.
+    """
+    email = payload.email.strip().lower()
+    ip = request.client.host if request.client else "unknown"
+    # Per-email + per-IP rate limits (5/h per email, 20/h per IP).
+    try:
+        limiter.check(f"pwreset:email:{email}", PASSWORD_RESET_LIMIT_PER_EMAIL, 3600)
+    except RateLimitExceeded:
+        return PasswordResetResponse(ok=True)
+    try:
+        limiter.check(f"pwreset:ip:{ip}", PASSWORD_RESET_LIMIT_PER_IP, 3600)
+    except RateLimitExceeded:
+        return PasswordResetResponse(ok=True)
+
+    from core import mailer
+    from ..database import session_scope
+    from ..models import PasswordResetToken, User
+
+    user_id: str | None = None
+    raw_token: str | None = None
+    with session_scope() as session:
+        user = session.execute(
+            select(User).where(User.email == email)
+        ).scalars().first()
+        if user is not None:
+            user_id = user.id
+            raw_token = secrets.token_urlsafe(PASSWORD_RESET_TOKEN_BYTES)
+            now = dt.datetime.now(dt.timezone.utc)
+            session.add(
+                PasswordResetToken(
+                    id=uuid.uuid4().hex,
+                    user_id=user_id,
+                    token_hash=_hash_token(raw_token),
+                    expires_at=now + dt.timedelta(hours=PASSWORD_RESET_TOKEN_TTL_HOURS),
+                    ip_address=ip,
+                    user_agent=request.headers.get("user-agent"),
+                )
+            )
+
+    if user_id is not None and raw_token is not None:
+        link = f"{mailer.site_url()}/app/reset-password?token={raw_token}"
+        await mailer.send(
+            to=email,
+            subject="Reset your ClipZard password",
+            text=(
+                f"Hi,\n\n"
+                f"Click the link below to reset your ClipZard password. "
+                f"It expires in {PASSWORD_RESET_TOKEN_TTL_HOURS} hour and can be used once.\n\n"
+                f"{link}\n\n"
+                f"If you didn't request this, you can ignore this email.\n\n"
+                f"— ClipZard"
+            ),
+        )
+    return PasswordResetResponse(ok=True)
+
+
+@router.post("/password/reset-confirm", response_model=PasswordResetResponse)
+def password_reset_confirm(payload: PasswordResetConfirm) -> PasswordResetResponse:
+    """Redeem a single-use reset token.  Returns 400 if the token is
+    missing/expired/already-used."""
+    raw = (payload.token or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="invalid")
+    from sqlalchemy import select
+
+    from ..database import session_scope
+    from ..models import PasswordResetToken, User
+    from ..security import hash_password
+
+    h = _hash_token(raw)
+    now = dt.datetime.now(dt.timezone.utc)
+    with session_scope() as session:
+        row = session.execute(
+            select(PasswordResetToken).where(PasswordResetToken.token_hash == h)
+        ).scalars().first()
+        if row is None:
+            raise HTTPException(status_code=400, detail="invalid")
+        if row.used_at is not None:
+            raise HTTPException(status_code=400, detail="already_used")
+        if row.expires_at < now:
+            raise HTTPException(status_code=400, detail="expired")
+        # Atomically mark used + rotate the password.
+        row.used_at = now
+        user = session.execute(
+            select(User).where(User.id == row.user_id)
+        ).scalars().first()
+        if user is None:
+            raise HTTPException(status_code=400, detail="invalid")
+        user.password_hash = hash_password(payload.new_password)
+    return PasswordResetResponse(ok=True)
