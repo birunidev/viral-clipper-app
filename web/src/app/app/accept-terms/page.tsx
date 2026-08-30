@@ -15,7 +15,7 @@ export default function AcceptTermsPage() {
 
   useEffect(() => {
     if (!isLoading && !user) router.replace("/app/login");
-    if (!isLoading && user?.terms_accepted_at) router.replace("/app/dashboard");
+    if (!isLoading && user?.terms_accepted_at) router.replace("/app/profile");
   }, [isLoading, user, router]);
 
   if (isLoading || !user) return null;
@@ -28,7 +28,7 @@ export default function AcceptTermsPage() {
       return;
     }
     acceptTerms.mutate(undefined, {
-      onSuccess: () => router.replace("/app/dashboard"),
+      onSuccess: () => router.replace("/app/profile"),
       onError: (err) => setError(err.message),
     });
   }

@@ -9,7 +9,7 @@ export default function robots(): MetadataRoute.Robots {
         userAgent: "*",
         allow: "/",
         // App shell requires auth; keep crawlers on public pages only.
-        disallow: ["/app/dashboard", "/app/projects", "/app/billing", "/app/settings", "/app/accept-terms"],
+        disallow: ["/app/profile", "/app/licenses", "/app/projects", "/app/billing", "/app/settings", "/app/accept-terms"],
       },
     ],
     sitemap: `${SITE_URL}/sitemap.xml`,

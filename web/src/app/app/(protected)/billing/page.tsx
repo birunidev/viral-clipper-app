@@ -125,7 +125,7 @@ export default function BillingPage() {
           <>
             {" "}
             Bring your own API keys under{" "}
-            <Link href="/app/settings" className="text-ink-tertiary hover:text-ink underline-offset-2 hover:underline">
+            <Link href="/app/licenses" className="text-ink-tertiary hover:text-ink underline-offset-2 hover:underline">
               Settings
             </Link>
             .

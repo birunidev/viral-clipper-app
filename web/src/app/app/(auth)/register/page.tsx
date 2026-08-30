@@ -24,7 +24,7 @@ export default function RegisterPage() {
     register.mutate(
       { name, email, password, accept_terms: accepted },
       {
-        onSuccess: () => router.push("/app/dashboard"),
+        onSuccess: () => router.push("/app/profile"),
         onError: (err) => setError(err.message),
       }
     );

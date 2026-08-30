@@ -127,7 +127,6 @@ export default function LicensesPage() {
   const [reissued, setReissued] = useState<string | null>(null);
 
   const licenses = licensesQuery.data?.licenses ?? [];
-  const activeLicense = licenses.find((l) => l.is_active);
 
   function handleReissue(licenseId: string) {
     reissueMutation.mutate(licenseId, {

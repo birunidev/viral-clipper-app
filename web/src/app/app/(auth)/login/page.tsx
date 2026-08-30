@@ -18,7 +18,7 @@ export default function LoginPage() {
     login.mutate(
       { email, password },
       {
-        onSuccess: () => router.push("/app/dashboard"),
+        onSuccess: () => router.push("/app/profile"),
         onError: (err) => setError(err.message),
       }
     );
@@ -70,6 +70,13 @@ export default function LoginPage() {
         No account?{" "}
         <Link href="/app/register" className="font-medium text-ink underline underline-offset-4">
           Create one
+        </Link>
+        {" · "}
+        <Link
+          href="/app/forgot-password"
+          className="font-medium text-ink underline underline-offset-4"
+        >
+          Forgot password
         </Link>
       </p>
     </div>

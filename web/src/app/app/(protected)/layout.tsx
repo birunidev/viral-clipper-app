@@ -1,25 +1,24 @@
 "use client";
 
-import { CreditCard, GearSix, SignOut, Shield, SquaresFour } from "@phosphor-icons/react";
+import { CreditCard, Key, Shield, SignOut, UserCircle } from "@phosphor-icons/react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { useLogout, useSession } from "@/hooks/use-auth";
-import { useBilling } from "@/hooks/use-billing";
 import { useAdminStatus } from "@/hooks/use-admin-updates";
 
 function Logo() {
   return (
-    <Link href="/app/dashboard" className="flex items-center gap-2.5">
+    <Link href="/app/profile" className="flex items-center gap-2.5">
       <img src="/logo-with-text.png" alt="ClipZard" className="h-8 w-auto object-contain" />
     </Link>
   );
 }
 
 const NAV = [
-  { href: "/app/dashboard", label: "Projects", icon: SquaresFour },
-  { href: "/app/billing", label: "Credits", icon: CreditCard },
-  { href: "/app/settings", label: "Settings", icon: GearSix },
+  { href: "/app/profile", label: "Profile", icon: UserCircle },
+  { href: "/app/licenses", label: "Licenses", icon: Key },
+  { href: "/app/billing", label: "Billing", icon: CreditCard },
 ];
 const ADMIN_NAV = { href: "/admin/updates", label: "Admin", icon: Shield };
 
@@ -28,25 +27,22 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { data: user, isLoading, isError } = useSession();
   const logout = useLogout();
-  const billing = useBilling();
   const admin = useAdminStatus();
 
   useEffect(() => {
-    // Only bounce to login on a definitive "not authenticated" (null data).
-    // An errored session query (network/server blip) keeps the user in place
-    // — the cookie and DB session are still valid.
     if (!isLoading && !isError && !user) router.replace("/app/login");
-    // Existing accounts must accept the Terms/Privacy Policy before using the
-    // app. The standalone consent page handles the actual opt-in.
     if (!isLoading && user && !user.terms_accepted_at)
       router.replace("/app/accept-terms");
   }, [isLoading, isError, user, router]);
 
   if (isLoading || !user) return null;
 
+  const licenseLabel = user.has_license
+    ? `${user.license_tier ?? "licensed"} · ${user.credits.toLocaleString("en-US")} credits`
+    : "No license";
+
   return (
     <div className="flex min-h-dvh flex-1">
-      {/* Sidebar */}
       <aside className="hidden w-60 shrink-0 flex-col border-r border-line bg-surface-1 md:flex">
         <div className="px-4 py-5">
           <Logo />
@@ -92,15 +88,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </div>
           </div>
           <Link
-            href="/app/billing"
+            href="/app/licenses"
             className="mx-3 mb-1 flex items-center gap-2 rounded-lg border border-line bg-surface-2/60 px-3 py-1.5 text-xs text-ink-secondary transition-colors hover:border-line-strong hover:text-ink"
           >
-            <span className={`h-1.5 w-1.5 rounded-full ${billing.data && billing.data.credits > 0 ? "bg-success" : "bg-accent"}`} />
-            <span className="font-medium">{billing.data?.tier_name ?? "Free"}</span>
-            {billing.data && <span className="text-ink-muted">·</span>}
-            {billing.data && (
-              <span className="text-ink-muted">{billing.data.credits.toLocaleString("en-US")} credits</span>
-            )}
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                user.has_license ? "bg-success" : "bg-accent"
+              }`}
+            />
+            <span className="font-medium capitalize">{licenseLabel}</span>
           </Link>
           <button
             onClick={() => {
@@ -116,7 +112,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      {/* Mobile top bar */}
       <div className="flex flex-1 flex-col">
         <div className="flex items-center justify-between border-b border-line px-4 py-3 md:hidden">
           <Logo />

@@ -25,7 +25,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   useEffect(() => {
     // Once we know the admin state, bounce non-admins back to the app
     if (!admin.isLoading && user && admin.data && !admin.data.is_admin) {
-      router.replace("/app/dashboard");
+      router.replace("/app/profile");
     }
   }, [admin.isLoading, admin.data, user, router]);
 
@@ -69,7 +69,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             );
           })}
           <Link
-            href="/app/dashboard"
+            href="/app/profile"
             className="mt-1 flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-ink-tertiary transition-colors hover:bg-surface-2 hover:text-ink"
           >
             <ArrowSquareOut size={16} />
@@ -104,7 +104,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             ClipZard Admin
           </Link>
           <button
-            onClick={() => router.replace("/app/dashboard")}
+            onClick={() => router.replace("/app/profile")}
             className="text-xs text-ink-tertiary underline"
           >
             Back to app
