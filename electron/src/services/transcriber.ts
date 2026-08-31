@@ -253,7 +253,7 @@ export async function transcribeWithWords(videoPath: string, onProgress?: (f: nu
     console.log(`[transcriber] spawn ${bin} ${args.join(" ")} (attempt ${attempt+1}) ${useGpu ? "[GPU]" : "[CPU]"}`);
     let detectedFromStderr: string | null = null;
     const result = await new Promise<{ text: string; words: Word[]; detected?: string | null }>((resolve, reject) => {
-      const p = spawn(bin, args, { stdio: "pipe" });
+      const p = spawn(bin, args, { stdio: "pipe", env: { ...process.env, LD_LIBRARY_PATH: path.dirname(bin) } });
       let out = "", err = "";
       p.stdout.on("data", (d) => (out += d.toString()));
       p.stderr.on("data", (d) => {

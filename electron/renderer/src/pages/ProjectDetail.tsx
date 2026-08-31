@@ -44,6 +44,10 @@ import { WordCaptionOverlay } from "@/components/project/word-caption-overlay";
 import { UpgradeRequired, isPaywall } from "@/components/upgrade-required";
 import { DEFAULT_CAPTION_CONFIG } from "@/lib/caption-style-defaults";
 import { LogPanel } from "@/components/ui/log-panel";
+import { HorizontalThumbStrip } from "@/components/editor/HorizontalThumbStrip";
+import { BigBox } from "@/components/editor/BigBox";
+import { PropsPanel } from "@/components/editor/PropsPanel";
+import { useEditPlanStore } from "@/stores/editPlanStore";
 
 const STAGE_LABEL: Record<string, string> = {
   downloading: "Downloading source",
@@ -214,6 +218,9 @@ export default function ProjectPage() {
   const lastJob = project?.jobs.find((j) => j.type === "analyze");
   const clips = project?.clips ?? [];
   const renderedClips = clips.filter((c) => Boolean(c.signed_video_url));
+  const { selectedId } = useEditPlanStore();
+  const selectedClip = clips.find((c) => c.id === selectedId) ?? clips[0] ?? null;
+  const captionStyles = useCaptionStyles();
 
   return (
     <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-6">
@@ -372,10 +379,48 @@ export default function ProjectPage() {
         </div>
       )}
 
-      {/* Clips */}
+      {/* CapCut-lite Editor — big box + props + horizontal thumbs */}
+      {clips.length > 0 && project && (
+        <Card className="overflow-hidden">
+          <div className="flex flex-col lg:flex-row">
+            <div className="flex flex-1 flex-col items-center bg-canvas p-6">
+              {selectedClip && project.source_video_url && (
+                <BigBox
+                  sourceUrl={project.source_video_url}
+                  thumbnail={selectedClip.signed_thumbnail_url}
+                  start={selectedClip.start_time}
+                  end={selectedClip.end_time}
+                  captionWords={(() => { try { return JSON.parse(selectedClip.caption_json ?? "[]"); } catch { return []; } })()}
+                />
+              )}
+            </div>
+            <div className="w-full shrink-0 border-t border-line bg-surface-1 p-4 lg:w-[360px] lg:border-l lg:border-t-0">
+              <PropsPanel
+                captionStyles={captionStyles.data ?? []}
+                selectedStyleId={selectedClip?.caption_style_id ?? null}
+                onSave={() => {
+                  // explicit Save — persist editPlan to sqlite edit_plans (stub: log)
+                  console.log("[editor] Save editPlan", useEditPlanStore.getState().editPlan);
+                }}
+                onDiscard={() => useEditPlanStore.getState().reset()}
+              />
+            </div>
+          </div>
+          <div className="border-t border-line bg-surface-1 p-3">
+            <p className="mb-2 text-xs font-medium text-ink-secondary">Clips — horizontal rounded thumbs (select to preview)</p>
+            <HorizontalThumbStrip
+              clips={clips}
+              selectedId={selectedClip?.id ?? null}
+              onSelect={(id) => useEditPlanStore.getState().setSelected(id)}
+            />
+          </div>
+        </Card>
+      )}
+
+      {/* Legacy grid — kept for fallback */}
       <div className="flex flex-col gap-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-ink">Clips</h2>
+          <h2 className="text-base font-semibold text-ink">All clips (grid fallback)</h2>
           <span className="text-xs text-ink-tertiary tabular-nums">
             {clips.length} found
           </span>
