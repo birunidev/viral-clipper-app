@@ -67,6 +67,12 @@ const SCHEMA = `
       whisper_model TEXT, version INTEGER NOT NULL DEFAULT 1,
       bytes INTEGER, created_at TEXT NOT NULL, last_used_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS analysis_cache (
+      project_id TEXT PRIMARY KEY, faces_json TEXT, scenes_json TEXT, silences_json TEXT, fillers_json TEXT, created_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS edit_plans (
+      project_id TEXT PRIMARY KEY, plan_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1
+    );
     CREATE INDEX IF NOT EXISTS idx_jobs_project ON jobs(project_id);
     CREATE INDEX IF NOT EXISTS idx_clips_project ON clips(project_id);
     CREATE INDEX IF NOT EXISTS idx_words_project ON timeline_words(project_id);
@@ -124,6 +130,8 @@ async function ensureElectronDb(): Promise<void> {
         "ALTER TABLE jobs ADD COLUMN transcribe_ms INTEGER",
         "ALTER TABLE jobs ADD COLUMN analyze_ms INTEGER",
         "ALTER TABLE projects ADD COLUMN llm_variant TEXT",
+        "CREATE TABLE IF NOT EXISTS analysis_cache (project_id TEXT PRIMARY KEY, faces_json TEXT, scenes_json TEXT, silences_json TEXT, fillers_json TEXT, created_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1)",
+        "CREATE TABLE IF NOT EXISTS edit_plans (project_id TEXT PRIMARY KEY, plan_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1)",
       ]) { try { await sqliteElectron.executeQuery(sql); } catch {} }
       electronReady = true;
       console.log("[db] sqlite-electron ready at", p);
@@ -270,13 +278,15 @@ function getDbInnerSync() {
     const db = new DatabaseSync(p);
     (db as any).exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
     (db as any).exec(SCHEMA);
-    for (const sql of [
-      "ALTER TABLE jobs ADD COLUMN total_execution_time_ms INTEGER",
-      "ALTER TABLE jobs ADD COLUMN download_ms INTEGER",
-      "ALTER TABLE jobs ADD COLUMN transcribe_ms INTEGER",
-      "ALTER TABLE jobs ADD COLUMN analyze_ms INTEGER",
-      "ALTER TABLE projects ADD COLUMN llm_variant TEXT",
-    ]) { try { (db as any).exec(sql); } catch {} }
+      for (const sql of [
+        "ALTER TABLE jobs ADD COLUMN total_execution_time_ms INTEGER",
+        "ALTER TABLE jobs ADD COLUMN download_ms INTEGER",
+        "ALTER TABLE jobs ADD COLUMN transcribe_ms INTEGER",
+        "ALTER TABLE jobs ADD COLUMN analyze_ms INTEGER",
+        "ALTER TABLE projects ADD COLUMN llm_variant TEXT",
+        "CREATE TABLE IF NOT EXISTS analysis_cache (project_id TEXT PRIMARY KEY, faces_json TEXT, scenes_json TEXT, silences_json TEXT, fillers_json TEXT, created_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1)",
+        "CREATE TABLE IF NOT EXISTS edit_plans (project_id TEXT PRIMARY KEY, plan_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1)",
+      ]) { try { (db as any).exec(sql); } catch {} }
     const wrap = {
       prepare(sql:string): Stmt {
         const stmt=(db as any).prepare(sql);
