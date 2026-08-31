@@ -158,24 +158,9 @@ export default function UpdatesAdminPage() {
       <div className="rounded-xl border border-danger/20 bg-danger-soft p-4 text-sm text-danger">
         <p className="font-medium">Admin access required</p>
         <p className="mt-1 text-xs">
-          Your account ({admin.data.email ?? "anonymous"}) is not in the admin allowlist. Set
-          <code className="mx-1 rounded bg-surface-2 px-1 py-0.5 text-[11px]">CLIPZARD_ADMIN_EMAILS</code>
-          on the backend to grant access.
-        </p>
-      </div>
-    );
-  }
-
-  if (!admin.data.admin_emails_configured && !process.env.NEXT_PUBLIC_CLIPZARD_ADMIN_TOKEN) {
-    return (
-      <div className="rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm">
-        <p className="flex items-center gap-1.5 font-medium text-warning">
-          <Warning size={14} weight="fill" />
-          No admin allowlist configured
-        </p>
-        <p className="mt-1 text-xs text-ink-secondary">
-          Set <code className="rounded bg-surface-2 px-1 py-0.5 text-[11px]">CLIPZARD_ADMIN_EMAILS=you@example.com</code> on the
-          backend. The current session is treated as admin because no allowlist is set — this is unsafe for production.
+          Not authenticated as admin. Set <code className="mx-1 rounded bg-surface-2 px-1 py-0.5 text-[11px]">CLIPZARD_API_KEY</code> on the backend
+          and send it as <code className="mx-1 rounded bg-surface-2 px-1 py-0.5 text-[11px]">X-API-Key</code> (CI) or log in as an allowlisted
+          email via <code className="mx-1 rounded bg-surface-2 px-1 py-0.5 text-[11px]">CLIPZARD_ADMIN_EMAILS</code>.
         </p>
       </div>
     );

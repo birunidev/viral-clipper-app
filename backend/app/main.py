@@ -74,6 +74,7 @@ if ALLOWED_ORIGINS:
             "Content-Type",
             "X-Requested-With",
             "X-CSRF-Token",
+            "X-API-Key",
             # Allow Electron to send the User-Agent header (so the backend
             # can skip the CORS preflight for desktop requests when the
             # origin is `null`).
@@ -148,7 +149,7 @@ async def _electron_origin_passthrough(request: Request, call_next: ASGIApp):
             headers={
                 "Access-Control-Allow-Origin": allow_origin,
                 "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-                "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Requested-With, User-Agent",
+                "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Requested-With, X-API-Key, User-Agent",
                 "Access-Control-Allow-Credentials": "true",
                 "Access-Control-Max-Age": "3600",
                 "Vary": "Origin",

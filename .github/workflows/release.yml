@@ -66,6 +66,26 @@ jobs:
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      - name: Publish update (CLIPZARD_API_KEY)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -e
+          VERSION="${GITHUB_REF_NAME#v}"
+          # map matrix.os -> platform/arch
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then PLATFORM=win32; ARCH=x64; FILE=$(ls electron/release/*.exe 2>/dev/null | head -n1 || true)
+          elif [[ "${{ matrix.os }}" == "macos-14" ]]; then PLATFORM=darwin; ARCH=arm64; FILE=$(ls electron/release/*.dmg 2>/dev/null | ls electron/release/*.zip 2>/dev/null | head -n1 || true); FILE=${FILE:-$(ls electron/release/*.dmg 2>/dev/null | head -n1)}
+          else PLATFORM=linux; ARCH=x64; FILE=$(ls electron/release/*.AppImage 2>/dev/null | head -n1 || true)
+          fi
+          if [[ -z "$FILE" || ! -f "$FILE" ]]; then echo "No artifact found for $PLATFORM/$ARCH"; ls -l electron/release/ || true; exit 1; fi
+          IS_BETA="false"; if [[ "$VERSION" == *"-"* ]]; then IS_BETA="true"; fi
+          API="${CLIPZARD_API_URL:-https://clipzard.web.id}"
+          echo "Uploading $FILE as $PLATFORM/$ARCH $VERSION beta=$IS_BETA to $API"
+          node ../scripts/upload-release.mjs --file="$FILE" --version="$VERSION" --platform="$PLATFORM" --arch="$ARCH" --channel="$([ "$IS_BETA" = "true" ] && echo beta || echo stable)" --api="$API"
+        working-directory: electron
+        env:
+          CLIPZARD_API_KEY: ${{ secrets.CLIPZARD_API_KEY }}
+          CLIPZARD_API_URL: ${{ secrets.CLIPZARD_API_URL }}
       - uses: actions/upload-artifact@v4
         with:
           name: clipzard-${{ matrix.os }}

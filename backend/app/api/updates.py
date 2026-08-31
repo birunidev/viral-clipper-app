@@ -2,10 +2,8 @@
 
 Public read endpoints expose the latest published version per
 ``(platform, arch, channel)`` so the Electron auto-updater can decide
-whether to install a newer binary.  Upload is admin-only — admins are
-identified either by ``CLIPZARD_ADMIN_EMAILS`` (comma-separated allowlist
-matched against the logged-in user's email) or by a static
-``CLIPZARD_ADMIN_TOKEN`` (used by the CI upload CLI).
+whether to install a newer binary.  Upload is admin-only — authenticated
+via static ``CLIPZARD_API_KEY`` (sent as X-API-Key or Authorization: Bearer).
 
 S3 stores the binary; the backend streams it back to the client so the
 Electron app never sees S3 credentials.  The ``sha512`` hash is computed
@@ -37,8 +35,7 @@ router = APIRouter(tags=["updates"])
 ALLOWED_PLATFORMS = {"win32", "darwin", "linux"}
 ALLOWED_ARCHES = {"ia32", "x64", "arm64"}
 ALLOWED_CHANNELS = {"stable", "beta"}
-ADMIN_EMAILS_ENV = "CLIPZARD_ADMIN_EMAILS"
-ADMIN_TOKEN_ENV = "CLIPZARD_ADMIN_TOKEN"
+API_KEY_ENV = "CLIPZARD_API_KEY"
 # Secret used to sign the optional ?sig=…&exp=… query on /update/download.
 # If unset, signed URLs are disabled (the download URL is the static,
 # rate-limited /update/download endpoint, which is fine — Caddy already
@@ -46,48 +43,56 @@ ADMIN_TOKEN_ENV = "CLIPZARD_ADMIN_TOKEN"
 DOWNLOAD_SIGN_SECRET_ENV = "CLIPZARD_DOWNLOAD_SIGN_SECRET"
 
 
-def _admin_emails() -> set[str]:
-    raw = os.environ.get(ADMIN_EMAILS_ENV, "")
-    return {e.strip().lower() for e in raw.split(",") if e.strip()}
+def _api_key() -> Optional[str]:
+    return os.environ.get(API_KEY_ENV, "").strip() or None
 
 
-def _admin_token() -> Optional[str]:
-    return os.environ.get(ADMIN_TOKEN_ENV, "").strip() or None
-
-
-def _is_admin_user(user: Optional[SessionUser]) -> bool:
-    if user is None or not user.email:
-        return False
-    return user.email.lower() in _admin_emails()
+def _is_api_key_request(authorization: Optional[str], x_api_key: Optional[str]) -> bool:
+    return bool((x_api_key and x_api_key.strip()) or (authorization and authorization.strip()))
 
 
 def _require_admin(
     request: Request,
-    session: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE),
     authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+    session: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE),
 ) -> SessionUser:
-    """Admin check with two paths:
+    """API-key check (CI) with optional session fallback (web UI).
 
-    1. **Session-cookie path** (web UI): the request must include a
-       valid session whose email is in ``CLIPZARD_ADMIN_EMAILS``.
-    2. **Bearer-token path** (CI/CLI): ``Authorization: Bearer <token>``
-       matching ``CLIPZARD_ADMIN_TOKEN`` (kept for backwards compatibility).
+    1. X-API-Key / Bearer matching CLIPZARD_API_KEY wins immediately.
+    2. Otherwise fall back to session cookie allowlist (CLIPZARD_ADMIN_EMAILS)
+       for local web UI when no API key is sent — harmless when no users exist.
     """
-    expected_token = _admin_token()
-    if expected_token and authorization:
-        token = authorization.strip()
-        if token.lower().startswith("bearer "):
-            token = token[7:].strip()
-        if token == expected_token:
-            # Synthetic admin principal — token auth does not bind a user.
-            return SessionUser(id="__token__", email="__token__", name="admin-token")
-    # Fall back to session-cookie auth
-    user = get_user_from_session(session)
-    if _is_admin_user(user):
-        return user
-    if user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    raise HTTPException(status_code=403, detail="Admin access required")
+    expected = _api_key()
+    # API-key path — if any key header was sent, validate strictly against CLIPZARD_API_KEY
+    if _is_api_key_request(authorization, x_api_key):
+        if not expected:
+            raise HTTPException(status_code=500, detail="CLIPZARD_API_KEY not configured on server")
+        if x_api_key and x_api_key.strip() == expected:
+            return SessionUser(id="__api_key__", email="__api_key__", name="api-key")
+        if authorization:
+            token = authorization.strip()
+            if token.lower().startswith("bearer "):
+                token = token[7:].strip()
+            if token == expected:
+                return SessionUser(id="__api_key__", email="__api_key__", name="api-key")
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    # Session fallback (only when no API key header sent)
+    if session is not None:
+        from ..security import get_user_from_session
+
+        user = get_user_from_session(session)
+        if user and user.email:
+            # If allowlist empty, treat no-user as not admin; else check allowlist
+            admin_emails_raw = os.environ.get("CLIPZARD_ADMIN_EMAILS", "")
+            configured = {e.strip().lower() for e in admin_emails_raw.split(",") if e.strip()}
+            if configured and user.email.lower() in configured:
+                return user
+            if not configured:
+                # No allowlist configured — no session user is considered admin
+                raise HTTPException(status_code=401, detail="Not authenticated")
+            raise HTTPException(status_code=403, detail="Admin access required")
+    raise HTTPException(status_code=401, detail="Not authenticated")
 
 
 def _parse_version(v: str) -> tuple[int, ...]:
@@ -393,15 +398,20 @@ class UpdateRow(BaseModel):
 
 @router.get("/update/admin-status")
 def admin_status(
+    request: Request,
     session: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE),
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
 ) -> dict:
-    """Returns whether the current session is an admin (for nav visibility)."""
-    user = get_user_from_session(session)
-    return {
-        "is_admin": _is_admin_user(user),
-        "email": user.email if user else None,
-        "admin_emails_configured": bool(_admin_emails()),
-    }
+    """Returns whether the request is admin (API key or allowlisted session)."""
+    try:
+        _require_admin(request, authorization, x_api_key, session)
+        return {"is_admin": True, "admin_emails_configured": True}
+    except HTTPException:
+        # Distinguish: is CLIPZARD_API_KEY or allowlist even configured?
+        has_key = bool(os.environ.get(API_KEY_ENV, "").strip())
+        has_allowlist = bool(os.environ.get("CLIPZARD_ADMIN_EMAILS", "").strip())
+        return {"is_admin": False, "admin_emails_configured": has_key or has_allowlist}
 
 
 @router.get("/update/list", response_model=list[UpdateRow])
@@ -571,10 +581,7 @@ async def upload_update(
 
 # ----------------------------------------------------------------- admin: licenses
 
-# Read-only view of every desktop license, plus the owner's email and
-# the count of active (non-revoked, non-stale) devices.  Used by the
-# /admin/licenses page.  Gated on the same allowlist as
-# /update/{list,upload,delete}.
+# Read-only view of every desktop license.  Gated on CLIPZARD_API_KEY.
 
 
 @router.get("/admin/licenses", response_model=list[dict])

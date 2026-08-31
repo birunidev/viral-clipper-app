@@ -13,10 +13,10 @@
        - Fixed X
        - Added Y" \
  *     --api=https://clipzard.web.id \
- *     --token=$CLIPZARD_ADMIN_TOKEN
+ *     --api-key=$CLIPZARD_API_KEY
  *
  * Required env if not passed via flags:
- *   CLIPZARD_ADMIN_TOKEN
+ *   CLIPZARD_API_KEY
  */
 
 import { readFile, stat } from "node:fs/promises";
@@ -43,14 +43,14 @@ async function main() {
   const channel = (args.channel || process.env.CLIPZARD_CHANNEL || "stable").toLowerCase();
   const notes = args.notes ?? process.env.CLIPZARD_NOTES ?? "";
   const api = (args.api || process.env.CLIPZARD_API || "https://clipzard.web.id").replace(/\/$/, "");
-  const token = args.token || process.env.CLIPZARD_ADMIN_TOKEN;
+  const apiKey = args["api-key"] || args.apiKey || args.token || process.env.CLIPZARD_API_KEY;
 
   if (!file) throw new Error("--file <path> is required (or CLIPZARD_FILE)");
   if (!version) throw new Error("--version <semver> is required (or CLIPZARD_VERSION)");
   if (!["win32", "darwin", "linux"].includes(platform)) throw new Error("--platform must be win32/darwin/linux");
   if (!["ia32", "x64", "arm64"].includes(arch)) throw new Error("--arch must be ia32/x64/arm64");
   if (!["stable", "beta"].includes(channel)) throw new Error("--channel must be stable/beta");
-  if (!token) throw new Error("admin token required (--token or CLIPZARD_ADMIN_TOKEN)");
+  if (!apiKey) throw new Error("API key required (--api-key or CLIPZARD_API_KEY)");
 
   const fileStat = await stat(file);
   console.log(`[upload] ${basename(file)} (${(fileStat.size / 1e6).toFixed(1)} MB) -> ${api}/api/v1/update/upload`);
@@ -70,7 +70,8 @@ async function main() {
   const resp = await fetch(`${api}/api/v1/update/upload`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${token}`,
+      "X-API-Key": apiKey,
+      Authorization: `Bearer ${apiKey}`,
     },
     body: form,
   });
