@@ -497,6 +497,20 @@ ipcMain.handle("models:remove", async (_e, variant: string) => {
   return { ok: true };
 });
 
+ipcMain.handle("edit-plan:get", async (_e, projectId: string) => {
+  const { dbFetchOne } = await import("./services/db.js");
+  const row = await dbFetchOne<{ plan_json: string }>("SELECT plan_json FROM edit_plans WHERE project_id=?", [projectId]);
+  if (!row) return null;
+  try { return JSON.parse(row.plan_json); } catch { return null; }
+});
+ipcMain.handle("edit-plan:save", async (_e, projectId: string, plan: unknown) => {
+  const { dbExecute, nowIso } = await import("./services/db.js");
+  const json = JSON.stringify(plan);
+  const now = nowIso();
+  await dbExecute("INSERT OR REPLACE INTO edit_plans (project_id, plan_json, created_at, updated_at, version) VALUES (?,?,?,?,?)", [projectId, json, now, now, 1]);
+  return { ok: true };
+});
+
 ipcMain.handle("deps:status", async () => {
   return { deps: getDepsStatus(), allReady: isAllDepsReady(), missing: missingDeps().map((d) => d.key) };
 });

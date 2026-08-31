@@ -14,10 +14,12 @@
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
     "@tanstack/react-query": "^5.80.0",
+    "immer": "^11.1.18",
     "mediabunny": "^1.55.3",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "react-router-dom": "^7.0.0"
+    "react-router-dom": "^7.0.0",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",

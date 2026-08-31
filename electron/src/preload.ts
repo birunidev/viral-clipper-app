@@ -72,6 +72,8 @@ try {
       ipcRenderer.on("update:status", handler);
       return () => ipcRenderer.removeListener("update:status", handler);
     },
+    editPlanGet: (projectId: string) => ipcRenderer.invoke("edit-plan:get", projectId),
+    editPlanSave: (projectId: string, plan: unknown) => ipcRenderer.invoke("edit-plan:save", projectId, plan),
   });
   console.log("[preload] exposed clipzard");
 } catch (e) {

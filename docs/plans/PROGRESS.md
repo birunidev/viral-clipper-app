@@ -6,7 +6,7 @@
 
 ## Current phase
 
-`06 Editor` — **Next** (05 done). `05` completed 2026-08-31 — `clipRanker angle diversity + analyzer prompt expanded`.
+`07 Polish` — **Next** (06 done). `06` completed 2026-08-31 — `BigBox 9:16, PropsPanel global preset + ratio-locked, HorizontalThumbStrip 108x192 rounded-xl`.
 
 ## Checklist (mark `[x]` in PR, keep history)
 
@@ -16,7 +16,7 @@
 - [x] `03 VAD/Filler` — `silencedetect -30dB d=0.3` 300/800/1500 + EN/ID lexicons + false-start → `removals` with sync — `silenceDetector.ts`, `fillerDetector.ts` (EN um/uh + ID anu→0.96), `falseStartDetector.ts` stub, `videoAnalysis` silences/fillers wiring, typecheck + `filler EN/ID` verified.
 - [x] `04 Speaker` — `webrtcvad/resemblyzer` + face → `speaker_switch 1.5s guard` — `speakerAnalyzer.ts` heuristic `0.8s pause → spk switch`, `camera.ts` `MIN_SHOT 1.5s` + `IGNORE 0.3s` + `zoom 1.08` on switch.
 - [x] `05 Qwen Director` — expanded prompt → validated `EditPlan` (viral score/angle/layout/zoom) `0.7/0.3 ensemble` — `clipRanker.ts` + `analyzer.ts` prompt extended.
-- [ ] `06 Editor` — capcut-lite shell **big-box** `seek → word-caption-overlay 135` + **right props** explicit Save, global `caption_style_id`, ratio-locked `9:16|4:5` drag + **bottom horizontal rounded-rect thumbs** `108x192 rounded-xl overflow-hidden`.
+- [x] `06 Editor` — capcut-lite shell **big-box** `seek → word-caption-overlay 135` + **right props** explicit Save, global `caption_style_id`, ratio-locked `9:16|4:5` drag + **bottom horizontal rounded-rect thumbs** `108x192 rounded-xl overflow-hidden` — `BigBox.tsx`, `PropsPanel.tsx`, `HorizontalThumbStrip.tsx`/`ThumbCell.tsx` `rounded-xl snap-x 108x192`, `editPlanStore.ts` Zustand+immer, `preload editPlan:get/save` + `main edit-plan ipc`, `ProjectDetail` capcut shell.
 - [ ] `07 Polish` — story non-contiguous + reaction-aware (flag-gated).
 
 ## How to continue (instructor — Electron app only)
@@ -36,3 +36,4 @@
 * `2026-08-31` — `03 VAD/Filler` done — `silenceDetector detectSilences → candidate/strong + fillerDetector EN um→0.96 / ID anu→0.96`, `falseStartDetector` stub, `videoAnalysis` now caches silences/fillers. Typecheck + `detectFillers EN/ID` verified.
 * `2026-08-31` — `04 Speaker` done — `speakerAnalyzer heuristic` + `camera.ts planCamera 1.5s/0.3s`. Typecheck verified.
 * `2026-08-31` — `05 Qwen Director` done — `clipRanker rankClips + analyzer SYSTEM_PROMPT extended with silences/faces context`. Typecheck + `rankClips diversity` verified.
+* `2026-08-31` — `06 Editor` done — `BigBox 9:16 word-caption-overlay`, `PropsPanel tightness/ratio/preset global`, `HorizontalThumbStrip 108x192 rounded-xl snap-x` `ThumbCell`, `editPlanStore Zustand` explicit Save/Discard, `preload editPlan:get/save` + `main edit_plans sqlite`. Typecheck electron+renderer green.
