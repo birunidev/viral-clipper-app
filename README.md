@@ -103,7 +103,7 @@ the LLM to local is just pointing `LLM_BASE_URL` at Ollama — no code
 changes. The transcription provider needs the `local` extra installed:
 
 ```bash
-poetry install --extras local   # or: pip install pywhispercpp
+poetry install --extras local
 ```
 
 ### Why WORKERS=1 for local models
@@ -218,7 +218,7 @@ The backend owns all data and auth. Routes under `/api/v1`:
 | POST | `/uploads/presign` | presigned PUT URL for direct browser uploads |
 
 Migrations live in `backend/alembic/`; the backend image runs
-`alembic upgrade head` on boot.
+`poetry run alembic upgrade head` on boot.
 
 ## How it works
 

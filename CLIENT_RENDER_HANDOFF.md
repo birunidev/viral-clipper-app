@@ -141,7 +141,7 @@ Fonts: Anton + Space Grotesk live in `backend/assets/fonts` and must be served t
 - **Session tokens hashed** sha256 at rest; cookie `Secure` auto-on when FRONTEND_URLS https.
 - **Queue**: tier priority Studio>Creator>Starter>Free; `MAX_QUEUE_DEPTH` backpressure → 429; startup recovers queued/stale-running jobs.
 - **Soft delete/trash**: `deleted_at`, restore + purge endpoints, 30-day lazy sweep.
-- **Local whisper**: `WHISPER_MODEL="small"` ≈ AssemblyAI quality on clear speech; models persist in named volume `whisper_models`; pywhispercpp now installed in prod image via requirements.txt.
+- **Local whisper**: `WHISPER_MODEL="small"` ≈ AssemblyAI quality on clear speech; models persist in named volume `whisper_models`; pywhispercpp now installed via `poetry install --extras local` (pure Poetry, no requirements.txt).
 - **Known broken env var**: dev `backend/.env` `S3_BUCKET=testing-bucket` → NoSuchBucket on R2; cloud transcribe falls back only if var removed.
 - **pyproject gotcha**: pywhispercpp is an optional extra → `poetry install --extras local` locally.
 - **Edit schemas carefully**: an earlier sed-style insert landed mid-class and swallowed fields; always read the class after editing.

@@ -120,7 +120,7 @@ cmd_logs() {
 cmd_migrate() {
   parse_flags "$@"
   build_compose_args "$MODE" "$LOCAL_MODELS"
-  docker compose "${COMPOSE_ARGS[@]}" run --rm backend alembic upgrade head
+  docker compose "${COMPOSE_ARGS[@]}" run --rm backend poetry run alembic upgrade head
 }
 
 cmd_pull_model() {

@@ -75,11 +75,31 @@ def ensure_ytdlp_latest(*, timeout: int = 120, auto_update: bool | None = None) 
     logger.info("yt-dlp version at startup: %s (auto_update=%s)", before, auto_update)
     if not auto_update:
         return before
+    # Poetry-aware update: try `poetry run pip install -U yt-dlp` when inside a
+    # Poetry project (pure Poetry, POETRY_VIRTUALENVS_CREATE=false in Docker
+    # or in-project .venv locally). Fallback to `python -m pip`.
+    def _poetry_available() -> bool:
+        # Poetry project detected via poetry.lock next to pyproject
+        # Walk up from this file to find backend root
+        try:
+            here = os.path.dirname(os.path.abspath(__file__))  # core/
+            backend_root = os.path.dirname(here)  # backend/
+            if os.path.isfile(os.path.join(backend_root, "poetry.lock")) and shutil.which("poetry"):
+                return True
+        except Exception:
+            pass
+        return False
+
+    use_poetry = _poetry_available() or os.environ.get("POETRY_ACTIVE") == "1"
+    if use_poetry and shutil.which("poetry"):
+        pip_cmd = ["poetry", "run", "pip", "install", "--no-cache-dir", "-U", "yt-dlp"]
+    else:
+        pip_cmd = [sys.executable, "-m", "pip", "install", "--no-cache-dir", "-U", "yt-dlp"]
     # Prefer pip; fallback to yt-dlp --update if pip not available
     pip_bin = shutil.which("pip") or shutil.which("pip3") or sys.executable + " -m pip"
     # Try pip install -U yt-dlp
     try:
-        cmd = [sys.executable, "-m", "pip", "install", "--no-cache-dir", "-U", "yt-dlp"]
+        cmd = pip_cmd
         logger.info("Updating yt-dlp: %s", " ".join(cmd))
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if result.returncode == 0:

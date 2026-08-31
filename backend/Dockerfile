@@ -14,9 +14,21 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && node --version && deno --version
 
+# Poetry — system-wide install (no venv inside image)
+ENV POETRY_NO_INTERACTION=1 \
+    POETRY_VIRTUALENVS_CREATE=false \
+    POETRY_CACHE_DIR=/tmp/poetry_cache
+
+RUN pip install --no-cache-dir poetry==2.4.1
+
 WORKDIR /app
 
-COPY requirements.txt ./
+# Install deps first (layer cache). Copy only Poetry manifests.
+COPY pyproject.toml poetry.lock ./
+
+RUN poetry install --only main --no-root && rm -rf $POETRY_CACHE_DIR
+
+# Now copy the app
 COPY core ./core
 COPY app ./app
 COPY alembic ./alembic
@@ -28,10 +40,8 @@ COPY alembic.ini ./
 COPY assets/fonts /app/fonts
 RUN fc-cache -f /app/fonts
 
-RUN pip install --no-cache-dir -r requirements.txt
-
 # Ensure yt-dlp is at latest at build time (complements runtime auto-update)
-RUN pip install --no-cache-dir -U yt-dlp || true
+RUN poetry run pip install --no-cache-dir -U yt-dlp || true
 
 EXPOSE 8000
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "poetry run alembic upgrade head && poetry run uvicorn app.main:app --host 0.0.0.0 --port 8000"]
