@@ -58,38 +58,6 @@ if ELECTRON_ALLOW_NULL_ORIGIN and "null" not in ALLOWED_ORIGINS:
 # In dev (`localhost:3000` etc.) keep the same allowlist but the host
 # can be overridden via env.
 
-app = FastAPI(title="ClipZard Backend")
-
-# Browser CORS: full middleware (preflight + credentials).
-if ALLOWED_ORIGINS:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=ALLOWED_ORIGINS,
-        allow_credentials=True,
-        # Tighten from `["*"]` — only the methods the API actually uses
-        # (still need OPTIONS for preflight, PUT for presigned uploads).
-        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=[
-            "Authorization",
-            "Content-Type",
-            "X-Requested-With",
-            "X-CSRF-Token",
-            "X-API-Key",
-            # Allow Electron to send the User-Agent header (so the backend
-            # can skip the CORS preflight for desktop requests when the
-            # origin is `null`).
-            "User-Agent",
-        ],
-        # Don't expose headers the browser doesn't need; this prevents
-        # leaking server-internal state via CORS.
-        expose_headers=["Content-Disposition", "Content-Length", "X-Update-Version"],
-        # Cache the preflight for an hour — short enough to propagate
-        # Caddy rule changes, long enough to avoid OPTIONS on every
-        # authenticated request.
-        max_age=3600,
-    )
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     pool.start()
@@ -119,6 +87,35 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ClipZard Backend", lifespan=lifespan)
+
+# Browser CORS: full middleware (preflight + credentials).
+if ALLOWED_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=ALLOWED_ORIGINS,
+        allow_credentials=True,
+        # Tighten from `["*"]` — only the methods the API actually uses
+        # (still need OPTIONS for preflight, PUT for presigned uploads).
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "X-Requested-With",
+            "X-CSRF-Token",
+            "X-API-Key",
+            # Allow Electron to send the User-Agent header (so the backend
+            # can skip the CORS preflight for desktop requests when the
+            # origin is `null`).
+            "User-Agent",
+        ],
+        # Don't expose headers the browser doesn't need; this prevents
+        # leaking server-internal state via CORS.
+        expose_headers=["Content-Disposition", "Content-Length", "X-Update-Version"],
+        # Cache the preflight for an hour — short enough to propagate
+        # Caddy rule changes, long enough to avoid OPTIONS on every
+        # authenticated request.
+        max_age=3600,
+    )
 
 
 @app.middleware("http")
