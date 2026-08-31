@@ -66,12 +66,18 @@ export function invalidateAnalysisCache(projectId: string): void {
   } catch {}
 }
 
-// Orchestrator stub — no CV yet, just cache wiring.
-// Future M2 will fill faces via faceDetector (WASM 1 fps), scenes via sceneDetector.
+// Orchestrator — wires face + scene detectors, cached per project.
 export async function analyzeSource(
-  _sourcePath: string,
-  _words?: { start_ms: number; end_ms: number; text: string }[]
+  sourcePath: string,
+  _words?: { start_ms: number; end_ms: number; text: string }[],
+  opts: { projectId?: string } = {}
 ): Promise<AnalysisCache> {
-  // Placeholder: return empty cache shell. Real detectors added in M2/M3.
-  return { projectId: _sourcePath, createdAt: new Date().toISOString(), version: 1 };
+  const projectId = opts.projectId ?? sourcePath;
+  const cached = loadAnalysisCache(projectId);
+  if (cached?.faces && cached?.scenes) return cached;
+  const { detectFaces } = await import("./faceDetector.js");
+  const { detectScenes } = await import("./sceneDetector.js");
+  const faces = await detectFaces(sourcePath, { fps: 1 }).catch(() => []);
+  const scenes = detectScenes(sourcePath, 0.4);
+  return saveAnalysisCache(projectId, { faces: faces as FacesJson, scenes: scenes as ScenesJson, sourceDuration: undefined, version: 1, projectId, createdAt: new Date().toISOString() });
 }

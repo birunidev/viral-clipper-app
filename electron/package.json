@@ -39,6 +39,7 @@
     "postinstall": "node -e \"try{require('fs').writeFileSync('node_modules/electron/path.txt','electron')}catch{};try{require('fs').chmodSync('node_modules/electron/dist/chrome-sandbox',0o4755)}catch{}\""
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "^1.0.1",
     "electron-store": "^8.1.0",
     "electron-updater": "^6.3.9",
     "ffmpeg-static": "^5.2.0",

@@ -19,6 +19,9 @@ training/.hf-cache/
 electron/resources/bin/win-x64/*cuda*
 electron/resources/bin/win-x64/cudart*.dll
 electron/resources/bin/win-x64/cublas*.dll
+# mediapipe WASM - lazy-downloaded to userData/models/mediapipe (~15MB)
+electron/resources/models/mediapipe/
+*.tflite
 
 # environment / secrets
 .env

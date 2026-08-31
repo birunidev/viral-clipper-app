@@ -19,6 +19,11 @@ export function cropFilterFor(o: string): string | null {
   throw new CutterError(`Unknown orientation: ${o}`);
 }
 
+export function faceAwareCropFilter(crop: { x: number; y: number; w: number; h: number }): string {
+  // crop is already evenDown + clamped inside source; use literal xywh
+  return `crop=${crop.w}:${crop.h}:${crop.x}:${crop.y}`;
+}
+
 
 
 function escapeFilterPath(p: string): string {
@@ -41,12 +46,24 @@ export function slugify(title: string): string {
   return title.trim().replace(/[^A-Za-z0-9]+/g, "-").toLowerCase().replace(/^-|-$/g, "") || "clip";
 }
 
-export function buildCommand(src: string, start: number, end: number, title: string, outDir: string, index: number, orientation = PORTRAIT, subtitlesPath?: string | null, fontsDir?: string | null, maxResolution?: number | null): string[] {
+export function buildCommand(
+  src: string,
+  start: number,
+  end: number,
+  title: string,
+  outDir: string,
+  index: number,
+  orientation = PORTRAIT,
+  subtitlesPath?: string | null,
+  fontsDir?: string | null,
+  maxResolution?: number | null,
+  faceCrop?: { x: number; y: number; w: number; h: number } | null
+): string[] {
   const duration = Math.max(end - start, 0.1);
   const outPath = path.join(outDir, `${slugify(title)}_${String(index).padStart(2, "0")}.mp4`);
   const cmd: string[] = [ffmpegPath(), "-y", "-hide_banner", "-loglevel", "error", "-ss", start.toFixed(2), "-i", src, "-t", duration.toFixed(2)];
   const filters: string[] = [];
-  const crop = cropFilterFor(orientation);
+  const crop = faceCrop ? faceAwareCropFilter(faceCrop) : cropFilterFor(orientation);
   if (crop) filters.push(crop);
   const scale = scaleFilter(maxResolution);
   if (scale) filters.push(scale);
@@ -56,10 +73,22 @@ export function buildCommand(src: string, start: number, end: number, title: str
   return cmd;
 }
 
-export function cutClip(src: string, start: number, end: number, title: string, outDir: string, index: number, orientation = PORTRAIT, subtitlesPath?: string | null, fontsDir?: string | null, maxResolution?: number | null): Promise<string> {
+export function cutClip(
+  src: string,
+  start: number,
+  end: number,
+  title: string,
+  outDir: string,
+  index: number,
+  orientation = PORTRAIT,
+  subtitlesPath?: string | null,
+  fontsDir?: string | null,
+  maxResolution?: number | null,
+  faceCrop?: { x: number; y: number; w: number; h: number } | null
+): Promise<string> {
   if (!fs.existsSync(src)) return Promise.reject(new CutterError(`Source not found: ${src}`));
   fs.mkdirSync(outDir, { recursive: true });
-  const cmd = buildCommand(src, start, end, title, outDir, index, orientation, subtitlesPath, fontsDir, maxResolution);
+  const cmd = buildCommand(src, start, end, title, outDir, index, orientation, subtitlesPath, fontsDir, maxResolution, faceCrop ?? null);
   const outPath = cmd[cmd.length - 1];
   console.log(`[cutter] ffmpeg bin=${cmd[0]} exists=${fs.existsSync(String(cmd[0]))} src=${src} start=${start} end=${end} out=${outPath}`);
   console.log(`[cutter] cmd: ${cmd.join(" ")}`);
