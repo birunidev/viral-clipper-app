@@ -114,24 +114,30 @@ def set_session_cookie(response: Response, token: str) -> None:
     # FRONTEND_URLS is https; local http dev can force it off with
     # COOKIE_SECURE=0. (OWASP A07/A02: without Secure, the cookie travels in
     # cleartext and session hijack is possible.)
+    # For Electron file:// (Origin: null) Lax drops POST cookies; we use
+    # SameSite=None + Secure when ELECTRON_ALLOW_NULL_ORIGIN and Secure is true.
     secure = _cookie_secure_default()
+    electron_allowed = os.environ.get("ELECTRON_ALLOW_NULL_ORIGIN", "1").strip().lower() in ("1", "true", "yes", "on")
+    samesite = "none" if (secure and electron_allowed) else "lax"
     response.set_cookie(
         SESSION_COOKIE,
         token,
         max_age=SESSION_DAYS * 24 * 3600,
         httponly=True,
-        samesite="lax",
+        samesite=samesite,
         secure=secure,
         path="/",
     )
 
 
 def clear_session_cookie(response: Response) -> None:
-    # Mirror the Secure flag: with Secure the clear-cookie response is only
+    # Mirror the Secure flag and SameSite: with Secure the clear-cookie response is only
     # delivered over HTTPS, so it must itself be Secure or the browser won't
     # process it and the session won't be cleared on logout.
     secure = _cookie_secure_default()
-    response.delete_cookie(SESSION_COOKIE, path="/", secure=secure)
+    electron_allowed = os.environ.get("ELECTRON_ALLOW_NULL_ORIGIN", "1").strip().lower() in ("1", "true", "yes", "on")
+    samesite = "none" if (secure and electron_allowed) else "lax"
+    response.delete_cookie(SESSION_COOKIE, path="/", secure=secure, samesite=samesite, httponly=True)
 
 
 def get_user_from_session(session_token: str | None) -> SessionUser | None:

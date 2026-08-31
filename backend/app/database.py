@@ -38,7 +38,7 @@ def _normalize_dsn(dsn: str) -> str:
 def _engine_kwargs(dsn: str) -> dict:
     if dsn.startswith("sqlite"):
         return {"connect_args": {"check_same_thread": False}}
-    return {"pool_pre_ping": True, "future": True}
+    return {"pool_pre_ping": True, "pool_recycle": 300, "pool_timeout": 30, "future": True}
 
 
 def get_dsn() -> str:
@@ -49,11 +49,26 @@ def get_dsn() -> str:
     return _normalize_dsn(dsn)
 
 
+def _configure_sqlite_pragmas(engine) -> None:
+    from sqlalchemy import event
+    @event.listens_for(engine, "connect")
+    def _set_pragmas(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            cursor.execute("PRAGMA foreign_keys=ON;")
+            cursor.execute("PRAGMA busy_timeout=5000;")
+            cursor.execute("PRAGMA synchronous=NORMAL;")
+        finally:
+            cursor.close()
+
 def get_engine():
     global _engine
     if _engine is None:
         dsn = get_dsn()
         _engine = create_engine(dsn, **_engine_kwargs(dsn))
+        if dsn.startswith("sqlite"):
+            _configure_sqlite_pragmas(_engine)
     return _engine
 
 

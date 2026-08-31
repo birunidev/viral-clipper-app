@@ -96,7 +96,6 @@ export function useCreateProject() {
       source: string;
       source_type: string;
       source_size_bytes?: number;
-      youtube_cookies?: string | null;
     }) => api.post<ProjectListItem>("/projects", payload),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: projectsKey }),
   });

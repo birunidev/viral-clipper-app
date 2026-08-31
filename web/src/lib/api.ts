@@ -30,12 +30,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (isDesktop()) {
     return desktopRequest<T>(path, init);
   }
+  const hasBody = init?.body !== undefined && init?.body !== null;
+  const headers: Record<string, string> = {
+    ...(init?.headers as Record<string, string> ?? {}),
+  };
+  if (hasBody && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
   const res = await fetch(`${API_URL}${path}`, {
     credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
+    headers,
     ...init,
   });
 
@@ -43,17 +47,28 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     let message = res.statusText;
     try {
       const body = await res.json();
-      message = body.detail ?? body.error ?? message;
+      if (Array.isArray(body.detail)) {
+        message = body.detail.map((d: { msg?: string } | string) => typeof d === "string" ? d : (d.msg ?? JSON.stringify(d))).join("; ");
+      } else {
+        message = body.detail ?? body.error ?? body.message ?? message;
+      }
+      if (typeof message !== "string") message = JSON.stringify(message);
     } catch {
       // no JSON body
     }
     throw new ApiError(res.status, message);
   }
 
-  if (res.status === 204) {
+  if (res.status === 204 || res.headers.get("content-length") === "0") {
     return undefined as T;
   }
-  return res.json() as Promise<T>;
+  const text = await res.text();
+  if (!text) return undefined as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return undefined as T;
+  }
 }
 
 async function desktopRequest<T>(path: string, init?: RequestInit): Promise<T> {

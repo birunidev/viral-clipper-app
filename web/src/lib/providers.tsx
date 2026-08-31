@@ -10,9 +10,20 @@ export function Providers({ children }: { children: React.ReactNode }) {
       new QueryClient({
         defaultOptions: {
           queries: {
-            retry: 1,
+            retry: (count, error) => {
+              const status = (error as { status?: number })?.status;
+              if (status && [401, 402, 403, 429].includes(status)) return false;
+              return count < 1;
+            },
             staleTime: 5_000,
             refetchOnWindowFocus: false,
+          },
+          mutations: {
+            retry: (count, error) => {
+              const status = (error as { status?: number })?.status;
+              if (status && [401, 402, 403, 429].includes(status)) return false;
+              return count < 1;
+            },
           },
         },
       })

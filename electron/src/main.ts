@@ -18,6 +18,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 app.setName("clipzard-desktop");
 if (process.platform === "win32") app.setAppUserModelId("com.clipzard.desktop");
 
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+}
+app.on("second-instance", () => {
+  if (win) {
+    if (win.isMinimized()) win.restore();
+    win.focus();
+  }
+});
+
 let win: BrowserWindow | null = null;
 
 function createWindow() {
@@ -83,20 +93,23 @@ function isSafeMediaPath(p: string): string | null {
       toCheck = toCheck.slice(1);
     }
   }
-  const normalized = path.normalize(toCheck);
+  const resolved = path.resolve(path.normalize(toCheck));
   const roots = [
-    path.normalize(path.join(app.getPath("userData"), "projects")),
-    path.normalize(path.join(app.getPath("userData"), "youtube-cache")),
-    path.normalize(app.getPath("temp")),
-    path.normalize(os.tmpdir()),
+    path.resolve(path.normalize(path.join(app.getPath("userData"), "projects"))),
+    path.resolve(path.normalize(path.join(app.getPath("userData"), "youtube-cache"))),
+    path.resolve(path.normalize(app.getPath("temp"))),
+    path.resolve(path.normalize(os.tmpdir())),
   ];
-  if (roots.some((r) => normalized.startsWith(r))) return normalized;
-  if (process.platform === "win32" && /^[a-zA-Z]:\\/.test(normalized) && roots.some((r) => normalized.toLowerCase().startsWith(r.toLowerCase()))) return normalized;
-  // Fallback: also check with forward-slash normalized version for media:// decoded paths
-  const forwardNormalized = toCheck.replace(/\\/g, "/");
-  const forwardRoots = roots.map((r) => r.replace(/\\/g, "/"));
-  if (forwardRoots.some((r) => forwardNormalized.startsWith(r))) return normalized;
-  if (process.platform === "win32" && /^[a-zA-Z]:\//.test(forwardNormalized) && forwardRoots.some((r) => forwardNormalized.toLowerCase().startsWith(r.toLowerCase()))) return normalized;
+  for (const r of roots) {
+    if (resolved === r || resolved.startsWith(r + path.sep)) return resolved;
+  }
+  if (process.platform === "win32") {
+    const lower = resolved.toLowerCase();
+    for (const r of roots) {
+      const lr = r.toLowerCase();
+      if (lower === lr || lower.startsWith(lr + path.sep.toLowerCase())) return resolved;
+    }
+  }
   return null;
 }
 

@@ -102,12 +102,11 @@ services:
       # Always talk to the internal postgres, never whatever localhost/dev
       # URL happens to be in backend/.env (compose overrides env_file).
       DATABASE_URL: postgresql://${POSTGRES_USER:-clipforge}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipforge}
-      # PO token sidecar (bgutil). Backend's yt-dlp plugin contacts this to fetch
-      # Proof-of-Origin tokens. Disabled by default (empty = no POT); set to
-      # http://pot:4416 to enable. Can also be overridden in backend/.env via
-      # POT_PROVIDER_URL / BGUTIL_URL.
-      POT_PROVIDER_URL: ${POT_PROVIDER_URL:-http://pot:4416}
-      # YouTube: safe prod uses YOUTUBE_API_KEY + ENABLE_YTDLP=0 (no cookies).
+      # Upload-only: YouTube is disabled by default (web never sends youtube URLs)
+      ENABLE_YTDLP: ${ENABLE_YTDLP:-0}
+      YTDLP_AUTO_UPDATE: ${YTDLP_AUTO_UPDATE:-0}
+      POT_PROVIDER_URL: ${POT_PROVIDER_URL:-}
+      # YouTube: safe prod uses ENABLE_YTDLP=0 (no cookies).
       # Legacy yt-dlp vars (YTDLP_COOKIEFILE etc.) are read from backend/.env
       # via env_file above – do not duplicate here (would mask env_file).
       # See backend/.env.example for docs.

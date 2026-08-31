@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
 from starlette.middleware.cors import CORSMiddleware
@@ -34,8 +36,12 @@ from .worker import pool
 # (default: production site).  `ELECTRON_ALLOW_NULL_ORIGIN=1` (default in
 # production) enables the file:// path for the desktop app.
 
+def _normalize_origin(o: str) -> str:
+    # strip trailing slash, keep case for now but normalize
+    return o.strip().rstrip("/")
+
 FRONTEND_URLS = [
-    origin.strip()
+    _normalize_origin(origin)
     for origin in os.environ.get("FRONTEND_URLS", "https://clipzard.web.id").split(",")
     if origin.strip()
 ]
@@ -44,8 +50,9 @@ ELECTRON_ALLOW_NULL_ORIGIN = (
     in ("1", "true", "yes", "on")
 )
 # The `null` origin entry is only valid when we trust the desktop app.
-ALLOWED_ORIGINS = list(FRONTEND_URLS)
-if ELECTRON_ALLOW_NULL_ORIGIN:
+# Deduplicate while preserving order
+ALLOWED_ORIGINS = list(dict.fromkeys(FRONTEND_URLS))
+if ELECTRON_ALLOW_NULL_ORIGIN and "null" not in ALLOWED_ORIGINS:
     ALLOWED_ORIGINS.append("null")
 
 # In dev (`localhost:3000` etc.) keep the same allowlist but the host
@@ -54,7 +61,7 @@ if ELECTRON_ALLOW_NULL_ORIGIN:
 app = FastAPI(title="ClipZard Backend")
 
 # Browser CORS: full middleware (preflight + credentials).
-if FRONTEND_URLS:
+if ALLOWED_ORIGINS:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=ALLOWED_ORIGINS,
@@ -82,6 +89,37 @@ if FRONTEND_URLS:
     )
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    pool.start()
+    # Resilient yt-dlp: ensure latest at startup (only if ENABLE_YTDLP=1)
+    if os.environ.get("ENABLE_YTDLP", "0").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            from core.downloader import ensure_ytdlp_latest, schedule_ytdlp_auto_update
+
+            ensure_ytdlp_latest()
+            schedule_ytdlp_auto_update()
+        except Exception:
+            pass
+    try:
+        from core.paddle import ensure_notification_destination
+        ensure_notification_destination()
+    except Exception:
+        pass
+    try:
+        from core.midtrans import resolve_notification_url as _mid_url
+        import logging
+        _mid = _mid_url()
+        if _mid:
+            logging.getLogger(__name__).info("Midtrans expected Dashboard notification URL: %s (set in Midtrans Dashboard > Settings > Configuration, not per-transaction)", _mid)
+    except Exception:
+        pass
+    yield
+
+
+app = FastAPI(title="ClipZard Backend", lifespan=lifespan)
+
+
 @app.middleware("http")
 async def _electron_origin_passthrough(request: Request, call_next: ASGIApp):
     """Allow Electron (and any CORS-skip client like curl, server-to-server)
@@ -101,53 +139,35 @@ async def _electron_origin_passthrough(request: Request, call_next: ASGIApp):
     is_electron = "electron" in user_agent.lower() or "clipzard-desktop" in user_agent.lower()
     # Pre-flight shortcut: answer OPTIONS directly with permissive CORS
     # for desktop-originated requests whose Origin is `null` (the
-    # CORSMiddleware would have rejected it).
+    # CORSMiddleware would have rejected it). Must echo origin, not "*"
+    # when Allow-Credentials is true (spec forbids * with credentials).
     if request.method == "OPTIONS" and is_electron and origin in (None, "null", "file://", "app://"):
+        allow_origin = origin if origin not in (None, "file://", "app://") else "null"
         return Response(
             status_code=204,
             headers={
-                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Origin": allow_origin,
                 "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
                 "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Requested-With, User-Agent",
                 "Access-Control-Allow-Credentials": "true",
                 "Access-Control-Max-Age": "3600",
+                "Vary": "Origin",
             },
         )
     response = await call_next(request)
     if is_electron and origin in (None, "null", "file://", "app://"):
         # Inject the CORS headers for non-preflight requests so the
         # browser's response is readable by the desktop renderer.
-        # (CORSMiddleware already set the Vary: Origin; we extend it.)
+        # Must echo origin, not "*"
         existing = response.headers.get("access-control-allow-origin")
         if not existing:
-            response.headers["Access-Control-Allow-Origin"] = "*"
+            allow_origin = origin if origin not in (None, "file://", "app://") else "null"
+            response.headers["Access-Control-Allow-Origin"] = allow_origin
+            response.headers["Vary"] = "Origin"
     return response
 
 
-@app.on_event("startup")
-def _start_worker_pool() -> None:
-    pool.start()
-    # Resilient yt-dlp: ensure latest at startup (YouTube changes detection often)
-    try:
-        from core.downloader import ensure_ytdlp_latest, schedule_ytdlp_auto_update
 
-        ensure_ytdlp_latest()
-        schedule_ytdlp_auto_update()
-    except Exception:
-        pass
-    try:
-        from core.paddle import ensure_notification_destination
-        ensure_notification_destination()
-    except Exception:
-        pass
-    try:
-        from core.midtrans import resolve_notification_url as _mid_url
-        import logging
-        _mid = _mid_url()
-        if _mid:
-            logging.getLogger(__name__).info("Midtrans expected Dashboard notification URL: %s (set in Midtrans Dashboard > Settings > Configuration, not per-transaction)", _mid)
-    except Exception:
-        pass
 
 
 ENABLE_WEB_CLIPPER = os.environ.get("ENABLE_WEB_CLIPPER", "0").strip().lower() in ("1", "true", "yes", "on")

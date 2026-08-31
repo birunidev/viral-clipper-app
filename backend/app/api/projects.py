@@ -163,6 +163,10 @@ def create_project(payload: ProjectCreate, user: SessionUser = Depends(current_u
     source_type = "upload" if payload.source_type == "upload" else "youtube"
     title = (payload.title or "").strip() or "Untitled"
 
+    # YouTube is disabled by default (ENABLE_YTDLP=0) — web is upload-only
+    if source_type == "youtube" and os.environ.get("ENABLE_YTDLP", "0").strip().lower() not in ("1", "true", "yes", "on"):
+        raise HTTPException(status_code=400, detail="YouTube disabled — use Upload only")
+
     # SSRF guard: remote sources must be YouTube links resolving to public
     # addresses. yt-dlp would otherwise fetch any URL from our network
     # position (cloud metadata, internal services).
@@ -179,15 +183,11 @@ def create_project(payload: ProjectCreate, user: SessionUser = Depends(current_u
     if source_type == "upload":
         real_size = head_object_size_default_bucket(source)
         if real_size is None:
-            # Fall back to the client-provided size; if that is also absent
-            # or zero we must reject because we cannot verify the upload.
-            if not payload.source_size_bytes:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Could not verify uploaded file size; try re-uploading.",
-                )
-            real_size = payload.source_size_bytes
-        elif real_size <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not verify uploaded file size; try re-uploading.",
+            )
+        if real_size <= 0:
             raise HTTPException(status_code=400, detail="Uploaded file is empty")
         size_bytes = real_size
     else:
@@ -210,11 +210,17 @@ def create_project(payload: ProjectCreate, user: SessionUser = Depends(current_u
         cookies = (payload.youtube_cookies or "").strip()
         if cookies and ("youtube.com" in cookies.lower() or "youtu.be" in cookies.lower() or "# Netscape" in cookies):
             try:
+                import os
+                import tempfile
+                fd, tmppath = tempfile.mkstemp(prefix=f"ytcookies_{project['id']}_", dir="/tmp")
+                try:
+                    os.write(fd, cookies.encode("utf-8"))
+                    os.fchmod(fd, 0o600)
+                finally:
+                    os.close(fd)
                 import pathlib
-
-                p = pathlib.Path(f"/tmp/youtube_cookies_{project['id']}.txt")
-                p.write_text(cookies, encoding="utf-8")
-                p.chmod(0o600)
+                canonical = pathlib.Path(f"/tmp/youtube_cookies_{project['id']}.txt")
+                pathlib.Path(tmppath).rename(canonical)
             except Exception as exc:
                 logger.warning("Failed to store client cookies for %s: %s", project["id"], exc)
 
@@ -494,7 +500,25 @@ async def client_render_upload(
         raise HTTPException(status_code=404, detail="Not found")
     if db.get_clip_for_user(clip_id, user.id) is None:
         raise HTTPException(status_code=404, detail="Not found")
-    body = await request.body()
+    # Enforce streaming limit to avoid OOM (WORKERS=1 would stall)
+    max_upload = 500 * 1024 * 1024  # 500 MiB hard limit for client render fallback
+    # Check Content-Length header if present
+    clen = request.headers.get("content-length")
+    if clen:
+        try:
+            if int(clen) > max_upload:
+                raise HTTPException(status_code=413, detail="Upload too large (max 500 MiB)")
+        except ValueError:
+            pass
+    # Stream in chunks to avoid loading entire body into RAM at once
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > max_upload:
+            raise HTTPException(status_code=413, detail="Upload too large (max 500 MiB)")
+        chunks.append(chunk)
+    body = b"".join(chunks)
     if not body:
         raise HTTPException(status_code=400, detail="Empty upload")
     try:

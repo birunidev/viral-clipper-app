@@ -151,7 +151,7 @@ export default function ProjectPage() {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-xs text-ink-muted">
-            <SourceTypeIcon type={project?.source_type ?? "youtube"} />
+            <SourceTypeIcon type={project?.source_type ?? "upload"} />
             <span className="truncate">{project?.source}</span>
           </div>
           <h1 className="mt-1 text-[22px] font-semibold tracking-tight text-ink balance">

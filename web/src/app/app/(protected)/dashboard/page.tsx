@@ -10,7 +10,6 @@ import {
   Trash,
   Warning,
   X,
-  YoutubeLogo,
 } from "@phosphor-icons/react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -21,8 +20,6 @@ import { StatusPill } from "@/components/ui/status-pill";
 import { SourceTypeIcon } from "@/components/project/source-icon";
 import { UpgradeRequired, isPaywall } from "@/components/upgrade-required";
 import { useCreateProject, useDeleteProject, usePurgeProject, usePresignUpload, useProjects, useRestoreProject, useTrashProjects } from "@/hooks/use-projects";
-import { downloadViaWasm } from "@/lib/yt-wasm/auto";
-import { isWasmSupported } from "@/lib/yt-wasm/client";
 
 const TRASH_RETENTION_DAYS = 30;
 
@@ -46,51 +43,14 @@ export default function DashboardPage() {
 
   const [composerOpen, setComposerOpen] = useState(false);
   const [title, setTitle] = useState("");
-  const [sourceType, setSourceType] = useState<"youtube" | "upload">("youtube");
-  const [url, setUrl] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState("");
   const [paywallMessage, setPaywallMessage] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [ytDownloading, setYtDownloading] = useState(false);
-  const [ytPhase, setYtPhase] = useState<string>("");
-  const [ytPct, setYtPct] = useState<number | null>(null);
 
   function fail(err: unknown) {
     if (isPaywall(err)) setPaywallMessage(err.message);
     else setError(err instanceof Error ? err.message : "Something went wrong");
-  }
-
-  async function uploadBlob(blob: Blob, ytTitle: string) {
-    const CAP_BYTES = 500 * 1024 * 1024;
-    if (blob.size > CAP_BYTES) {
-      throw new Error(`Video too large (${(blob.size / 1024 / 1024).toFixed(1)}MB). Try a shorter video.`);
-    }
-    if (blob.size === 0) throw new Error("Downloaded file is empty.");
-    const contentType = blob.type || "video/mp4";
-    const ext = contentType.includes("webm") ? "webm" : contentType.includes("mp4") ? "mp4" : "mp4";
-    const fileName = `${ytTitle.replace(/[^\w]+/g, "-").toLowerCase().slice(0, 80) || "youtube"}.${ext}`;
-    setYtPhase("Uploading");
-    setYtPct(null);
-    const { url: putUrl, key } = await presignUpload.mutateAsync({
-      file_name: fileName,
-      content_type: contentType,
-    });
-    const put = await fetch(putUrl, { method: "PUT", headers: { "Content-Type": contentType }, body: blob });
-    if (!put.ok) throw new Error(`Upload failed (${put.status})`);
-    const finalTitle = title.trim() || ytTitle;
-    return new Promise<void>((resolve, reject) => {
-      createProject.mutate(
-        { title: finalTitle, source: key, source_type: "upload", source_size_bytes: blob.size },
-        {
-          onSuccess: (project) => {
-            router.push(`/app/projects/${project.id}`);
-            resolve();
-          },
-          onError: (err) => reject(err),
-        }
-      );
-    });
   }
 
   async function onSubmit(e: React.FormEvent) {
@@ -98,61 +58,11 @@ export default function DashboardPage() {
     setError("");
     setPaywallMessage("");
 
-    if (sourceType === "youtube") {
-      if (!url.trim()) {
-        setError("Enter a YouTube URL.");
-        return;
-      }
-      if (!isWasmSupported()) {
-        setError("Please use Chrome or Edge on desktop for best results.");
-        return;
-      }
-      setYtDownloading(true);
-      setYtPhase("Extracting");
-      setYtPct(null);
-      try {
-        const { blob, title: ytTitle } = await downloadViaWasm(url.trim(), (phase, pct) => {
-          // map internal phases to simple user-facing text, no technical jargon
-          if (phase === "extracting") {
-            setYtPhase("Preparing");
-          } else if (phase === "downloading") {
-            setYtPhase("Processing");
-            if (pct !== null && pct !== undefined) setYtPct(pct);
-          } else if (phase === "processing") {
-            setYtPhase("Processing");
-          } else if (phase === "uploading") {
-            setYtPhase("Uploading");
-          }
-        });
-        await uploadBlob(blob, ytTitle);
-        // uploadBlob navigates on success; keep loading until navigation
-      } catch (err) {
-        setYtDownloading(false);
-        setYtPhase("");
-        setYtPct(null);
-        const msg = err instanceof Error ? err.message : "Something went wrong";
-        // Hide technical details – smooth fallback, user sees simple message
-        if (msg.toLowerCase().includes("proxy")) {
-          setError("Processing is temporarily unavailable. Please try again in a moment.");
-        } else if (msg.toLowerCase().includes("private") || msg.toLowerCase().includes("not playable")) {
-          setError("This video can't be processed at the moment. Try another public video or upload a file.");
-        } else {
-          setError("This video can't be processed at the moment. Please try another video.");
-        }
-        // keep internal detail in console for debugging (not shown to user)
-        console.error("[wasm] youtube processing failed", err);
-      }
-      return;
-    }
-
     if (!file) {
       setError("Choose a video file.");
       return;
     }
 
-    // 100MB per-user cap (matches backend core/storage.py). The backend
-    // enforces this authoritatively too, but failing fast client-side is a
-    // better UX than a rejected upload.
     const CAP_BYTES = 100 * 1024 * 1024;
     if (file.size > CAP_BYTES) {
       setError("This file is larger than the 100MB storage limit.");
@@ -185,7 +95,7 @@ export default function DashboardPage() {
   }
 
   const projects = projectsQuery.data;
-  const isUploading = presignUpload.isPending || createProject.isPending || ytDownloading;
+  const isUploading = presignUpload.isPending || createProject.isPending;
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-8">
@@ -197,7 +107,7 @@ export default function DashboardPage() {
           <p className="mt-1 text-sm text-ink-tertiary">
             {view === "trash"
               ? `Deleted projects are permanently removed after ${TRASH_RETENTION_DAYS} days.`
-              : "Paste a YouTube link or upload a video — ClipZard finds the moments worth cutting."}
+              : "Upload a video — ClipZard finds the moments worth cutting."}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -240,39 +150,6 @@ export default function DashboardPage() {
               </button>
             </div>
 
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              <button
-                type="button"
-                onClick={() => setSourceType("youtube")}
-                className={`flex items-center gap-2.5 rounded-lg border px-3.5 py-3 text-left text-sm transition-colors ${
-                  sourceType === "youtube"
-                    ? "border-accent/40 bg-accent-soft text-ink"
-                    : "border-line text-ink-secondary hover:border-line-strong"
-                }`}
-              >
-                <YoutubeLogo size={20} weight={sourceType === "youtube" ? "fill" : "regular"} />
-                <div>
-                  <p className="font-medium leading-tight">YouTube link</p>
-                  <p className="text-xs text-ink-tertiary">Paste a public video URL</p>
-                </div>
-              </button>
-              <button
-                type="button"
-                onClick={() => setSourceType("upload")}
-                className={`flex items-center gap-2.5 rounded-lg border px-3.5 py-3 text-left text-sm transition-colors ${
-                  sourceType === "upload"
-                    ? "border-accent/40 bg-accent-soft text-ink"
-                    : "border-line text-ink-secondary hover:border-line-strong"
-                }`}
-              >
-                <CloudArrowUp size={20} weight={sourceType === "upload" ? "fill" : "regular"} />
-                <div>
-                  <p className="font-medium leading-tight">Upload file</p>
-                  <p className="text-xs text-ink-tertiary">MP4, MOV, or MKV</p>
-                </div>
-              </button>
-            </div>
-
             <label className="flex flex-col gap-1.5 text-sm">
               <span className="text-ink-secondary">Title (optional)</span>
               <input
@@ -283,56 +160,24 @@ export default function DashboardPage() {
               />
             </label>
 
-            {sourceType === "youtube" ? (
-              <>
-                <label className="flex flex-col gap-1.5 text-sm">
-                  <span className="text-ink-secondary">YouTube URL</span>
-                  <input
-                    value={url}
-                    onChange={(e) => setUrl(e.target.value)}
-                    placeholder="https://www.youtube.com/watch?v=..."
-                    className="h-10 rounded-lg border border-line bg-surface-2 px-3 text-sm text-ink outline-none placeholder:text-ink-muted focus:border-accent/50"
-                    disabled={ytDownloading}
-                  />
-                </label>
-
-                {ytDownloading ? (
-                  <div className="rounded-xl border border-line bg-zinc-950 p-4 text-white">
-                    <div className="flex items-center justify-between">
-                      <p className="text-sm font-medium">{ytPhase || "Processing"}</p>
-                      {ytPct !== null && <span className="text-xs tabular-nums text-white/60">{ytPct}%</span>}
-                    </div>
-                    <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
-                      <div className="h-full bg-white transition-all" style={{ width: `${ytPct !== null ? ytPct : 25}%` }} />
-                    </div>
-                    <p className="mt-3 text-xs leading-relaxed text-white/70">Processing your video – this may take a moment on first load. Please keep this tab open.</p>
-                  </div>
-                ) : (
-                  <p className="rounded-lg border border-line bg-surface-2 px-3 py-2 text-xs leading-relaxed text-ink-muted">
-                    Paste a YouTube link and click Create project. We’ll process it in your browser and upload the result – no technical steps needed.
-                  </p>
-                )}
-              </>
-            ) : (
-              <label className="flex flex-col gap-1.5 text-sm">
-                <span className="text-ink-secondary">Video file</span>
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="flex h-10 items-center justify-between rounded-lg border border-line bg-surface-2 px-3 text-left text-sm text-ink-tertiary hover:border-line-strong"
-                >
-                  <span className="truncate text-ink">{file ? file.name : "Choose a file..."}</span>
-                  <CloudArrowUp size={16} />
-                </button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="video/*"
-                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-                  className="hidden"
-                />
-              </label>
-            )}
+            <label className="flex flex-col gap-1.5 text-sm">
+              <span className="text-ink-secondary">Video file</span>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="flex h-10 items-center justify-between rounded-lg border border-line bg-surface-2 px-3 text-left text-sm text-ink-tertiary hover:border-line-strong"
+              >
+                <span className="truncate text-ink">{file ? file.name : "Choose a file... (MP4, MOV, MKV up to 100MB)"}</span>
+                <CloudArrowUp size={16} />
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="video/*"
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                className="hidden"
+              />
+            </label>
 
             {error && (
               <p className="flex items-center gap-1.5 text-sm text-danger">
@@ -342,11 +187,11 @@ export default function DashboardPage() {
             )}
 
             <div className="flex justify-end gap-2 pt-1">
-              <Button type="button" variant="ghost" onClick={() => setComposerOpen(false)} disabled={ytDownloading}>
+              <Button type="button" variant="ghost" onClick={() => setComposerOpen(false)}>
                 Cancel
               </Button>
               <Button type="submit" loading={isUploading} disabled={isUploading}>
-                {ytDownloading ? "Processing..." : isUploading ? "Creating..." : "Create project"}
+                {isUploading ? "Creating..." : "Create project"}
               </Button>
             </div>
           </form>

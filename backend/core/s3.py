@@ -214,7 +214,10 @@ def presigned_get_url(bucket: str, key: str, expires: int = PRESIGNED_EXPIRY) ->
 
 
 def presign_put_url(key: str, content_type: str, expires: int = 3600) -> str:
-    """Return a presigned PUT URL for direct browser uploads of ``key``."""
+    """Return a presigned PUT URL for direct browser uploads of ``key``.
+    ContentType is NOT signed to avoid signature mismatches when browsers
+    send a slightly different MIME (e.g. video/mp4 vs application/octet-stream).
+    R2/S3 will store whatever the PUT sends."""
     from botocore.exceptions import ClientError
 
     bucket = _get_bucket()
@@ -222,8 +225,7 @@ def presign_put_url(key: str, content_type: str, expires: int = 3600) -> str:
         "Bucket": bucket,
         "Key": key,
     }
-    if content_type:
-        params["ContentType"] = content_type
+    # Intentionally omit ContentType from Params to keep PUT flexible
     try:
         return _client().generate_presigned_url(
             "put_object",
@@ -284,4 +286,7 @@ def head_object_size(bucket: str, key: str) -> int | None:
 
 def head_object_size_default_bucket(key: str) -> int | None:
     """Return size of object at *key* in the configured S3 bucket, or None."""
-    return head_object_size(_get_bucket(), key)
+    try:
+        return head_object_size(_get_bucket(), key)
+    except S3Error:
+        return None

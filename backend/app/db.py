@@ -470,7 +470,7 @@ def queued_jobs_by_priority() -> list[tuple[str, int, dt.datetime]]:
             .join(Project, Job.project_id == Project.id)
             .join(User, Project.user_id == User.id)
             .where(Job.status == "queued")
-            .order_by(tier_rank, Job.created_at)
+            .order_by(tier_rank.desc(), Job.created_at)
         )
         return [
             (job_id, int(rank or 0), created_at)

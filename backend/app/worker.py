@@ -64,7 +64,7 @@ class WorkerPool:
 
     def __init__(self, count: int | None = None, logger=None) -> None:
         self._count = count if count is not None else _worker_count()
-        self._queue: queue.PriorityQueue = queue.PriorityQueue()
+        self._queue: queue.PriorityQueue = queue.PriorityQueue(maxsize=_max_queue_depth())
         self._threads: list[threading.Thread] = []
         self._logger = logger
         self._started = False
@@ -111,13 +111,14 @@ class WorkerPool:
 
     def submit(self, job_id: str) -> None:
         """Enqueue a job ID at its owner's tier priority."""
-        if self._queue.qsize() >= _max_queue_depth():
-            raise QueueFull(
-                f"Processing queue is full ({_max_queue_depth()} pending jobs)"
-            )
         rank = self._priority_for(job_id)
         self._seq += 1
-        self._queue.put((-rank, time.time(), self._seq, job_id))
+        try:
+            self._queue.put((-rank, time.time(), self._seq, job_id), block=False)
+        except queue.Full:
+            raise QueueFull(
+                f"Processing queue is full ({_max_queue_depth()} pending jobs)"
+            ) from None
 
     def _priority_for(self, job_id: str) -> int:
         """Owner's entitlement rank; unknown/failed lookups degrade to free."""

@@ -421,7 +421,7 @@ def _grant_paddle_pack(user_id: str, data: dict, event_type: str) -> None:
         )
         return
 
-    # Integrity check 2: USD totals vs configured price (best-effort, Decimal-safe).
+    # Integrity check 2: USD totals vs configured price (Decimal-safe, cents precision).
     pack = purchasable_for_key(pack_key) or {}
     expected_usd_cents = int(pack.get("price_usd") or 0)
     details = data.get("details") or {}
@@ -431,7 +431,14 @@ def _grant_paddle_pack(user_id: str, data: dict, event_type: str) -> None:
     total_minor: int | None = None
     if raw_total is not None:
         try:
-            total_minor = int(Decimal(str(raw_total)).to_integral_value(rounding=ROUND_HALF_UP))
+            dec = Decimal(str(raw_total).strip())
+            s = str(raw_total).strip()
+            if "." in s:
+                # Paddle sends major units (e.g. "2.90") → convert to cents
+                total_minor = int((dec * 100).to_integral_value(rounding=ROUND_HALF_UP))
+            else:
+                # already minor units (e.g. "290")
+                total_minor = int(dec.to_integral_value(rounding=ROUND_HALF_UP))
         except (InvalidOperation, ValueError, TypeError):
             total_minor = None
     if expected_usd_cents > 0 and currency == "USD" and total_minor is not None:

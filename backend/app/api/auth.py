@@ -103,7 +103,11 @@ def login(
             raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
 
     user = db.get_user_by_email(payload.email)
-    if user is None or not verify_password(payload.password, user.get("password_hash")):
+    if user is None:
+        # Timing-attack mitigation: dummy Argon verify so non-existent vs wrong-password have same latency
+        verify_password(payload.password, _DUMMY_HASH)
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not verify_password(payload.password, user.get("password_hash")):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     token = new_session_token()
@@ -200,6 +204,9 @@ PASSWORD_RESET_TOKEN_TTL_HOURS = 1
 PASSWORD_RESET_TOKEN_BYTES = 32
 
 
+# Dummy hash for timing-attack mitigation on login enumeration
+_DUMMY_HASH = hash_password("dummy-password-for-timing-mitigation-32chars!!")
+
 def _hash_token(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -276,11 +283,11 @@ async def password_reset_request(payload: PasswordResetRequest, request: Request
 @router.post("/password/reset-confirm", response_model=PasswordResetResponse)
 def password_reset_confirm(payload: PasswordResetConfirm) -> PasswordResetResponse:
     """Redeem a single-use reset token.  Returns 400 if the token is
-    missing/expired/already-used."""
+    missing/expired/already-used. Uses atomic UPDATE to prevent double-use race."""
     raw = (payload.token or "").strip()
     if not raw:
         raise HTTPException(status_code=400, detail="invalid")
-    from sqlalchemy import select
+    from sqlalchemy import select, update
 
     from ..database import session_scope
     from ..models import PasswordResetToken, User
@@ -289,6 +296,28 @@ def password_reset_confirm(payload: PasswordResetConfirm) -> PasswordResetRespon
     h = _hash_token(raw)
     now = dt.datetime.now(dt.timezone.utc)
     with session_scope() as session:
+        # Atomic claim: only one concurrent request can set used_at from NULL
+        result = session.execute(
+            update(PasswordResetToken)
+            .where(
+                PasswordResetToken.token_hash == h,
+                PasswordResetToken.used_at.is_(None),
+                PasswordResetToken.expires_at > now,
+            )
+            .values(used_at=now)
+        )
+        if result.rowcount == 1:
+            row = session.execute(
+                select(PasswordResetToken).where(PasswordResetToken.token_hash == h)
+            ).scalars().first()
+            user = session.execute(
+                select(User).where(User.id == row.user_id)
+            ).scalars().first()
+            if user is None:
+                raise HTTPException(status_code=400, detail="invalid")
+            user.password_hash = hash_password(payload.new_password)
+            return PasswordResetResponse(ok=True)
+        # No row claimed — determine why for proper error
         row = session.execute(
             select(PasswordResetToken).where(PasswordResetToken.token_hash == h)
         ).scalars().first()
@@ -298,12 +327,4 @@ def password_reset_confirm(payload: PasswordResetConfirm) -> PasswordResetRespon
             raise HTTPException(status_code=400, detail="already_used")
         if row.expires_at < now:
             raise HTTPException(status_code=400, detail="expired")
-        # Atomically mark used + rotate the password.
-        row.used_at = now
-        user = session.execute(
-            select(User).where(User.id == row.user_id)
-        ).scalars().first()
-        if user is None:
-            raise HTTPException(status_code=400, detail="invalid")
-        user.password_hash = hash_password(payload.new_password)
-    return PasswordResetResponse(ok=True)
+        raise HTTPException(status_code=400, detail="invalid")

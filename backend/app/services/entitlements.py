@@ -579,10 +579,15 @@ def spend_credits(
     with session_scope() as session:
         # Per-user lock: serialise all credit operations for this user
         # so concurrent transcriber jobs can't both succeed when only
-        # one has the balance.
-        session.execute(
-            select(func.pg_advisory_xact_lock(_user_advisory_lock_key(user_id)))
-        )
+        # one has the balance. Guard for SQLite (Electron) where pg_advisory is absent.
+        try:
+            # Only on Postgres
+            if session.bind and session.bind.url.drivername.startswith("postgresql"):
+                session.execute(
+                    select(func.pg_advisory_xact_lock(_user_advisory_lock_key(user_id)))
+                )
+        except Exception:
+            pass
         income = session.execute(
             select(func.coalesce(func.sum(CreditLedger.amount_dm), 0))
             .where(
