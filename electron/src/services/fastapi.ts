@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import net from "node:net";
 import { app } from "electron";
+import { userDataRoot } from "./userData.js";
 
 let proc: ChildProcess | null = null;
 let apiUrl: string | null = null;
@@ -50,7 +51,7 @@ export async function startLocalFastAPI(): Promise<string> {
   if (apiUrl && proc && !proc.killed) return apiUrl;
   const port = await getFreePort();
   const backendDir = getBackendDir();
-  const userData = app.getPath("userData");
+  const userData = userDataRoot();
   const dbPath = path.join(userData, "clipzard_local.db");
   const dbUrl = `sqlite:///${dbPath}`;
 

@@ -1,10 +1,10 @@
 import path from "node:path";
 import fs from "node:fs";
 import { createRequire } from "node:module";
+import { userDataRoot as unifiedUserDataRoot } from "./userData.js";
 const require = createRequire(import.meta.url);
 function getAppUserData(): string | null {
-  if (process.env.USER_DATA_PATH) return process.env.USER_DATA_PATH;
-  try { const { app } = require("electron") as { app: { getPath: (n: string) => string } }; return app.getPath("userData"); } catch { return null; }
+  try { return unifiedUserDataRoot(); } catch { return null; }
 }
 let _db: any = null;
 type Stmt = { get: (...a: unknown[]) => unknown; all: (...a: unknown[]) => unknown[]; run: (...a: unknown[]) => unknown };

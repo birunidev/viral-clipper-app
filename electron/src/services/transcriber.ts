@@ -5,17 +5,12 @@ import os from "node:os";
 import { createRequire } from "node:module";
 import { ramTier, whisperModelForTier, threadCount } from "./system.js";
 import { ffmpegPath, whisperPath } from "./bin.js";
+import { userDataRoot } from "./userData.js";
 
 const require = createRequire(import.meta.url);
 
 function getUserDataPath(): string {
-  if (process.env.USER_DATA_PATH) return process.env.USER_DATA_PATH;
-  try {
-    const { app } = require("electron") as { app: { getPath: (n: string) => string } };
-    return app.getPath("userData");
-  } catch {
-    return path.join(os.homedir(), ".clipzard");
-  }
+  return userDataRoot();
 }
 
 export type Word = { text: string; start_ms: number; end_ms: number };

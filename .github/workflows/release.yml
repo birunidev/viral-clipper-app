@@ -35,8 +35,30 @@ jobs:
       - name: Install electron deps
         run: npm ci
         working-directory: electron
+      - name: Install build deps (whisper.cpp)
+        shell: bash
+        run: |
+          if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
+            sudo apt-get update && sudo apt-get install -y cmake build-essential git curl
+            cmake --version; gcc --version
+          elif [[ "${{ matrix.os }}" == "macos-14" ]]; then
+            brew list cmake >/dev/null 2>&1 || brew install cmake
+            cmake --version; clang --version
+          else
+            echo "Windows — whisper prebuilt will be downloaded, no cmake needed"
+            cmake --version || echo "cmake not found on Windows (expected)"
+          fi
+      - name: Compile TypeScript
+        run: npx tsc
+        working-directory: electron
+      - name: Prepare binaries (whisper + ffmpeg)
+        run: node scripts/prepare-build.mjs --skip-models
+        working-directory: electron
+      - name: Verify deps (binaries only, models are lazy-downloaded to ~/.config/clipzard-desktop / ~/.clipzard)
+        run: node -e "import('./dist/services/deps.js').then(m=>{console.log(JSON.stringify(m.getDepsStatus(),null,2)); const miss=m.missingDeps().filter(d=>!d.key.includes('model')).map(d=>d.key); if(miss.length){console.error('MISSING required binaries:',miss);process.exit(1)}})"
+        working-directory: electron
       - name: Build app
-        run: npx tsc && npx electron-builder ${{ matrix.args }} --publish never
+        run: npx electron-builder ${{ matrix.args }} --publish never
         working-directory: electron
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

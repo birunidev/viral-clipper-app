@@ -27,6 +27,7 @@ import os from "node:os";
 import path from "node:path";
 import { app } from "electron";
 import { authCookieHeader, currentSession, logout, type MeUser } from "./auth.js";
+import { userDataRoot } from "./userData.js";
 
 const API_URL = (() => {
   if (process.env.CLIPZARD_API_URL) return process.env.CLIPZARD_API_URL.replace(/\/+$/, "");
@@ -59,7 +60,7 @@ export type EntitlementStatus =
   | { ok: false; reason: DenyReason; message: string; max_devices?: number; current_device_count?: number };
 
 function _deviceIdFile(): string {
-  return path.join(app.getPath("userData"), "device.id");
+  return path.join(userDataRoot(), "device.id");
 }
 
 export function getDeviceId(): string {
@@ -85,7 +86,7 @@ function getOs(): string {
 }
 
 function _entCacheFile(): string {
-  return path.join(app.getPath("userData"), "entitlement_cache.json");
+  return path.join(userDataRoot(), "entitlement_cache.json");
 }
 
 function _signingSecret(): string {

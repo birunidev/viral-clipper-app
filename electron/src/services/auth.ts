@@ -17,6 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import { app } from "electron";
+import { userDataRoot } from "./userData.js";
 
 const API_URL = (() => {
   // Production by default. Dev override via env or `app.isPackaged`.
@@ -26,7 +27,7 @@ const API_URL = (() => {
 })();
 
 function sessionFile(): string {
-  return path.join(app.getPath("userData"), "session.json");
+  return path.join(userDataRoot(), "session.json");
 }
 
 export type Session = {

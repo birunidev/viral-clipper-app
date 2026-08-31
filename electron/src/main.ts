@@ -9,6 +9,7 @@ import { checkEntitlement, clearEntitlementCache, ensureFreshCheck, isEntitledSy
 import { ramTier, whisperModelForTier, llmModelForTier } from "./services/system.js";
 import { listVariants, currentSelectedVariant, whisperStatus, ensureVariant, removeVariant } from "./services/models.js";
 import { getDepsStatus, isAllDepsReady, missingDeps } from "./services/deps.js";
+import { userDataRoot } from "./services/userData.js";
 import { randomUUID } from "node:crypto";
 import { utilityProcess } from "electron";
 import { startLocalFastAPI, getLocalApiUrl, isLocalFastAPIEnabled, stopLocalFastAPI } from "./services/fastapi.js";
@@ -95,8 +96,8 @@ function isSafeMediaPath(p: string): string | null {
   }
   const resolved = path.resolve(path.normalize(toCheck));
   const roots = [
-    path.resolve(path.normalize(path.join(app.getPath("userData"), "projects"))),
-    path.resolve(path.normalize(path.join(app.getPath("userData"), "youtube-cache"))),
+    path.resolve(path.normalize(path.join(userDataRoot(), "projects"))),
+    path.resolve(path.normalize(path.join(userDataRoot(), "youtube-cache"))),
     path.resolve(path.normalize(app.getPath("temp"))),
     path.resolve(path.normalize(os.tmpdir())),
   ];
@@ -140,7 +141,7 @@ async function evictYoutubeCacheIfNeeded() {
 let fastApiUrl: string | null = null;
 
 app.whenReady().then(async () => {
-  console.log("[main] userData", app.getPath("userData"), "appName", app.getName(), "isPackaged", app.isPackaged, "dbPath", getDbPathExport());
+  console.log("[main] userData", userDataRoot(), "legacyAppUserData", app.getPath("userData"), "appName", app.getName(), "isPackaged", app.isPackaged, "dbPath", getDbPathExport());
   try {
     await Promise.race([
       initDb(),
@@ -698,7 +699,7 @@ ipcMain.handle("projects:purge", async (_e, id: string) => {
       try { if (c.thumbnail_url) fs.unlinkSync(c.thumbnail_url as string); } catch {}
     }
     try { if (p.source_key) fs.unlinkSync(p.source_key as string); } catch {}
-    try { const dir = path.join(app.getPath("userData"), "projects", id); fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+    try { const dir = path.join(userDataRoot(), "projects", id); fs.rmSync(dir, { recursive: true, force: true }); } catch {}
   }
   await dbExecute("DELETE FROM job_logs WHERE job_id IN (SELECT id FROM jobs WHERE project_id=?)", [id]);
   await dbExecute("DELETE FROM jobs WHERE project_id=?", [id]);
@@ -775,7 +776,7 @@ function startJobWatchdog() {
 
 async function runJobInUtility(jobId: string, projectId: string, clipId?: string) {
   console.log(`[main] runJobInUtility jobId=${jobId} projectId=${projectId} clipId=${clipId} isEntitled=${isEntitledSync()} packaged=${app.isPackaged}`);
-  const userDataPath = app.getPath("userData");
+  const userDataPath = userDataRoot();
   const resourcesPath = process.resourcesPath ?? process.cwd();
   const runnerPath = path.join(__dirname, "worker", "jobRunner.js");
   const fallbackRunner = path.join(__dirname, "worker/jobRunner.js");
@@ -932,7 +933,7 @@ async function runJobInUtility(jobId: string, projectId: string, clipId?: string
             await dbExecute("INSERT OR IGNORE INTO youtube_cache (video_id, file_path, ext, bytes, created_at, last_used_at) VALUES (?,?,?,?,?,?)", [vid, String(m.sourceKey), ext, bytes, nowIso(), nowIso()]);
             await dbExecute("UPDATE youtube_cache SET last_used_at=?, bytes=? WHERE video_id=?", [nowIso(), bytes, vid]);
           } catch {}
-          const cachedPath = path.join(app.getPath("userData"), "youtube-cache", `${vid}${ext}`);
+          const cachedPath = path.join(userDataRoot(), "youtube-cache", `${vid}${ext}`);
           try {
             if (String(m.sourceKey) !== cachedPath) {
               fs.mkdirSync(path.dirname(cachedPath), { recursive: true });

@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { whisperModelForTier, llmModelForTier, ramTier } from "./system.js";
 import { whisperStatus } from "./models.js";
 import { ffmpegPath, ffprobePath, whisperPath, ytdlpPath } from "./bin.js";
+import { userDataRoot } from "./userData.js";
 
 const require = createRequire(import.meta.url);
 
@@ -40,13 +41,7 @@ export function getDepsStatus(): DepStatus[] {
 
   // LLM model (7b default) — check selected variant first, fallback to any installed variant so "downloaded 7B but selected still balanced" doesn't block
   try {
-    const baseDir = (() => {
-      if (process.env.USER_DATA_PATH) return process.env.USER_DATA_PATH;
-      try {
-        const { app } = require("electron") as { app: { getPath: (n: string) => string } };
-        return app.getPath("userData");
-      } catch { return path.join(process.cwd(), ".data"); }
-    })();
+    const baseDir = userDataRoot();
     const llmPath = path.join(baseDir, "models", "llm", llm.file);
     let bytes = 0;
     try { if (fs.existsSync(llmPath)) bytes = fs.statSync(llmPath).size; } catch {}

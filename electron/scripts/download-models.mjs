@@ -57,17 +57,10 @@ function llmFor(t) {
 function resolveOutDir() {
   const explicit = getArg("out", null);
   if (explicit) return path.resolve(explicit);
-  // try to guess Electron userData: prefer USER_DATA_PATH env, else electron's default is OS-specific.
-  // For CLI we use ~/.config/clipzard-desktop or fallback to ./electron/.data
+  // Unified userData — matches src/services/userData.ts
   if (process.env.USER_DATA_PATH) return process.env.USER_DATA_PATH;
-  try {
-    // Electron userData: app.getPath("userData") ~= ~/.config/clipzard-desktop on Linux
-    const linux = path.join(os.homedir(), ".config", "clipzard-desktop");
-    if (process.platform === "linux") return linux;
-    if (process.platform === "darwin") return path.join(os.homedir(), "Library", "Application Support", "clipzard-desktop");
-    if (process.platform === "win32") return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "clipzard-desktop");
-  } catch {}
-  return path.join(process.cwd(), ".data");
+  if (process.platform === "win32") return path.join(os.homedir(), ".clipzard");
+  return path.join(os.homedir(), ".config", "clipzard-desktop");
 }
 
 function downloadFile(url, dest, label) {

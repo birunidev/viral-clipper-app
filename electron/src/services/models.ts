@@ -5,16 +5,9 @@ import https from "node:https";
 import http from "node:http";
 import { createRequire } from "node:module";
 import { llmModelForVariant, whisperModelForTier, ramTier } from "./system.js";
+import { userDataRoot } from "./userData.js";
 
 const require = createRequire(import.meta.url);
-
-function userDataRoot(): string {
-  if (process.env.USER_DATA_PATH) return process.env.USER_DATA_PATH;
-  try {
-    const { app } = require("electron") as { app: { getPath: (n: string) => string } };
-    return app.getPath("userData");
-  } catch { return path.join(process.cwd(), ".data"); }
-}
 
 export type ModelVariant = "tiny" | "balanced" | "quality";
 export type WhisperModel = "base" | "small" | "medium" | "large-v3";
