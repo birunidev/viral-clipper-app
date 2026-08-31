@@ -189,7 +189,9 @@ export function ReelsWall() {
 
   useEffect(() => {
     let cancelled = false;
-    // Prefer presigned R2 URLs from backend (fresh 7-day signatures), fallback to static json
+    // Straightforward: API is the proxy that reads web/public/reels from R2 and returns presigned URLs.
+    // No second fetch to /reels/reels.json — that file contains local /reels/... paths which are 404
+    // in production (mp4/posters are gitignored and served via R2). API returns fresh 7-day signatures.
     fetch(`${API_URL}/reels`, { cache: "no-store" })
       .then((res) => {
         if (!res.ok) throw new Error("no backend reels");
@@ -198,21 +200,10 @@ export function ReelsWall() {
       .then((data: Reel[]) => {
         if (!cancelled && Array.isArray(data) && data.length > 0) {
           setReels(data);
-          return;
         }
-        throw new Error("empty");
       })
       .catch(() => {
-        // Fallback to static public folder
-        fetch("/reels/reels.json", { cache: "no-store" })
-          .then((res) => {
-            if (!res.ok) throw new Error("no reels.json");
-            return res.json();
-          })
-          .then((data: Reel[]) => {
-            if (!cancelled && Array.isArray(data) && data.length > 0) setReels(data);
-          })
-          .catch(() => {});
+        // Keep FALLBACK_REELS (picsum/gtv) visible; no local /reels fetch to avoid 404.
       });
     return () => {
       cancelled = true;

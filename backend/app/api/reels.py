@@ -48,18 +48,16 @@ def _presigned(key: str | None) -> str | None:
 def list_reels() -> list[dict]:
     """Return reels with fresh presigned URLs. Public, no auth required.
 
-    Reads `reels/reels.json` from R2 (the manifest uploaded with the videos)
-    and generates presigned GET URLs for each file/poster. Falls back to
-    listing objects if manifest is missing.
-
-    Uses dedicated `testing-bucket` (REELS_BUCKET) for reels, separate from
-    main app bucket `clipzard-prod-bucket`.
+    Straightforward proxy: reads `reels/reels.json` manifest directly from
+    R2 (uploaded from web/public/reels) and generates presigned GET URLs
+    for each file/poster. No listing fallback — if manifest is missing,
+    returns empty list (frontend shows placeholder reels).
     """
     from core.s3 import _client
 
     bucket = _get_reels_bucket()
 
-    # Try to fetch manifest from R2
+    # Read manifest directly from R2 (mirrors web/public/reels/reels.json)
     manifest = None
     try:
         client = _client()
@@ -70,7 +68,6 @@ def list_reels() -> list[dict]:
         manifest = None
 
     if manifest and isinstance(manifest, list) and len(manifest) > 0:
-        # Generate presigned URLs for each entry
         result = []
         for entry in manifest:
             # Keys in R2 are like reels/reel_01.mp4, reels/posters/reel_01.jpg
@@ -102,35 +99,4 @@ def list_reels() -> list[dict]:
             )
         return result
 
-    # Fallback: list objects directly if manifest missing
-    try:
-        client = _client()
-        resp = client.list_objects_v2(Bucket=bucket, Prefix="reels/reel_", MaxKeys=30)
-        videos = [o["Key"] for o in resp.get("Contents", []) if o["Key"].endswith(".mp4")]
-        videos.sort()
-        result = []
-        for key in videos[:30]:
-            # Try to find matching poster
-            poster_key = key.replace("reels/reel_", "reels/posters/reel_").replace(".mp4", ".jpg")
-            try:
-                client.head_object(Bucket=bucket, Key=poster_key)
-                has_poster = True
-            except Exception:
-                has_poster = False
-                poster_key = None
-            result.append(
-                {
-                    "file": _presigned(key) or f"/{key}",
-                    "poster": _presigned(poster_key) if has_poster else None,
-                    "youtubeId": None,
-                    "handle": "@clipzard",
-                    "hook": "Viral moment",
-                    "title": key.split("/")[-1],
-                    "dur": "",
-                    "tag": "Viral",
-                    "views": "",
-                }
-            )
-        return result
-    except Exception:
-        return []
+    return []

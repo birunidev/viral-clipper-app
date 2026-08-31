@@ -36,6 +36,8 @@ export function HeroReel() {
 
   useEffect(() => {
     let cancelled = false;
+    // Straightforward: API is the proxy for web/public/reels → R2 presigned URLs.
+    // No fallback to /reels/reels.json (local /reels/... paths are 404 in prod).
     fetch(`${API_URL}/reels`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then((data: Reel[]) => {
@@ -47,13 +49,7 @@ export function HeroReel() {
         }
       })
       .catch(() => {
-        // fallback: try static
-        fetch("/reels/reels.json", { cache: "no-store" })
-          .then((r) => (r.ok ? r.json() : Promise.reject()))
-          .then((data: Reel[]) => {
-            if (!cancelled && Array.isArray(data) && data.length > 0) setReel(data[0]);
-          })
-          .catch(() => {});
+        // Keep placeholder display; no local /reels fetch to avoid 404.
       });
     return () => {
       cancelled = true;
