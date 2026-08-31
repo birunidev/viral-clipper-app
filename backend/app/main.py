@@ -168,18 +168,19 @@ async def _electron_origin_passthrough(request: Request, call_next: ASGIApp):
 
 
 
-ENABLE_WEB_CLIPPER = os.environ.get("ENABLE_WEB_CLIPPER", "0").strip().lower() in ("1", "true", "yes", "on")
+ENABLE_WEB_CLIPPER = False  # web clipper disabled — Electron-only (source code, not deployment env)
 
 app.include_router(auth.router, prefix="/api/v1")
 # Public reels proxy - always on. Reads web/public/reels manifest from R2 (reels/reels.json)
 # and returns fresh presigned URLs. Must NOT be gated by ENABLE_WEB_CLIPPER.
 app.include_router(reels.router, prefix="/api/v1")
-if ENABLE_WEB_CLIPPER:
-    app.include_router(projects.router, prefix="/api/v1")
-    app.include_router(jobs.router, prefix="/api/v1")
-    app.include_router(uploads.router, prefix="/api/v1")
-    app.include_router(caption_styles.router, prefix="/api/v1")
-    app.include_router(settings.router, prefix="/api/v1")
+# Web clipper routes disabled — Electron handles its own pipeline locally.
+# if ENABLE_WEB_CLIPPER:
+#     app.include_router(projects.router, prefix="/api/v1")
+#     app.include_router(jobs.router, prefix="/api/v1")
+#     app.include_router(uploads.router, prefix="/api/v1")
+#     app.include_router(caption_styles.router, prefix="/api/v1")
+#     app.include_router(settings.router, prefix="/api/v1")
 app.include_router(billing.router, prefix="/api/v1")
 app.include_router(billing.hooks_router, prefix="/api/v1")
 app.include_router(licenses.router, prefix="/api/v1")
