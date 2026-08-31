@@ -6,7 +6,7 @@
 
 ## Current phase
 
-`05 Qwen Director` — **Next** (04 done). `04` completed 2026-08-31 — `speakerAnalyzer heuristic + camera switch 1.5s/0.3s guards`.
+`06 Editor` — **Next** (05 done). `05` completed 2026-08-31 — `clipRanker angle diversity + analyzer prompt expanded`.
 
 ## Checklist (mark `[x]` in PR, keep history)
 
@@ -15,7 +15,7 @@
 - [x] `02 WASM Face` — face 1 fps → tracker IoU 0.35 EMA 0.6 → scene 0.4 → 9:16 auto-reframe `face-following` — `faceDetector.ts`, `faceTracker.ts`, `sceneDetector.ts`, `cutter.ts faceAwareCrop`, `videoAnalysis` wiring, `@mediapipe/tasks-vision`, `cutter buildCommand 608:1080:100:50` verified.
 - [x] `03 VAD/Filler` — `silencedetect -30dB d=0.3` 300/800/1500 + EN/ID lexicons + false-start → `removals` with sync — `silenceDetector.ts`, `fillerDetector.ts` (EN um/uh + ID anu→0.96), `falseStartDetector.ts` stub, `videoAnalysis` silences/fillers wiring, typecheck + `filler EN/ID` verified.
 - [x] `04 Speaker` — `webrtcvad/resemblyzer` + face → `speaker_switch 1.5s guard` — `speakerAnalyzer.ts` heuristic `0.8s pause → spk switch`, `camera.ts` `MIN_SHOT 1.5s` + `IGNORE 0.3s` + `zoom 1.08` on switch.
-- [ ] `05 Qwen Director` — expanded prompt → validated `EditPlan` (viral score/angle/layout/zoom) `0.7/0.3 ensemble`.
+- [x] `05 Qwen Director` — expanded prompt → validated `EditPlan` (viral score/angle/layout/zoom) `0.7/0.3 ensemble` — `clipRanker.ts` + `analyzer.ts` prompt extended.
 - [ ] `06 Editor` — capcut-lite shell **big-box** `seek → word-caption-overlay 135` + **right props** explicit Save, global `caption_style_id`, ratio-locked `9:16|4:5` drag + **bottom horizontal rounded-rect thumbs** `108x192 rounded-xl overflow-hidden`.
 - [ ] `07 Polish` — story non-contiguous + reaction-aware (flag-gated).
 
@@ -35,3 +35,4 @@
 * `2026-08-31` — `02 WASM Face` done — `@mediapipe/tasks-vision 15MB`, `faceDetector 1fps` stub (WASM lazy to `userData/models/mediapipe`), `faceTracker faceAwareCrop 608:1080:100:50`, `sceneDetector gt(scene,0.4)`, `.gitignore mediapipe/*.tflite`. Typecheck + `buildCommand faceAware` verified.
 * `2026-08-31` — `03 VAD/Filler` done — `silenceDetector detectSilences → candidate/strong + fillerDetector EN um→0.96 / ID anu→0.96`, `falseStartDetector` stub, `videoAnalysis` now caches silences/fillers. Typecheck + `detectFillers EN/ID` verified.
 * `2026-08-31` — `04 Speaker` done — `speakerAnalyzer heuristic` + `camera.ts planCamera 1.5s/0.3s`. Typecheck verified.
+* `2026-08-31` — `05 Qwen Director` done — `clipRanker rankClips + analyzer SYSTEM_PROMPT extended with silences/faces context`. Typecheck + `rankClips diversity` verified.

@@ -16,6 +16,7 @@ const DEFAULT_CHUNK_CHARS = 9000;
 
 // LOCKED for hook FINDING (scoring/ranking via scorer.ts + LLM ensemble) — do not change ranking logic
 // TWEAKED for hook/title GENERATION only (below) — user requested natural title/hook tune
+// EXTENDED for 05 Qwen Director — adds editorial angle + viral reasoning without breaking ranking
 const SYSTEM_PROMPT = `You are a short-form video analyst. Read this portion of a video transcript and identify the most viral-worthy moments that would perform well as short vertical clips (TikTok, Reels, Shorts). For each clip provide a catchy title, a short one-line viral hook caption, and the start/end timestamps in seconds measured from the beginning of the source video. Return ONLY a JSON object matching this exact schema and nothing else:
 
 {"clips": [{"title": "string", "hook": "string", "start": 12.5, "end": 38.0}]}
@@ -45,6 +46,9 @@ Examples (follow this style for any language):
 - ID transcript: "kita bahas kenapa bitcoin turun karena The Fed hawkish..." -> {"title": "The Fed Bikin Bitcoin Anjlok", "hook": "Kenapa portofolio kamu merah hari ini?", "start": 8, "end": 32}
 - ID transcript: "aku resign kerja kantoran jualan kue di TikTok..." -> {"title": "Resign Demi Jualan Kue", "hook": "Kue ini yang bayar kosanku", "start": 6, "end": 30}
 - ID transcript: "rahasia nabung 10 juta bukan budgeting, tapi..." -> {"title": "Rahasia Nabung 10 Juta", "hook": "Kamu tidak akan percaya yang bikin hemat", "start": 40, "end": 65}
+
+Optional structured context (if provided, use it to avoid choosing solely on dramatic sentences — prefer standalone payoff + clear hook):
+- faces: nearby face count/confidence, scenes: boundaries, silences: pauses you may keep if intentional, tightness: social
 `;
 
 export class AnalysisError extends Error {}
