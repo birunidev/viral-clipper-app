@@ -176,6 +176,36 @@ npm run build:mac                 # dmg + zip (requires macOS)
 
 Builder config: `electron-builder.yml` (`appId com.clipzard.desktop`). Binaries under `resources/bin/<plat>-<arch>/` are auto-included as `extraResources/bin`.
 
+### Docker-only multi-platform build
+
+No host `npm`/`wine` needed — all via Docker:
+
+```bash
+cd electron
+./build-all.sh        # all: linux + win + mac (mac is unsigned)
+./build-all.sh linux  # only AppImage + deb
+./build-all.sh win    # only nsis .exe (wine image)
+./build-all.sh mac    # only dmg + zip (unsigned — Gatekeeper will block)
+
+# artifacts
+ls -lh release/ && cat release/SHA512SUMS
+
+# alternative: Dockerfile
+docker build -f Dockerfile.builder --build-arg TARGET=linux -t clipzard:linux .
+```
+
+Publish after build (free download portal at `/download`):
+
+```bash
+curl -H "X-API-Key: $CLIPZARD_API_KEY" \
+  -F file=@release/ClipZard-0.1.0.AppImage \
+  -F version=0.1.0 -F platform=linux -F arch=x64 \
+  https://clipzard.web.id/api/v1/update/upload
+curl https://clipzard.web.id/api/v1/update/releases | python -m json.tool
+```
+
+> **macOS signing:** Linux-built `dmg` is **unsigned** and will be blocked by Gatekeeper. For a shippable `dmg`, build on `macos-latest` (GitHub Actions) with `APPLE_ID`/`CSC_LINK` cert, or use `electron-builder --mac` on a Mac.
+
 ---
 
 ## Troubleshooting

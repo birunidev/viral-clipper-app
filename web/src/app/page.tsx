@@ -1,65 +1,8 @@
-import { ArrowRight, Check, Lightning, Play, Scissors, Sparkle, Star, Waveform } from "@phosphor-icons/react/dist/ssr";
+import { ArrowRight, Lightning, Play, Scissors, Sparkle, Star, Waveform } from "@phosphor-icons/react/dist/ssr";
 import Link from "next/link";
 import { HeroReel } from "@/components/landing/hero-reel";
 import { ReelsWall } from "@/components/landing/reels-wall";
 import { TestimonialMasonry } from "@/components/landing/testimonial-masonry";
-
-function PricingTier({
-  name,
-  price,
-  sub,
-  features,
-  cta,
-  highlight,
-}: {
-  name: string;
-  price: string;
-  sub: string;
-  features: string[];
-  cta: string;
-  highlight: boolean;
-}) {
-  return (
-    <div
-      className={`flex flex-col rounded-[20px] border p-6 text-left ${
-        highlight
-          ? "border-accent/30 bg-surface-1 shadow-[0_0_0_1px_rgba(246,64,63,0.08),0_12px_40px_-16px_rgba(0,0,0,0.35)]"
-          : "border-line bg-surface-1/60"
-      }`}
-    >
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-sm font-semibold text-ink">{name}</p>
-          <p className="mt-1 text-xs text-ink-muted">{sub}</p>
-        </div>
-        <p className="text-right tabular-nums">
-          <span className="text-2xl font-semibold tracking-tight text-ink">{price}</span>
-          {price !== "$0" && <span className="ml-1 rounded-full bg-accent-soft px-2 py-0.5 text-[10px] font-medium tracking-wide text-accent">one-time purchase</span>}
-        </p>
-      </div>
-      <ul className="mt-6 flex flex-1 flex-col gap-2.5">
-        {features.map((f) => (
-          <li key={f} className="flex items-start gap-2.5 text-sm leading-relaxed text-ink-tertiary">
-            <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-success-soft text-success">
-              <Check size={11} weight="bold" />
-            </span>
-            {f}
-          </li>
-        ))}
-      </ul>
-      <Link
-        href="/app/register"
-        className={`mt-6 inline-flex h-10 items-center justify-center gap-1.5 rounded-full text-sm font-medium transition-[transform,background-color] active:scale-[0.98] ${
-          highlight
-            ? "bg-accent text-accent-ink hover:bg-accent-strong"
-            : "border border-line bg-surface-2 text-ink hover:bg-surface-1"
-        }`}
-      >
-        {cta} <ArrowRight size={14} />
-      </Link>
-    </div>
-  );
-}
 
 
 
@@ -73,6 +16,9 @@ export default function HomePage() {
             <img src="/logo-with-text.png" alt="ClipZard" className="h-8 w-auto object-contain" />
           </Link>
           <nav className="flex items-center gap-2">
+            <Link href="/download" className="hidden rounded-full px-3.5 py-2 text-sm text-ink-tertiary transition-colors hover:text-ink md:inline-flex">
+              Download
+            </Link>
             <Link href="/terms" className="hidden rounded-full px-3.5 py-2 text-sm text-ink-tertiary transition-colors hover:text-ink md:inline-flex">
               Terms
             </Link>
@@ -103,13 +49,13 @@ export default function HomePage() {
             Paste a YouTube link or upload a file. ClipZard transcribes, finds the hooks, and cuts ready-to-post 9:16 clips — captioned if you want.
           </p>
           <div className="flex flex-wrap items-center gap-3">
-            <Link href="/app/register" className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-accent px-6 text-sm font-medium text-accent-ink transition-colors hover:bg-accent-strong">
-              Start clipping <ArrowRight size={14} />
+            <Link href="/download" className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-accent px-6 text-sm font-medium text-accent-ink transition-colors hover:bg-accent-strong">
+              Download app <ArrowRight size={14} />
             </Link>
-            <Link href="/app/login" className="inline-flex h-11 items-center justify-center rounded-full border border-line bg-surface-1 px-6 text-sm font-medium text-ink-secondary transition-colors hover:bg-surface-2 hover:text-ink">
-              Sign in
+            <Link href="/app/register" className="inline-flex h-11 items-center justify-center rounded-full border border-line bg-surface-1 px-6 text-sm font-medium text-ink-secondary transition-colors hover:bg-surface-2 hover:text-ink">
+              Create account
             </Link>
-            <span className="text-xs text-ink-muted">One-time $49 · unlimited forever</span>
+            <span className="text-xs text-ink-muted">Free license · 100 min included</span>
           </div>
           <div className="flex items-center gap-3 pt-1 text-xs text-ink-muted">
             <span className="inline-flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-success" /> Pay per minute, not per month</span>
@@ -223,23 +169,6 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* Pricing */}
-      <section className="border-t border-line bg-surface-1/40 px-6 py-14 md:px-10">
-        <div className="mx-auto max-w-[1400px]">
-          <div className="mx-auto max-w-2xl text-center">
-            <p className="inline-flex items-center gap-2 rounded-full border border-line bg-surface-1 px-3 py-1 text-xs text-ink-tertiary">One-time purchase · Desktop app</p>
-            <h2 className="mt-3 text-2xl font-semibold tracking-tight text-ink sm:text-3xl">Buy once. Clip forever.</h2>
-            <p className="mt-2 text-sm text-ink-tertiary">Unlimited projects, clips & exports. Runs 100% on your PC — no credits, no limits.</p>
-          </div>
-          <div className="mx-auto mt-10 flex max-w-xl justify-center">
-            <PricingTier name="ClipZard Desktop" price="$49" sub="One-time purchase — lifetime updates" features={["Unlimited projects & clips", "Unlimited local storage & exports", "4K + no watermark", "Whisper + Qwen auto-picked for your RAM", "Works fully offline after activation"]} cta="Buy ClipZard" highlight={true} />
-          </div>
-          <p className="mx-auto mt-8 max-w-2xl text-center text-xs leading-relaxed text-ink-muted pretty">
-            One license unlocks everything. In Indonesia? Pay in rupiah via GoPay, QRIS, bank transfer, or card — same one-time price, localized checkout.
-          </p>
-        </div>
-      </section>
-
       {/* Final CTA */}
       <section className="px-6 py-12 md:px-10">
         <div className="mx-auto flex max-w-[1400px] flex-col items-center justify-between gap-6 rounded-[24px] border border-line bg-surface-1 p-8 md:flex-row md:p-10">
@@ -248,8 +177,8 @@ export default function HomePage() {
             <p className="mt-1 max-w-[50ch] text-sm leading-relaxed text-ink-tertiary pretty">YouTube or upload. We transcribe, find the hooks, and cut them to 9:16 — captioned if you want.</p>
           </div>
           <div className="flex shrink-0 items-center gap-3">
-            <Link href="/app/register" className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-accent px-6 text-sm font-medium text-accent-ink transition-colors hover:bg-accent-strong">
-              Start clipping <ArrowRight size={14} />
+            <Link href="/download" className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-accent px-6 text-sm font-medium text-accent-ink transition-colors hover:bg-accent-strong">
+              Download now <ArrowRight size={14} />
             </Link>
             <Link href="/terms" className="hidden text-xs text-ink-muted underline underline-offset-4 hover:text-ink md:inline">
               Terms apply
@@ -258,9 +187,10 @@ export default function HomePage() {
         </div>
       </section>
 
-      <footer className="flex flex-col gap-3 border-t border-line px-6 py-6 md:flex-row md:items-center md:justify-between md:px-10">
+        <footer className="flex flex-col gap-3 border-t border-line px-6 py-6 md:flex-row md:items-center md:justify-between md:px-10">
         <span className="text-xs leading-relaxed text-ink-muted">ClipZard — private by default, runs locally. © 2026 BiruniDev. <Link href="mailto:hello@birunidev.com" className="underline underline-offset-4 hover:text-ink">hello@birunidev.com</Link></span>
         <nav className="flex items-center gap-4 text-xs">
+          <Link href="/download" className="text-ink-tertiary hover:text-ink">Download</Link>
           <Link href="/terms" className="text-ink-tertiary hover:text-ink">Terms</Link>
           <Link href="/privacy" className="text-ink-tertiary hover:text-ink">Privacy</Link>
           <Link href="/app/login" className="text-ink-tertiary hover:text-ink">Sign in</Link>

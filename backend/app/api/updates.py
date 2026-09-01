@@ -138,6 +138,53 @@ def _check_response(update: AppUpdate, request: Request) -> dict:
     }
 
 
+@router.get("/update/releases")
+def list_releases(request: Request):
+    """Public catalog: latest stable release per platform/arch.
+
+    No auth — powers the public /download portal. Returns one entry per
+    (platform, arch) with the newest stable version's metadata and a
+    ready-to-use download URL (signed if DOWNLOAD_SIGN_SECRET is set).
+    Rate-limited 60/IP/min (same as check/feed).
+    """
+    try:
+        limiter.check(f"releases:{request.client.host}", limit=60, window_seconds=60)
+    except RateLimitExceeded as e:
+        raise HTTPException(status_code=429, detail=f"rate limited, retry in {e.retry_after}s")
+    with session_scope() as session:
+        rows = session.execute(
+            select(AppUpdate).where(AppUpdate.is_beta == False)  # noqa: E712
+        ).scalars().all()
+        if not rows:
+            return []
+        # Group by (platform, arch) → newest version
+        best: dict[tuple[str, str], AppUpdate] = {}
+        for r in rows:
+            key = (r.platform, r.arch)
+            cur = best.get(key)
+            if cur is None or _is_newer(r.version, cur.version):
+                best[key] = r
+        base = str(request.base_url).rstrip("/")
+        out = []
+        for (platform, arch), row in sorted(best.items()):
+            signed = _download_signed_url(platform, arch, row.version, base)
+            dl = signed or f"{base}/api/v1/update/download?platform={platform}&arch={arch}&version={row.version}"
+            out.append(
+                {
+                    "platform": platform,
+                    "arch": arch,
+                    "version": row.version,
+                    "size_bytes": int(row.size_bytes or 0),
+                    "sha512": row.sha512 or "",
+                    "release_notes": row.release_notes or "",
+                    "download_url": dl,
+                    "is_beta": bool(row.is_beta),
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                }
+            )
+        return out
+
+
 @router.get("/update/check")
 def check_update(
     request: Request,

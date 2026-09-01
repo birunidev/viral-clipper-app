@@ -104,12 +104,16 @@ export default function ProfilePage() {
                 {user.credits.toLocaleString("en-US")} min
               </dd>
             </div>
-            <div className="flex items-end">
+            <div className="flex items-end gap-3">
               <Link
                 href="/app/licenses"
                 className="text-sm font-medium text-accent hover:underline"
               >
                 Manage devices →
+              </Link>
+              <span className="text-ink-muted">·</span>
+              <Link href="/download" className="text-sm font-medium text-accent hover:underline">
+                Download app →
               </Link>
             </div>
           </dl>

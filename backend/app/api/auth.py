@@ -80,11 +80,24 @@ def register(
     token = new_session_token()
     create_session(user["id"], token)
     set_session_cookie(response, token)
+    # Auto-license: every new account gets a permanent desktop license (max 3 devices)
+    # and keeps the 100 free credits from create_user (FREE_CREDITS). No tier promotion.
+    try:
+        from ..services.entitlements import grant_license_for_user
+
+        grant_license_for_user(user["id"], tier="unlimited", max_devices=3)
+    except Exception:
+        pass
     return UserResponse(
         id=user["id"],
         name=user["name"],
         email=user["email"],
         terms_accepted_at=user.get("terms_accepted_at"),
+        has_license=True,
+        license_tier="unlimited",
+        credits=int(user.get("credits") or 0),
+        current_device_count=0,
+        max_devices=3,
     )
 
 
@@ -168,7 +181,6 @@ def me(user: SessionUser = Depends(current_user)) -> UserResponse:
 
     from ..database import session_scope
     from ..models import DeviceActivation, Entitlement
-    from ..services.entitlements import _credits_for
 
     with session_scope() as session:
         ent = session.execute(
@@ -182,7 +194,11 @@ def me(user: SessionUser = Depends(current_user)) -> UserResponse:
                 DeviceActivation.is_revoked == False,  # noqa: E712
             )
         ).scalars().all()
-        credits = _credits_for(user.id)
+        # Directly read credits from User row — matches billing_status credit_balance
+        from ..models import User as _User
+
+        urow = session.get(_User, user.id)
+        credits = int(getattr(urow, "credits", 0) or 0) if urow else 0
     return UserResponse(
         id=user.id,
         name=user.name,

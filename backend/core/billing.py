@@ -213,10 +213,10 @@ def entitlement_tier(user_id: str) -> str:
 
 
 # ------------------------------------------------------------------ storage
-
+# Local storage: all clips/thumbs/source are on-device, no cloud cap.
 
 def storage_cap(user_id: str) -> int:
-    return int(effective_entitlement(user_id)["storage_cap_bytes"])
+    return 10 * 1024 * 1024 * 1024 * 1024  # 10TB effectively unlimited
 
 
 def storage_used(user_id: str) -> int:
@@ -225,27 +225,16 @@ def storage_used(user_id: str) -> int:
 
 
 def storage_remaining(user_id: str) -> int:
-    return max(0, storage_cap(user_id) - storage_used(user_id))
+    return storage_cap(user_id) - storage_used(user_id)
 
 
 def enforce_storage(user_id: str, additional_bytes: int) -> None:
-    """Raise PaywallError if adding ``additional_bytes`` exceeds the cap."""
-    if additional_bytes <= 0:
-        return
-    used = storage_used(user_id)
-    cap = storage_cap(user_id)
-    if used + additional_bytes > cap:
-        raise PaywallError(
-            f"Storage limit reached ({used} of {cap} bytes used). Delete a "
-            "project or buy a bigger credit pack to free up space.",
-            limit="storage",
-        )
+    """No-op: storage is on-device, cloud cap disabled."""
+    return
 
 
 def has_storage_room(user_id: str, additional_bytes: int) -> bool:
-    if additional_bytes <= 0:
-        return True
-    return storage_used(user_id) + additional_bytes <= storage_cap(user_id)
+    return True
 
 
 # ------------------------------------------------------------------ projects
@@ -256,38 +245,16 @@ def project_count(user_id: str) -> int:
 
 
 def enforce_project_cap(user_id: str, *, allow_existing: bool = True) -> None:
-    """Soft-throttle project creation at the tier's project cap.
-
-    Read access to existing projects is never blocked; only creation is.
-    ``allow_existing`` is retained for API ergonomics.
-    """
-    entitlement = effective_entitlement(user_id)
-    cap = entitlement.get("max_projects")
-    if cap is None:
-        return
-    if project_count(user_id) >= cap:
-        raise PaywallError(
-            f"You've reached the {entitlement['name']} tier's limit of "
-            f"{cap} project(s). Buy a bigger credit pack to create more.",
-            limit="projects",
-        )
+    """No-op: projects are on-device, no cap."""
+    return
 
 
 # ------------------------------------------------------------------ render
 
 
 def render_allowed(user_id: str) -> tuple[bool, int | None, bool]:
-    """Return (allowed, max_resolution|None, watermark) for the user's tier.
-
-    Rendering is always allowed (it's the core feature); the tier only
-    constrains resolution and whether a brand watermark is stamped.
-    """
-    entitlement = effective_entitlement(user_id)
-    return (
-        True,
-        entitlement.get("max_resolution"),
-        bool(entitlement.get("watermark")),
-    )
+    """Unlimited: no resolution/watermark gate — all on-device."""
+    return (True, None, False)
 
 
 # ------------------------------------------------------------------ managed
@@ -326,29 +293,22 @@ def _fmt_usd(cents: int) -> str:
 
 
 def billing_status(user_id: str) -> dict:
-    """The user's full entitlement + usage summary for /billing/status."""
+    """Credits-only status: unlimited local storage/projects."""
     user = db.get_user(user_id) or {}
     tier = entitlement_tier(user_id)
     entitlement = entitlements_for_tier(tier)
-    base = free_tier()
-    # Project the tier's limits onto a status payload the UI already knows.
-    limit_keys = (
-        "storage_cap_bytes",
-        "max_projects",
-        "max_resolution",
-        "watermark",
-    )
     return {
         "tier": tier,
         "tier_name": entitlement["name"],
         "credits": credit_balance(user_id),
         "byok_enabled": _byok_enabled(),
-        # Client-side rendering flag: the browser renders/downloads clips
-        # via WebCodecs when supported; server queue stays the fallback.
         "client_render": os.environ.get("CLIENT_RENDER", "1").strip().lower()
         in ("1", "true", "yes", "on"),
         "limits": {
-            k: entitlement.get(k, base.get(k)) for k in limit_keys
+            "storage_cap_bytes": storage_cap(user_id),
+            "max_projects": None,
+            "max_resolution": None,
+            "watermark": False,
         },
         "usage": {
             "storage_used_bytes": storage_used(user_id),
@@ -363,7 +323,12 @@ def billing_status(user_id: str) -> dict:
                 "price_usd": _usd(p),
                 "price_usd_cents": _usd_cents(p),
                 "price_idr": p["price_idr"],
-                "limits": {k: p.get(k) for k in limit_keys},
+                "limits": {
+                    "storage_cap_bytes": storage_cap(user_id),
+                    "max_projects": None,
+                    "max_resolution": None,
+                    "watermark": False,
+                },
             }
             for p in all_packs()
         ],

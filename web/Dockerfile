@@ -11,6 +11,10 @@ COPY . .
 # if the production API origin differs from the default.
 ARG NEXT_PUBLIC_API_URL="http://localhost:8000/api/v1"
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_SITE_URL="https://clipzard.web.id"
+ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
+ARG NEXT_PUBLIC_GA_ID=""
+ENV NEXT_PUBLIC_GA_ID=$NEXT_PUBLIC_GA_ID
 RUN npm run build
 
 FROM node:22-alpine AS runner

@@ -78,16 +78,15 @@ def _sign_blob(payload: dict) -> str:
 
 
 def _credits_for(user_id: str) -> int:
-    """Look up the user's current credit balance.  We pull this from the
-    same place the billing module does (``core.billing``); for the smoke
-    test we degrade gracefully when the column is missing or the module
-    isn't available."""
+    """Direct read of User.credits — avoids circular billing call."""
     try:
-        from ..core import billing as _billing
+        from ..database import session_scope as _ss
+        from ..models import User as _U
 
-        status = _billing.billing_status(user_id)
-        if isinstance(status, dict):
-            return int(status.get("credits") or 0)
+        with _ss() as _sess:
+            _u = _sess.get(_U, user_id)
+            if _u is not None:
+                return int(getattr(_u, "credits", 0) or 0)
     except Exception:
         pass
     return 0

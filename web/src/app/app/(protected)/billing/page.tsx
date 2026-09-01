@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Coins, Cube, Database, Key, Lightning, Warning } from "@phosphor-icons/react";
+import { Check, Coins, Key, Warning } from "@phosphor-icons/react";
 import Link from "next/link";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,7 @@ import {
   useInvalidateBilling,
   useTransactions,
 } from "@/hooks/use-billing";
-import type { BillingStatus, CreditPack, EntitlementLimits, TopUpPack, Transaction } from "@/hooks/types";
+import type { BillingStatus, TopUpPack } from "@/hooks/types";
 
 type SnapWindow = Window & {
   snap?: {
@@ -91,8 +91,8 @@ export default function BillingPage() {
       <div>
         <h1 className="text-[22px] font-semibold tracking-tight text-ink">Billing</h1>
         <p className="mt-1 text-sm text-ink-tertiary">
-          Buy a desktop license for the app, or top up cloud credits for the AI
-          transcriber / analyser. Both are one-time purchases, no subscriptions.
+          Your desktop license is free for every account. Top up cloud credits for
+          the AI transcriber &amp; analyser — one-time payment, no expiration, pay as you go.
         </p>
       </div>
 
@@ -101,16 +101,9 @@ export default function BillingPage() {
         tier={userTier}
         maxDevices={maxDevices}
         currentDevices={currentDevices}
-        status={status}
-        busy={checkout.isPending}
-        onBuy={buy}
       />
 
-      {status && <CurrentTier status={status} />}
-
       {status && <CreditBalance status={status} />}
-
-      {status && <UsageMeters status={status} />}
 
       {error && (
         <p className="flex items-center gap-1.5 text-sm text-danger">
@@ -127,18 +120,12 @@ export default function BillingPage() {
 
       <TopUpPicker topups={status?.topups ?? []} onSelect={buy} busy={checkout.isPending} />
 
-      <PackPicker
-        packs={status?.packs ?? []}
-        onSelect={buy}
-        busy={checkout.isPending}
-      />
-
       <TransactionHistory />
 
       <p className="text-xs text-ink-muted">
-        Buying a desktop license also grants 60 free cloud minutes (one-time bundle).
-        Cloud credits are spent on the AI transcriber and analyser; if you run out
-        you can top up here without changing your license.
+        Every new account starts with 100 free minutes. Clips and source files stay on
+        your device — no storage or project limits. Credits are only for cloud
+        transcription &amp; analysis.
         {status?.byok_enabled && (
           <>
             {" "}
@@ -154,29 +141,18 @@ export default function BillingPage() {
   );
 }
 
-/** Card 1: the desktop license. Buy or upgrade from here. */
+/** Desktop license — auto-granted on signup, 3 devices, free. */
 function DesktopLicenseCard({
   isLicensed,
   tier,
   maxDevices,
   currentDevices,
-  status,
-  busy,
-  onBuy,
 }: {
   isLicensed: boolean;
   tier: string | null;
   maxDevices: number;
   currentDevices: number;
-  status: BillingStatus | undefined;
-  busy: boolean;
-  onBuy: (packKey: string) => void;
 }) {
-  // The "lowest" credit pack is also the cheapest license — buying the
-  // entry-level pack mints a desktop license for the same price.
-  const licensePackKey = (status?.packs ?? [])
-    .slice()
-    .sort((a, b) => a.price_usd_cents - b.price_usd_cents)[0]?.key;
   return (
     <Card className="p-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -187,45 +163,17 @@ function DesktopLicenseCard({
           </p>
           <p className="mt-2 text-sm text-ink-secondary">
             {isLicensed
-              ? <>Your <span className="font-medium capitalize text-ink">{tier ?? "licensed"}</span> license runs the ClipZard app on up to {maxDevices} devices ({currentDevices} active).</>
-              : "Run the ClipZard desktop app — no monthly fee, lifetime."}
+              ? <>Your <span className="font-medium capitalize text-ink">{tier ?? "licensed"}</span> license is active — up to {maxDevices || 3} devices ({currentDevices} active). Download the desktop app and sign in.</>
+              : "Your free desktop license will be created automatically when you sign up."}
           </p>
         </div>
-        {isLicensed ? (
-          <Link
-            href="/app/licenses"
-            className="inline-flex h-9 items-center justify-center rounded-lg border border-line bg-surface-2 px-4 text-sm text-ink hover:bg-surface-3"
-          >
-            Manage devices →
-          </Link>
-        ) : (
-          <Button
-            onClick={() => licensePackKey && onBuy(licensePackKey)}
-            disabled={busy || !licensePackKey}
-            variant="primary"
-          >
-            {busy ? "Opening checkout…" : "Buy license"}
-          </Button>
-        )}
+        <Link
+          href="/app/licenses"
+          className="inline-flex h-9 items-center justify-center rounded-lg border border-line bg-surface-2 px-4 text-sm text-ink hover:bg-surface-3"
+        >
+          Manage devices →
+        </Link>
       </div>
-    </Card>
-  );
-}
-
-function CurrentTier({ status }: { status: BillingStatus }) {
-  return (
-    <Card className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
-      <div>
-        <p className="text-xs uppercase tracking-wider text-ink-tertiary">Current tier</p>
-        <p className="mt-1 flex items-center gap-2">
-          <span className="inline-flex items-center rounded-full bg-accent px-2.5 py-0.5 text-xs font-semibold text-accent-ink">{status.tier_name}</span>
-          <span className="text-xs text-ink-tertiary">{status.tier}</span>
-        </p>
-        <p className="mt-2 text-xs text-ink-tertiary">
-          {status.limits.max_resolution ? `Up to ${status.limits.max_resolution}p` : "Source resolution"} · {status.limits.max_projects == null ? "Unlimited projects" : `${status.limits.max_projects} projects`} · {fmtBytes(status.limits.storage_cap_bytes)} storage · {status.limits.watermark ? "Watermark" : "No watermark"}
-        </p>
-      </div>
-      <div className="text-xs text-ink-muted">Permanent — never downgrades</div>
     </Card>
   );
 }
@@ -244,113 +192,10 @@ function CreditBalance({ status }: { status: BillingStatus }) {
           </span>
           <span className="text-sm text-ink-tertiary">min {fmtHours(status.credits)}</span>
         </p>
+        <p className="mt-1 text-xs text-ink-tertiary">1 credit = 1 minute · no expiration · one-time top-ups only</p>
       </div>
       <Coins size={32} className="text-accent" weight="duotone" />
     </Card>
-  );
-}
-
-/** Two meters driven straight off the /billing/status usage payload. */
-function UsageMeters({ status }: { status: BillingStatus }) {
-  const { usage, limits } = status;
-  const storagePct =
-    limits.storage_cap_bytes > 0 ? (usage.storage_used_bytes / limits.storage_cap_bytes) * 100 : 0;
-
-  return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-      <Meter
-        icon={<Database size={16} weight="fill" />}
-        label="Storage"
-        used={`${fmtBytes(usage.storage_used_bytes)} / ${fmtBytes(limits.storage_cap_bytes)}`}
-        pct={Math.min(100, storagePct)}
-        warn={storagePct >= 90}
-      />
-      <Meter
-        icon={<Cube size={16} weight="fill" />}
-        label="Projects"
-        used={
-          limits.max_projects == null
-            ? `${usage.projects} / ∞`
-            : `${usage.projects} / ${limits.max_projects}`
-        }
-        pct={
-          limits.max_projects == null
-            ? 0
-            : Math.min(100, (usage.projects / limits.max_projects) * 100)
-        }
-        warn={limits.max_projects != null && usage.projects >= limits.max_projects}
-      />
-    </div>
-  );
-}
-
-function Meter({
-  icon,
-  label,
-  used,
-  pct,
-  warn,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  used: string;
-  pct: number;
-  warn: boolean;
-}) {
-  return (
-    <Card className="p-4">
-      <div className="flex items-center gap-2 text-sm font-medium text-ink">
-        <span className="text-accent">{icon}</span>
-        {label}
-      </div>
-      <p className="mt-1 text-xs text-ink-tertiary tabular-nums">{used}</p>
-      <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-surface-2">
-        <div
-          className={`h-full rounded-full transition-[width] duration-300 ease-out ${warn ? "bg-danger" : "bg-accent"}`}
-          style={{ width: `${Math.max(pct, pct > 0 ? 2 : 0)}%` }}
-        />
-      </div>
-    </Card>
-  );
-}
-
-function PackPicker({
-  packs,
-  onSelect,
-  busy,
-}: {
-  packs: CreditPack[];
-  onSelect: (key: string) => void;
-  busy: boolean;
-}) {
-  const idr = Intl.DateTimeFormat().resolvedOptions().timeZone?.startsWith("Asia/");
-  return (
-    <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-      {packs.map((pack) => {
-        return (
-          <Card key={pack.key} className="flex flex-col gap-4 p-5">
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <p className="flex items-center gap-1.5 text-sm font-semibold text-ink">
-                  <Lightning size={14} weight="fill" className="text-accent" />
-                  {pack.name}
-                </p>
-                <p className="mt-0.5 text-xs text-ink-tertiary">{fmtCredits(pack.credits)} credits · {fmtHours(pack.credits)}</p>
-              </div>
-              <span className="shrink-0 text-xl font-semibold tracking-tight text-ink tabular-nums">
-                {idr ? `Rp${(pack.price_idr ?? 0).toLocaleString("id-ID")}` : `$${fmtUSD(pack.price_usd_cents ?? Math.round(pack.price_usd * 100))}`}
-              </span>
-            </div>
-
-            <FeatureList limits={pack.limits} credits={pack.credits} />
-
-            <Button className="mt-auto" variant="primary" disabled={busy} onClick={() => onSelect(pack.key)}>
-              {busy ? "Opening checkout…" : "Buy pack"}
-            </Button>
-          </Card>
-        );
-      })}
-    </div>
   );
 }
 
@@ -367,8 +212,8 @@ function TopUpPicker({
   if (!topups.length) return null;
   return (
     <div>
-      <h2 className="text-sm font-semibold text-ink">Top up minutes</h2>
-      <p className="mt-1 text-xs text-ink-tertiary">Add credits without changing your tier — pay as you go.</p>
+      <h2 className="text-sm font-semibold text-ink">Top up cloud minutes</h2>
+      <p className="mt-1 text-xs text-ink-tertiary">Pay once, never expires. Unlimited projects &amp; storage — credits only for cloud AI.</p>
       <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-4">
         {topups.map((t) => (
           <Card key={t.key} className="flex flex-col gap-3 p-4">
@@ -378,7 +223,7 @@ function TopUpPicker({
                 {idr ? `Rp${(t.price_idr ?? 0).toLocaleString("id-ID")}` : `$${fmtUSD(t.price_usd_cents ?? Math.round(t.price_usd * 100))}`}
               </span>
             </div>
-            <p className="text-xs text-ink-tertiary">+{fmtCredits(t.credits)} min {fmtHours(t.credits)}</p>
+            <p className="text-xs text-ink-tertiary">+{fmtCredits(t.credits)} min {fmtHours(t.credits)} · one-time</p>
             <Button className="mt-auto" variant="secondary" disabled={busy} onClick={() => onSelect(t.key)}>
               {busy ? "Opening…" : "Top up"}
             </Button>
@@ -386,37 +231,6 @@ function TopUpPicker({
         ))}
       </div>
     </div>
-  );
-}
-
-function FeatureList({ limits, credits }: { limits: EntitlementLimits; credits: number }) {
-  return (
-    <ul className="flex flex-col gap-1.5 text-sm text-ink-secondary">
-      <Feature done>{fmtCredits(credits)} prepaid minutes {fmtHours(credits) !== "" ? `(${fmtHours(credits).trim()})` : ""}</Feature>
-      <Feature done>No watermark on exports</Feature>
-      <Feature done>
-        {limits.max_resolution ? `Up to ${limits.max_resolution}p` : "Source resolution"}
-      </Feature>
-      <Feature done>
-        {limits.max_projects == null
-          ? "Unlimited projects"
-          : `${limits.max_projects} projects`}
-      </Feature>
-      <Feature>{fmtBytes(limits.storage_cap_bytes)} storage</Feature>
-    </ul>
-  );
-}
-
-function Feature({ done, children }: { done?: boolean; children: React.ReactNode }) {
-  return (
-    <li className="flex items-center gap-2">
-      {done ? (
-        <Check size={14} weight="bold" className="text-accent" />
-      ) : (
-        <span className="h-2 w-2 rounded-full bg-surface-2" />
-      )}
-      <span>{children}</span>
-    </li>
   );
 }
 
