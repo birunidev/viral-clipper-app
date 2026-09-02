@@ -200,3 +200,18 @@ export function isAllDepsReady(): boolean {
 export function missingDeps(): DepStatus[] {
   return getDepsStatus().filter((d) => d.required && !d.installed);
 }
+
+// Binaries are hard-required at project creation; models (whisper/llm) are
+// lazily downloaded on-demand in the installed app (transcriber ensureModel
+// + analyzer ensureLlmModel + Settings → Download). When built with SKIP_LLM,
+// the lean installer ships without LLM and fetches it on first analyze.
+const MODEL_KEYS = new Set(["whisper-model", "llm-model"]);
+export function isBinariesReady(): boolean {
+  return getDepsStatus().filter((d) => d.required && !MODEL_KEYS.has(d.key)).every((d) => d.installed);
+}
+export function missingBinaries(): DepStatus[] {
+  return getDepsStatus().filter((d) => d.required && !MODEL_KEYS.has(d.key) && !d.installed);
+}
+export function missingModels(): DepStatus[] {
+  return getDepsStatus().filter((d) => d.required && MODEL_KEYS.has(d.key) && !d.installed);
+}

@@ -4,12 +4,27 @@ set -euo pipefail
 # ClipZard — Docker-only multi-platform build
 # Produces AppImage/deb (linux), nsis exe (win), dmg/zip (mac, unsigned) via electron-builder
 # Usage: ./build-all.sh [linux|win|mac|all]  (default: all)
+#   SKIP_LLM=1 ./build-all.sh win    # skip multi-GB LLM download — installer ~150MB, LLM fetched on-demand in installed app (default is skip LLM unless WITH_LLM=1)
+#   WITH_LLM=1 ./build-all.sh win    # bundle LLM (offline installer, +4.7GB)
+#   SKIP_MODELS=1 ./build-all.sh win # skip all models (whisper+LLM)
 # Requires: Docker only (no host npm/wine)
 # Output: release/ + SHA512SUMS
 
 TARGET="${1:-all}"
 VERSION="$(node -p "require('./package.json').version" 2>/dev/null || echo "0.1.0")"
 PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+# LLM skip is opt-out: lean installer by default. Set WITH_LLM=1 to bundle 4.7GB LLM for offline installer.
+# Can still override with SKIP_LLM / SKIP_MODELS / WITH_MODELS explicitly.
+if [[ -z "${SKIP_LLM:-}" && -z "${SKIP_MODELS:-}" && -z "${WITH_LLM:-}" && -z "${WITH_MODELS:-}" ]]; then
+  export SKIP_LLM=1
+  echo "==> SKIP_LLM default=1 (lean installer, LLM fetched on-demand). Set WITH_LLM=1 to bundle LLM offline."
+fi
+if [[ "${WITH_LLM:-}" == "1" ]]; then
+  unset SKIP_LLM
+  echo "==> WITH_LLM=1 — bundling LLM (offline installer)"
+fi
+echo "==> Env: SKIP_LLM=${SKIP_LLM:-0} SKIP_MODELS=${SKIP_MODELS:-0} WITH_LLM=${WITH_LLM:-0} WITH_MODELS=${WITH_MODELS:-0}"
 
 case "$TARGET" in
   linux|win|mac|all) ;;
@@ -18,7 +33,7 @@ esac
 
 run_linux() {
   echo "==> Building linux (AppImage + deb) — node:22-alpine"
-  docker run --rm -v "$PROJECT_ROOT:/app" -w /app node:22-alpine sh -c "
+  docker run --rm -v "$PROJECT_ROOT:/app" -w /app -e SKIP_LLM -e SKIP_MODELS -e WITH_LLM -e WITH_MODELS node:22-alpine sh -c "
     npm ci --ignore-scripts
     npm --prefix renderer ci --ignore-scripts || npm --prefix renderer install
     npm run build:linux -- --publish never
@@ -28,7 +43,7 @@ run_linux() {
 
 run_win() {
   echo "==> Building win (nsis) — electronuserland/builder:wine"
-  docker run --rm -v "$PROJECT_ROOT:/app" -w /app electronuserland/builder:wine sh -c "
+  docker run --rm -v "$PROJECT_ROOT:/app" -w /app -e SKIP_LLM -e SKIP_MODELS -e WITH_LLM -e WITH_MODELS electronuserland/builder:wine sh -c "
     npm ci --ignore-scripts
     npm --prefix renderer ci --ignore-scripts || npm --prefix renderer install
     npm run build:win -- --publish never
@@ -39,7 +54,7 @@ run_win() {
 run_mac() {
   echo "==> Building mac (dmg + zip, unsigned) — electronuserland/builder:wine"
   echo "    NOTE: unsigned dmg will be blocked by Gatekeeper — for distribution use macOS + Apple cert"
-  docker run --rm -v "$PROJECT_ROOT:/app" -w /app electronuserland/builder:wine sh -c "
+  docker run --rm -v "$PROJECT_ROOT:/app" -w /app -e SKIP_LLM -e SKIP_MODELS -e WITH_LLM -e WITH_MODELS electronuserland/builder:wine sh -c "
     npm ci --ignore-scripts
     npm --prefix renderer ci --ignore-scripts || npm --prefix renderer install
     npm run build:mac -- --publish never

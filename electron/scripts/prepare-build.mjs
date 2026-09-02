@@ -5,8 +5,8 @@
  * - Copies ffmpeg, ffprobe, yt-dlp, whisper binaries to resources/bin if missing
  * - Auto-provisions whisper binary (spawn setup-local-ai.mjs --build-whisper-only) if missing
  * - Auto-provisions models to unified userData (~/.config/clipzard-desktop or ~/.clipzard on win) by default
- *   (pass --skip-models or SKIP_MODELS=1 to skip heavy downloads; --with-models also populates resources/models for offline installer)
- * - Verifies and fails (exit 1) if any required dep is still missing — matches getDepsStatus() required check
+ *   (pass --skip-models or SKIP_MODELS=1 to skip heavy downloads; --skip-llm or SKIP_LLM=1 to skip ONLY the multi-GB LLM — whisper still downloaded — for lean installer; LLM is fetched on-demand in installed app via analyzer.ts; --with-models also populates resources/models for offline installer)
+ * - Verifies and fails (exit 1) if any required dep is still missing — matches getDepsStatus() required check (SKIP_LLM filters llm-model from required check)
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -163,14 +163,19 @@ async function ensureWhisperBinary() {
 async function ensureModels() {
   const skipModels = process.argv.includes("--skip-models") || process.env.SKIP_MODELS === "1" || process.env.SKIP_MODELS === "true";
   if (skipModels) {
-    console.log("[prepare-build] SKIP_MODELS set — skipping model auto-provision");
+    console.log("[prepare-build] SKIP_MODELS set — skipping model auto-provision (whisper + LLM)");
     return;
   }
+  const skipLlm = process.argv.includes("--skip-llm") || process.env.SKIP_LLM === "1" || process.env.SKIP_LLM === "true";
+  if (skipLlm) {
+    console.log("[prepare-build] SKIP_LLM set — skipping LLM download (whisper will still be provisioned, LLM will be fetched on-demand in installed app)");
+  }
   // Always ensure models to unified userData (auto-provision by default)
-  console.log(`[prepare-build] ensuring models to ${userDataRoot()}/models (auto-provision) ...`);
+  console.log(`[prepare-build] ensuring models to ${userDataRoot()}/models (auto-provision) ${skipLlm ? "[whisper-only]" : ""} ...`);
   const { spawn } = await import("node:child_process");
+  const dlArgs = skipLlm ? ["--skip-llm"] : [];
   await new Promise((resolve, reject) => {
-    const p = spawn(process.execPath, [path.join(__dirname, "download-models.mjs")], { stdio: "inherit" });
+    const p = spawn(process.execPath, [path.join(__dirname, "download-models.mjs"), ...dlArgs], { stdio: "inherit" });
     p.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`download-models failed code ${code}`))));
     p.on("error", reject);
   }).catch((e) => {
@@ -178,12 +183,12 @@ async function ensureModels() {
     throw e;
   });
 
-  // If --with-models also populate resources/models for offline installer
+  // If --with-models also populate resources/models for offline installer (respect SKIP_LLM)
   const withModels = process.argv.includes("--with-models") || process.env.WITH_MODELS === "1" || process.env.WITH_MODELS === "true";
   if (withModels) {
-    console.log("[prepare-build] --with-models also populating resources/models for offline installer ...");
+    console.log(`[prepare-build] --with-models also populating resources/models for offline installer ${skipLlm ? "[whisper-only]" : ""} ...`);
     await new Promise((resolve, reject) => {
-      const p = spawn(process.execPath, [path.join(__dirname, "download-models.mjs"), "--out", resourcesModels], { stdio: "inherit" });
+      const p = spawn(process.execPath, [path.join(__dirname, "download-models.mjs"), "--out", resourcesModels, ...dlArgs], { stdio: "inherit" });
       p.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`download-models --out failed code ${code}`))));
       p.on("error", reject);
     });
@@ -248,8 +253,11 @@ async function verifyDepsStatus() {
         console.log(`  - ${d.key} (${d.label}): ${status} — ${d.description} ${d.path ? `at ${d.path}` : ""}`);
       }
       const missing = typeof missingDeps === "function" ? missingDeps() : deps.filter((d) => d.required && !d.installed);
-      const skipModels = process.argv.includes("--skip-models") || process.env.SKIP_MODELS === "1";
-      const relevantMissing = skipModels ? missing.filter((d) => !d.key.includes("model")) : missing;
+      const skipModels = process.argv.includes("--skip-models") || process.env.SKIP_MODELS === "1" || process.env.SKIP_MODELS === "true";
+      const skipLlm = process.argv.includes("--skip-llm") || process.env.SKIP_LLM === "1" || process.env.SKIP_LLM === "true";
+      let relevantMissing = missing;
+      if (skipModels) relevantMissing = missing.filter((d) => !d.key.includes("model"));
+      else if (skipLlm) relevantMissing = missing.filter((d) => d.key !== "llm-model");
       if (relevantMissing.length) {
         console.error(`[prepare-build] FAIL — getDepsStatus() still reports missing required deps: ${relevantMissing.map((d) => d.key).join(", ")}`);
         process.exit(1);
@@ -271,6 +279,8 @@ async function main() {
     process.exit(1);
   }
   const skipModels = process.argv.includes("--skip-models") || process.env.SKIP_MODELS === "1" || process.env.SKIP_MODELS === "true";
+  const skipLlm = process.argv.includes("--skip-llm") || process.env.SKIP_LLM === "1" || process.env.SKIP_LLM === "true";
+  if (skipLlm && !skipModels) console.log("[prepare-build] SKIP_LLM active — LLM will be downloaded on-demand in installed app (analyzer.ts ensureLlmModel / Settings → Download)");
   if (!skipModels) {
     try {
       await ensureModels();
@@ -278,6 +288,8 @@ async function main() {
       console.error("[prepare-build] model ensure failed:", e.message);
       process.exit(1);
     }
+  } else {
+    console.log("[prepare-build] SKIP_MODELS active — all models will be downloaded on-demand in installed app");
   }
   verifyBinariesFailClosed();
   await verifyDepsStatus();

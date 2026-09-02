@@ -9,6 +9,10 @@
  *   node scripts/download-models.mjs              # auto tier
  *   node scripts/download-models.mjs --tier=low|mid|high --out=/tmp/userData
  *   node scripts/download-models.mjs --all        # all tiers
+ *   node scripts/download-models.mjs --skip-llm   # whisper only (build without LLM)
+ *   node scripts/download-models.mjs --whisper-only
+ *   node scripts/download-models.mjs --llm-only
+ *   SKIP_LLM=1 node scripts/download-models.mjs   # same as --skip-llm
  *   WHISPER_MODEL=small node scripts/download-models.mjs
  *   LLM_MODEL_FILE=qwen2.5-7b-q4_k_m.gguf LLM_MODEL_URL=https://... node scripts/download-models.mjs
  *
@@ -16,6 +20,9 @@
  * dir that later becomes extraResources. For end-user installer, the app itself
  * downloads lazily on first analyze/transcribe (analyzer.ts:147 + transcriber.ts:39)
  * — this script is just for pre-seeding to avoid first-run wait.
+ * Build flag: SKIP_LLM=1 / --skip-llm skips multi-GB LLM download so installer
+ * stays small (~150MB). LLM is then fetched on-demand in the installed app
+ * via analyzer.ts ensureLlmModel() or Settings → models:ensure.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -117,25 +124,35 @@ async function main() {
   const whisperModelOverride = process.env.WHISPER_MODEL || null;
   const llmFileOverride = process.env.LLM_MODEL_FILE || null;
   const llmUrlOverride = process.env.LLM_MODEL_URL || null;
+  const skipLlm = !!getArg("skip-llm", false) || !!getArg("skip-llm-only", false) || process.env.SKIP_LLM === "1" || process.env.SKIP_LLM === "true";
+  const whisperOnly = !!getArg("whisper-only", false);
+  const llmOnly = !!getArg("llm-only", false);
+  const doWhisper = !llmOnly;
+  const doLlm = !whisperOnly && !skipLlm;
 
   const tiers = all ? ["low","mid","high"] : [tierFlag || whisperModelOverride ? (tierFlag || ramTier()) : ramTier()];
   // allow explicit --tier even with --all (then ignore all)
   const targetTiers = tierFlag && !all ? [tierFlag] : tiers;
 
-  console.log(`[models] outBase=${outBase} tiers=${targetTiers.join(",")} platform=${process.platform} arch=${process.arch} ram=${(os.totalmem()/1024**3).toFixed(1)}GB`);
+  console.log(`[models] outBase=${outBase} tiers=${targetTiers.join(",")} platform=${process.platform} arch=${process.arch} ram=${(os.totalmem()/1024**3).toFixed(1)}GB skipLlm=${skipLlm} whisperOnly=${whisperOnly} llmOnly=${llmOnly}`);
+  if (skipLlm) console.log(`[models] SKIP_LLM set — skipping LLM download (will be fetched on-demand in installed app via analyzer ensureLlmModel)`);
 
   let ok = 0, fail = 0;
   for (const tier of targetTiers) {
-    const wName = whisperModelOverride || whisperFor(tier);
-    const wUrl = `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${wName}.bin`;
-    const wDest = path.join(outBase, "models", "whisper", `ggml-${wName}.bin`);
-    try { await downloadFile(wUrl, wDest, `whisper-${wName} [${tier}]`); ok++; } catch(e){ console.error(`[models] whisper ${wName} failed:`, e.message); fail++; }
+    if (doWhisper) {
+      const wName = whisperModelOverride || whisperFor(tier);
+      const wUrl = `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${wName}.bin`;
+      const wDest = path.join(outBase, "models", "whisper", `ggml-${wName}.bin`);
+      try { await downloadFile(wUrl, wDest, `whisper-${wName} [${tier}]`); ok++; } catch(e){ console.error(`[models] whisper ${wName} failed:`, e.message); fail++; }
+    }
 
-    const llm = llmFileOverride ? { file: llmFileOverride, url: llmUrlOverride || llmFor(tier).url } : llmFor(tier);
-    const lDest = path.join(outBase, "models", "llm", llm.file);
-    // env URL overrides only when single tier
-    const lUrl = (llmUrlOverride && targetTiers.length===1) ? llmUrlOverride : llm.url;
-    try { await downloadFile(lUrl, lDest, `llm-${llm.file} [${tier}]`); ok++; } catch(e){ console.error(`[models] llm ${llm.file} failed:`, e.message); fail++; }
+    if (doLlm) {
+      const llm = llmFileOverride ? { file: llmFileOverride, url: llmUrlOverride || llmFor(tier).url } : llmFor(tier);
+      const lDest = path.join(outBase, "models", "llm", llm.file);
+      // env URL overrides only when single tier
+      const lUrl = (llmUrlOverride && targetTiers.length===1) ? llmUrlOverride : llm.url;
+      try { await downloadFile(lUrl, lDest, `llm-${llm.file} [${tier}]`); ok++; } catch(e){ console.error(`[models] llm ${llm.file} failed:`, e.message); fail++; }
+    }
   }
 
   console.log(`\n[models] complete ok=${ok} fail=${fail} outBase=${outBase}`);

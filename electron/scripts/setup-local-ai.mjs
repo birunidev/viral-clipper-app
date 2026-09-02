@@ -46,6 +46,8 @@ const whisperBin = path.join(binDir, process.platform === "win32" ? "whisper-cli
 const tierFlag = getArg("tier", null);
 const modelsOnly = hasFlag("models-only");
 const whisperOnly = hasFlag("build-whisper-only");
+const skipLlm = hasFlag("skip-llm") || process.env.SKIP_LLM === "1" || process.env.SKIP_LLM === "true";
+const whisperOnlyFlag = hasFlag("whisper-only");
 
 function log(m){ console.log(`[setup-ai] ${m}`); }
 function warn(m){ console.warn(`[setup-ai] WARN ${m}`); }
@@ -287,11 +289,18 @@ function downloadUrlToFile(url, dest) {
 }
 
 async function downloadModels() {
+  if (skipLlm) {
+    log(`SKIP_LLM set — downloading whisper only (LLM will be fetched on-demand in installed app)`);
+  }
   const tierArg = tierFlag ? ` --tier=${tierFlag}` : "";
-  log(`downloading models for tier=${tierFlag ?? "auto"} ...`);
-  const cmd = `node ${path.join(root, "scripts/download-models.mjs")}${tierArg}`;
+  const skipLlmArg = skipLlm ? " --skip-llm" : "";
+  log(`downloading models for tier=${tierFlag ?? "auto"}${skipLlm ? " [whisper-only]" : ""} ...`);
+  const cmd = `node ${path.join(root, "scripts/download-models.mjs")}${tierArg}${skipLlmArg}`;
   log(`> ${cmd}`);
-  const r = spawnSync("node", [path.join(root, "scripts/download-models.mjs"), ...(tierFlag ? [`--tier=${tierFlag}`] : [])], { stdio: "inherit" });
+  const extra = [];
+  if (tierFlag) extra.push(`--tier=${tierFlag}`);
+  if (skipLlm) extra.push("--skip-llm");
+  const r = spawnSync("node", [path.join(root, "scripts/download-models.mjs"), ...extra], { stdio: "inherit" });
   if (r.status !== 0) warn(`model download exited ${r.status} — check network/HF rate limit`);
   return r.status === 0;
 }
@@ -314,7 +323,8 @@ async function rebuildLlama() {
 }
 
 (async () => {
-  console.log(`[setup-ai] root=${root} plat=${platformDir}-${archSuffix} tier=${tierFlag ?? "auto (ram="+(os.totalmem()/1024**3).toFixed(1)+"GB)"}`);
+  console.log(`[setup-ai] root=${root} plat=${platformDir}-${archSuffix} tier=${tierFlag ?? "auto (ram="+(os.totalmem()/1024**3).toFixed(1)+"GB)"} skipLlm=${skipLlm}`);
+  if (skipLlm) console.log(`[setup-ai] SKIP_LLM=1 — LLM download will be skipped (on-demand in installed app)`);
   if (!whisperOnly) {
     // 1. ensure ffmpeg/yt-dlp present
     const ffCandidates = [

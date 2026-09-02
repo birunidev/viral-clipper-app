@@ -8,7 +8,7 @@ import * as auth from "./services/auth.js";
 import { checkEntitlement, clearEntitlementCache, ensureFreshCheck, isEntitledSync } from "./services/entitlement.js";
 import { ramTier, whisperModelForTier, llmModelForTier } from "./services/system.js";
 import { listVariants, currentSelectedVariant, whisperStatus, ensureVariant, removeVariant } from "./services/models.js";
-import { getDepsStatus, isAllDepsReady, missingDeps } from "./services/deps.js";
+import { getDepsStatus, isAllDepsReady, missingDeps, isBinariesReady, missingBinaries } from "./services/deps.js";
 import { userDataRoot } from "./services/userData.js";
 import { randomUUID } from "node:crypto";
 import { utilityProcess } from "electron";
@@ -679,10 +679,11 @@ ipcMain.handle("projects:get", async (_e, id: string) => {
 ipcMain.handle("projects:create", async (_e, data: { title: string; source: string; sourceType?: string; llmVariant?: string }) => {
   const ent = await ensureFreshCheck();
   if (!ent.ok) throw new Error(ent.message || "Entitlement required");
-  // Dependency guard: if YT URL and deps missing, reject early with Settings hint
-  if (String(data.sourceType ?? "youtube") === "youtube" && !isAllDepsReady()) {
-    const missing = missingDeps().map((d) => d.label).join(", ");
-    throw new Error(`Please go to Settings and finish all dependency setup before proceed. Missing: ${missing}`);
+  // Dependency guard: binaries are hard-required; models (whisper/llm) are
+  // fetched on-demand in the installed app when built with SKIP_LLM/SKIP_MODELS.
+  if (String(data.sourceType ?? "youtube") === "youtube" && !isBinariesReady()) {
+    const missing = missingBinaries().map((d) => d.label).join(", ");
+    throw new Error(`Please go to Settings and finish binary setup before proceed. Missing: ${missing}. Models will be downloaded on first run.`);
   }
   const id = randomUUID();
   const now = nowIso();
@@ -1102,9 +1103,9 @@ async function runJobInUtility(jobId: string, projectId: string, clipId?: string
 ipcMain.handle("jobs:start", async (_e, { projectId, opts }: { projectId: string; opts?: Record<string, unknown> }) => {
   const ent = await ensureFreshCheck();
   if (!ent.ok) throw new Error(ent.message || "Entitlement required");
-  if (!isAllDepsReady()) {
-    const missing = missingDeps().map((d) => d.label).join(", ");
-    throw new Error(`Please go to Settings and finish all dependency setup before proceed. Missing: ${missing}`);
+  if (!isBinariesReady()) {
+    const missing = missingBinaries().map((d) => d.label).join(", ");
+    throw new Error(`Please go to Settings and finish binary setup before proceed. Missing: ${missing}. Models will be downloaded on first run.`);
   }
   const id = randomUUID();
   const now = nowIso();
