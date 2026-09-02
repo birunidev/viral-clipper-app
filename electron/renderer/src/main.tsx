@@ -103,11 +103,27 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err
   }
 }
 
+function NavigateListener() {
+  React.useEffect(() => {
+    const cf = (window as unknown as { clipzard?: { onNavigate?: (cb: (p: string) => void) => () => void } }).clipzard;
+    if (!cf?.onNavigate) return;
+    const off = cf.onNavigate((p) => {
+      try {
+        const hash = p.startsWith("/") ? `#${p}` : `#/${p}`;
+        if (window.location.hash !== hash) window.location.hash = hash;
+      } catch {}
+    });
+    return () => { try { off?.(); } catch {} };
+  }, []);
+  return null;
+}
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ErrorBoundary>
       <QueryClientProvider client={qc}>
         <HashRouter>
+          <NavigateListener />
           <Routes>
             <Route path="/onboarding" element={<OnboardingPage />} />
             <Route path="/login" element={<AuthLayout><LoginPage /></AuthLayout>} />

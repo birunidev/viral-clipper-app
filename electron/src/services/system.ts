@@ -32,8 +32,10 @@ export function whisperModelForTier(t: Tier): string {
 function getStoredVariant(): string | null {
   try {
     const Store = require("electron-store") as unknown as { default: new (o: unknown)=> { get:(k:string, d?:unknown)=>unknown } };
-    const Ctor = (Store.default ?? Store) as unknown as new (o: unknown)=> { get:(k:string,d?:unknown)=>unknown };
-    const store = new Ctor({ name: "clipzard-config" });
+    const Ctor = (Store.default ?? Store) as unknown as new (o: unknown)=> { get:(k:string, d?:unknown)=>unknown };
+    const opts: Record<string, unknown> = { name: "clipzard-config" };
+    try { const { userDataRoot } = require("./userData.js") as { userDataRoot: () => string }; const cwd = userDataRoot(); if (cwd) opts.cwd = cwd; } catch {}
+    const store = new Ctor(opts);
     const v = String(store.get("llmVariant", "") ?? "");
     if (v) return v;
   } catch {}

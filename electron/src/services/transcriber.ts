@@ -42,7 +42,7 @@ const MODEL_EXPECTED: Record<string, number> = {
   "large-v3": 3090000000,
 };
 
-async function ensureModel(name: string, onProgress?: (f: number) => void): Promise<string> {
+export async function ensureModel(name: string, onProgress?: (f: number) => void): Promise<string> {
   const p = modelPath(name);
   if (fs.existsSync(p)) {
     const sz = fs.statSync(p).size;

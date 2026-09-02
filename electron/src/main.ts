@@ -223,23 +223,35 @@ app.whenReady().then(async () => {
   })();
 
   // Onboarding gate: if never completed/skipped, show /onboarding first (capcut-like)
+  // electron-store must be isolated per USER_DATA_PATH (E2E tmp dirs) — use userDataRoot() as cwd
+  // otherwise fresh USER_DATA_PATH would still read onboardingCompleted from default app.getPath("userData")
   try {
     const Store = (await import("electron-store")).default as unknown as new (o: unknown)=> { get:(k:string, d?:unknown)=>unknown };
-    const store = new (Store as unknown as new (o: unknown)=> { get:(k:string, d?:unknown)=>unknown })({ name: "clipzard-config" });
+    const storeOpts: Record<string, unknown> = { name: "clipzard-config" };
+    // Ensure store is scoped to unified userDataRoot so E2E USER_DATA_PATH isolation works
+    try {
+      const cwd = userDataRoot();
+      if (cwd) (storeOpts as Record<string, unknown>).cwd = cwd;
+    } catch {}
+    const store = new (Store as unknown as new (o: unknown)=> { get:(k:string, d?:unknown)=>unknown })(storeOpts);
     const completed = Boolean(store.get("onboardingCompleted", false));
     const skipped = Boolean(store.get("onboardingSkipped", false));
     if (!completed && !skipped && !isAllDepsReady()) {
-      // Start with onboarding route
+      // Start with onboarding route — also set hash fallback in case renderer hasn't mounted navigate listener yet
       const origUrl = process.env.ELECTRON_DEV_URL;
       if (origUrl) {
-        // In dev, let renderer handle /onboarding via hash
+        // In dev, let renderer handle /onboarding via hash; also send IPC for listeners
         createWindow();
         setTimeout(() => win?.webContents.send("navigate", "/onboarding"), 800);
+        // Fallback: ensure hash is correct even if IPC missed
+        setTimeout(() => { try { win?.webContents.executeJavaScript("if(location.hash!=='#/onboarding') location.hash='#/onboarding'"); } catch {} }, 1200);
       } else {
         createWindow();
-        win?.webContents.once("did-finish-load", () => win?.webContents.send("navigate", "/onboarding"));
+        win?.webContents.once("did-finish-load", () => {
+          win?.webContents.send("navigate", "/onboarding");
+          try { win?.webContents.executeJavaScript("if(location.hash!=='#/onboarding') location.hash='#/onboarding'"); } catch {}
+        });
       }
-      // Also expose via hash fallback: Settings will still show dep setup
     } else {
       createWindow();
     }
@@ -263,7 +275,9 @@ const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h
 async function readStoredUpdateChannel(): Promise<"stable" | "beta"> {
   try {
     const Store = (await import("electron-store")).default;
-    const store = new Store();
+    const opts: Record<string, unknown> = {};
+    try { const cwd = userDataRoot(); if (cwd) opts.cwd = cwd; } catch {}
+    const store = new (Store as unknown as new (o: unknown)=>{get:(k:string,d?:unknown)=>unknown})(opts as unknown as never);
     const ch = store.get("updateChannel", "stable");
     return ch === "beta" ? "beta" : "stable";
   } catch {
@@ -380,10 +394,12 @@ async function initAutoUpdater() {
   ipcMain.handle("updates:channel", async (_e, channel: "stable" | "beta") => {
     if (channel !== "stable" && channel !== "beta") return { ok: false, error: "invalid channel" };
     autoUpdater.channel = channel;
-    // Persist for next launch
+    // Persist for next launch (scoped to userDataRoot)
     try {
       const Store = (await import("electron-store")).default;
-      const store = new Store();
+      const opts: Record<string, unknown> = {};
+      try { const cwd = userDataRoot(); if (cwd) opts.cwd = cwd; } catch {}
+      const store = new (Store as unknown as new (o: unknown)=>{set:(k:string,v:unknown)=>void})(opts as unknown as never);
       store.set("updateChannel", channel);
     } catch {}
     try {
@@ -478,7 +494,9 @@ ipcMain.handle("models:setVariant", async (_e, variant: string) => {
   if (!["tiny","balanced","quality"].includes(v)) throw new Error("invalid variant");
   try {
     const Store = (await import("electron-store")).default as unknown as new (o: unknown)=> { set:(k:string,v:unknown)=>void; get:(k:string)=>unknown };
-    const store = new (Store as unknown as new (o: unknown)=> { set:(k:string,v:unknown)=>void })({ name: "clipzard-config" });
+    const opts: Record<string, unknown> = { name: "clipzard-config" };
+    try { const cwd = userDataRoot(); if (cwd) opts.cwd = cwd; } catch {}
+    const store = new (Store as unknown as new (o: unknown)=> { set:(k:string,v:unknown)=>void })(opts as unknown as never);
     store.set("llmVariant", v);
     process.env.LLM_TIER = v;
     return { ok: true, selected: v };
@@ -519,59 +537,59 @@ ipcMain.handle("deps:ensure", async (_e, key: string) => {
   const deps = getDepsStatus();
   const dep = deps.find((d) => d.key === key);
   if (!dep) throw new Error(`Unknown dep ${key}`);
-  // For models, delegate to models:ensure
+  if (dep.installed) return { ok: true, alreadyReady: true };
   if (key === "whisper-model") {
-    const tier = ramTier();
-    const model = whisperModelForTier(tier);
-    // Trigger download via transcriber ensureModel path
-    const { whisperModelForTier: _w } = await import("./services/system.js");
-    const { spawn } = await import("node:child_process");
-    // Use ensureVariant-like logic for whisper: just trigger ensureModel via transcriber
     win?.webContents.send("deps:progress", { key, progress: 0, stage: "downloading" });
-    // Dynamic import to avoid circular
-    const { whisperModelForTier: wTier } = await import("./services/system.js");
-    const modelName = wTier(ramTier());
-    const transcriber = await import("./services/transcriber.js");
-    // Hack: call internal ensureModel via transcribe path? Simpler: direct download
-    win?.webContents.send("deps:progress", { key, progress: 1, done: true });
-    return { ok: true };
+    try {
+      const { whisperModelForTier: wTier } = await import("./services/system.js");
+      const modelName = wTier(ramTier());
+      const { ensureModel } = await import("./services/transcriber.js");
+      await ensureModel(modelName, (p) => win?.webContents.send("deps:progress", { key, progress: p, stage: "downloading" }));
+      win?.webContents.send("deps:progress", { key, progress: 1, done: true });
+      return { ok: true };
+    } catch (e) {
+      win?.webContents.send("deps:progress", { key, progress: 0, error: String((e as Error).message) });
+      throw e;
+    }
   }
   if (key === "llm-model") {
-    const tier = ramTier();
-    const { file } = llmModelForTier(tier);
-    // Map file to variant
-    const variant = file.includes("0.5b") ? "tiny" : file.includes("7b") ? "quality" : "balanced";
-    await ensureVariant(variant as "tiny"|"balanced"|"quality", (p) => win?.webContents.send("deps:progress", { key, progress: p }));
-    win?.webContents.send("deps:progress", { key, progress: 1, done: true });
-    return { ok: true };
+    win?.webContents.send("deps:progress", { key, progress: 0, stage: "downloading" });
+    try {
+      const tier = ramTier();
+      const { file } = llmModelForTier(tier);
+      const variant = file.includes("0.5b") ? "tiny" : file.includes("7b") ? "quality" : file.includes("3b") ? "quality" : "balanced";
+      await ensureVariant(variant as "tiny"|"balanced"|"quality", (p) => win?.webContents.send("deps:progress", { key, progress: p, stage: "downloading" }));
+      win?.webContents.send("deps:progress", { key, progress: 1, done: true });
+      return { ok: true };
+    } catch (e) {
+      win?.webContents.send("deps:progress", { key, progress: 0, error: String((e as Error).message) });
+      throw e;
+    }
   }
   return { ok: true, alreadyReady: dep.installed };
 });
 
 ipcMain.handle("deps:ensureAll", async () => {
   const deps = getDepsStatus().filter((d) => d.required && !d.installed);
+  // If any model deps are missing, still emit progress for binaries (which are pre-bundled) as done immediately
   for (const dep of deps) {
     win?.webContents.send("deps:progress", { key: dep.key, progress: 0, stage: "downloading" });
     try {
-      if (dep.key === "whisper-model" || dep.key === "llm-model") {
-        await (async () => {
-          // Trigger via models:ensure for llm, direct for whisper
-          if (dep.key === "llm-model") {
-            const tier = ramTier();
-            const { file } = llmModelForTier(tier);
-            const variant = file.includes("0.5b") ? "tiny" : file.includes("7b") ? "quality" : "balanced";
-            await ensureVariant(variant as "tiny"|"balanced"|"quality", (p) => win?.webContents.send("deps:progress", { key: dep.key, progress: p }));
-          } else {
-            // whisper: use transcriber ensureModel
-            const { whisperModelForTier: wTier } = await import("./services/system.js");
-            const modelName = wTier(ramTier());
-            // Touch via dummy transcribe ensure path: import and call ensureModel via private
-            const mod = await import("./services/transcriber.js");
-            // @ts-ignore private
-            const ensure = (mod as unknown as { ensureModel?: (n: string, cb?: (p:number)=>void)=>Promise<string> }).ensureModel;
-            if (ensure) await ensure(modelName, (p) => win?.webContents.send("deps:progress", { key: dep.key, progress: p }));
-          }
-        })();
+      if (dep.key === "whisper-model") {
+        const { whisperModelForTier: wTier } = await import("./services/system.js");
+        const modelName = wTier(ramTier());
+        const { ensureModel } = await import("./services/transcriber.js");
+        await ensureModel(modelName, (p) => win?.webContents.send("deps:progress", { key: dep.key, progress: p, stage: "downloading" }));
+      } else if (dep.key === "llm-model") {
+        const tier = ramTier();
+        const { file } = llmModelForTier(tier);
+        const variant = file.includes("0.5b") ? "tiny" : file.includes("7b") ? "quality" : file.includes("3b") ? "quality" : "balanced";
+        await ensureVariant(variant as "tiny"|"balanced"|"quality", (p) => win?.webContents.send("deps:progress", { key: dep.key, progress: p, stage: "downloading" }));
+      } else {
+        // Binary missing (should not happen in packaged app — resources/bin is bundled)
+        // Just report error hint; don't block model downloads
+        win?.webContents.send("deps:progress", { key: dep.key, progress: 0, error: `Binary missing at ${dep.path ?? dep.key} — reinstall or run npm run setup:whisper` });
+        continue;
       }
       win?.webContents.send("deps:progress", { key: dep.key, progress: 1, done: true });
     } catch (e) {
@@ -584,7 +602,9 @@ ipcMain.handle("deps:ensureAll", async () => {
 ipcMain.handle("onboarding:skip", async () => {
   try {
     const Store = (await import("electron-store")).default as unknown as new (o: unknown)=> { set:(k:string,v:unknown)=>void; get:(k:string)=>unknown };
-    const store = new (Store as unknown as new (o: unknown)=> { set:(k:string,v:unknown)=>void; get:(k:string)=>unknown })({ name: "clipzard-config" });
+    const opts: Record<string, unknown> = { name: "clipzard-config" };
+    try { const cwd = userDataRoot(); if (cwd) opts.cwd = cwd; } catch {}
+    const store = new (Store as unknown as new (o: unknown)=> { set:(k:string,v:unknown)=>void; get:(k:string)=>unknown })(opts as unknown as never);
     store.set("onboardingSkipped", true);
     store.set("onboardingCompleted", false);
   } catch {}
@@ -594,7 +614,9 @@ ipcMain.handle("onboarding:skip", async () => {
 ipcMain.handle("onboarding:complete", async () => {
   try {
     const Store = (await import("electron-store")).default as unknown as new (o: unknown)=> { set:(k:string,v:unknown)=>void };
-    const store = new (Store as unknown as new (o: unknown)=> { set:(k:string,v:unknown)=>void })({ name: "clipzard-config" });
+    const opts: Record<string, unknown> = { name: "clipzard-config" };
+    try { const cwd = userDataRoot(); if (cwd) opts.cwd = cwd; } catch {}
+    const store = new (Store as unknown as new (o: unknown)=> { set:(k:string,v:unknown)=>void })(opts as unknown as never);
     store.set("onboardingCompleted", true);
     store.set("onboardingSkipped", false);
   } catch {}

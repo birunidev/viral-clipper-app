@@ -57,12 +57,14 @@ export function currentSelectedVariant(): ModelVariant {
   if (env === "tiny" || env === "0.5b" || env === "nano") return "tiny";
   if (env === "balanced" || env === "1.5b") return "balanced";
   if (env === "quality" || env === "3b" || env === "7b") return "quality";
-  // Try electron-store
+  // Try electron-store (scoped to userDataRoot for E2E isolation)
   let stored: string | null = null;
   try {
     const Store = require("electron-store") as unknown as { default: new (o: unknown)=> { get:(k:string, d?:unknown)=>unknown } };
     const Ctor = (Store.default ?? Store) as unknown as new (o: unknown)=> { get:(k:string,d?:unknown)=>unknown };
-    const store = new Ctor({ name: "clipzard-config" });
+    const opts: Record<string, unknown> = { name: "clipzard-config" };
+    try { const cwd = userDataRoot(); if (cwd) opts.cwd = cwd; } catch {}
+    const store = new Ctor(opts);
     const v = String(store.get("llmVariant", "") ?? "").toLowerCase();
     if (v === "tiny" || v === "balanced" || v === "quality") stored = v;
   } catch {}

@@ -45,13 +45,18 @@ try {
    depsStatus: () => ipcRenderer.invoke("deps:status"),
    depsEnsureAll: () => ipcRenderer.invoke("deps:ensureAll"),
    depsEnsure: (key: string) => ipcRenderer.invoke("deps:ensure", key),
-   onDepsProgress: (cb: (data: unknown) => void) => {
-     const handler = (_: unknown, data: unknown) => cb(data);
-     ipcRenderer.on("deps:progress", handler);
-     return () => ipcRenderer.removeListener("deps:progress", handler);
-   },
-   onboardingSkip: () => ipcRenderer.invoke("onboarding:skip"),
-   onboardingComplete: () => ipcRenderer.invoke("onboarding:complete"),
+    onDepsProgress: (cb: (data: unknown) => void) => {
+      const handler = (_: unknown, data: unknown) => cb(data);
+      ipcRenderer.on("deps:progress", handler);
+      return () => ipcRenderer.removeListener("deps:progress", handler);
+    },
+    onboardingSkip: () => ipcRenderer.invoke("onboarding:skip"),
+    onboardingComplete: () => ipcRenderer.invoke("onboarding:complete"),
+    onNavigate: (cb: (path: string) => void) => {
+      const handler = (_: unknown, path: string) => cb(path);
+      ipcRenderer.on("navigate", handler as never);
+      return () => ipcRenderer.removeListener("navigate", handler as never);
+    },
       onJobProgress: (cb: (data: unknown) => void) => {
       const handler = (_: unknown, data: unknown) => cb(data);
       ipcRenderer.on("job:progress", handler);
